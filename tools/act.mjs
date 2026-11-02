@@ -7,6 +7,7 @@
 //   node tools/act.mjs melee/sword-slash --sheet        the whole act, character and all, as a transparent sprite sheet
 //
 // Options: --from S --to S (strip range) --step S (default 1/12) --cols N --zoom N --bg KIND --out FILE --no-target --seconds S
+// 3D effects (meta.camera): --yaw DEG --pitch DEG --dist PX, the act seen from another camera
 
 import { join } from "node:path";
 import { ROOT, resolveIds, loadEffect, renderAct, spriteSheet, canvas, upscale, save, writeVideo } from "./lib/fxlib.mjs";
@@ -19,9 +20,11 @@ for (let i = 0; i < args.length; i++) {
 }
 const ids = resolveIds(pos);
 for (const id of ids) {
-  const fx = await loadEffect(id);
+  const fx = await loadEffect(id), rad = (v) => (v === undefined ? undefined : (+v * Math.PI) / 180);
+  const cam = fx.meta.camera && Object.fromEntries(Object.entries({ ...fx.meta.camera, yaw: rad(flags.yaw), pitch: rad(flags.pitch), dist: flags.dist && +flags.dist }).filter(([, v]) => v !== undefined));
+  const options = cam ? { camera: cam } : undefined;
   if (flags.sheet) {
-    const r = renderAct(fx, { fps: fx.meta.fps, bg: "none", target: !flags["no-target"], hold: 0 }), name = id.split("/")[1], base = join(ROOT, "records", "act", id.replace("/", "-"));
+    const r = renderAct(fx, { fps: fx.meta.fps, bg: "none", target: !flags["no-target"], hold: 0, options }), name = id.split("/")[1], base = join(ROOT, "records", "act", id.replace("/", "-"));
     const s = spriteSheet(fx, r, name);
     s.json.meta.dotspace.pivot = r.pivot;
     save(`${base}.sheet.png`, s.png);
@@ -29,7 +32,7 @@ for (const id of ids) {
     console.log(`${id}  ${r.n} frames of ${r.w} x ${r.h}  ->  ${base}.sheet.png`);
     continue;
   }
-  const r = renderAct(fx, { fps: 60, bg: flags.bg, target: !flags["no-target"], seconds: flags.seconds ? +flags.seconds : undefined });
+  const r = renderAct(fx, { fps: 60, bg: flags.bg, target: !flags["no-target"], seconds: flags.seconds ? +flags.seconds : undefined, options });
   const base = join(ROOT, "records", "act", id.replace("/", "-"));
   if (flags.mp4) {
     const k = +(flags.zoom ?? Math.max(2, Math.min(8, Math.floor(960 / Math.max(r.w, r.h)))));

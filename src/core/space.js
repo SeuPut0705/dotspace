@@ -25,7 +25,7 @@ const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a
  * A camera over a 2D painter. camera: { yaw (radians, the camera orbits right as it grows), pitch (radians,
  * above the floor), dist (px from the origin for perspective, Infinity for orthographic), zoom, at ([x, y, z]:
  * where this effect's origin sits in a bigger scene, so effects inside a move share one space) }.
- * Every drawing call leaves the painter's depth (p.z) as it found it.
+ * Every drawing call leaves the painter's depth (p.z) as it found it. With no painter (p null) it only projects.
  */
 export class Space {
   constructor(p, camera = {}) {
@@ -42,6 +42,7 @@ export class Space {
     this.dist = c.dist > 0 ? c.dist : Infinity;
     this.zoom = c.zoom;
     [this.ax, this.ay, this.az] = c.at ?? [0, 0, 0];
+    if (!p) return this;
     if (!p.frame.depth) p.frame.depth = new Float32Array(p.w * p.h).fill(Infinity);
     p.D = p.frame.depth;
     return this;

@@ -8,6 +8,7 @@ import { hex, mix } from "./color.js";
 import { createFrame, clearFrame, createFx, painterFor } from "./fx.js";
 import { stockActor, drawActor, actorAlphaOf, HERO2, DUMMY_PAL } from "./actor.js";
 import { posed, STAND } from "./rig.js";
+import { Space, CAMERA } from "./space.js";
 
 export { STAND, posed };
 
@@ -106,8 +107,14 @@ const DUMMY = new Uint32Array(TW * TH);
 /** What a hit can leave on the target: [color, how much of it]. */
 export const SKINS = { flash: [TP.white, 1], char: [hex("#1a0c0e"), 0.72], ice: [hex("#a8e8ff"), 0.72], shadow: [hex("#3a1a70"), 0.5], holy: [hex("#fff4c0"), 0.5], red: [hex("#ff2040"), 0.45], shock: [hex("#8fd6ff"), 0.6], poison: [hex("#58c43a"), 0.5] };
 const STRAW = [TP.strawL, TP.straw, TP.straw, TP.burlapD, TP.burlapD];
+/** Where a point of the act's plane (local x, y) is drawn: [x, y, depth], or null when it can't be seen. Flat: itself. */
+const flat = (x, y) => [Math.round(x), Math.round(y), 0];
 
-/** A straw target on a spring: it sways, flashes, takes a skin, shivers and sheds straw. (x, y): the floor under it, local space. */
+/**
+ * A straw target on a spring: it sways, flashes, takes a skin, shivers and sheds straw. (x, y): the floor under it, local
+ * space. pin, if given, carries a point of local space to where it's drawn (a 3D act projects it through the camera), and
+ * mirror turns the sprite round without moving it (seen from behind).
+ */
 export class Target {
   constructor(x, seed = 5) {
     Object.assign(this, { x, theta: 0, omega: 0, flashT: 0, skin: null, skinFade: 0, shiver: 0, clock: 0, R: new Rng(seed), straw: [] });
@@ -138,22 +145,27 @@ export class Target {
     }
     this.straw = this.straw.filter((s) => s.age < s.life);
   }
-  draw(C, W, H, X, Y, flip) {
+  draw(C, W, H, X, Y, flip, pin = flat, mirror = flip) {
     const tan = Math.tan(this.theta), sv = this.shiver > 0 ? (Math.floor(this.clock * 30) & 1 ? 1 : -1) : 0, name = this.flashT > 0 ? "flash" : this.skin, sk = name ? SKINS[name] : null;
-    const base = X + (flip ? -this.x - 1 : this.x);
+    const at = pin(this.x, 0);
+    if (!at) return;
+    const base = X + (flip ? -at[0] - 1 : at[0]);
+    Y += at[1];
     for (let r = 0; r < TH; r++) {
       const o = Math.round((TH - 1 - r) * tan * 0.8) + sv;
       for (let x = 0; x < TW; x++) {
         const c = DUMMY[r * TW + x];
         if (!c) continue;
-        const px = base + (flip ? -(x - 19 + o) - 1 : x - 19 + o), py = Y - TH + r;
+        const px = base + (mirror ? -(x - 19 + o) - 1 : x - 19 + o), py = Y - TH + r;
         if (px >= 0 && py >= 0 && px < W && py < H) C[py * W + px] = sk ? mix(c, sk[0], sk[1]) : c;
       }
     }
   }
-  drawStraw(C, W, H, X, Y, flip) {
+  drawStraw(C, W, H, X, Y, flip, pin = flat) {
     for (const s of this.straw) {
-      const c = STRAW[Math.min(4, Math.floor((s.age / s.life) * 5))], lx = Math.round(s.x), ly = Math.round(s.y) - 1;
+      const at = pin(s.x, s.y);
+      if (!at) continue;
+      const c = STRAW[Math.min(4, Math.floor((s.age / s.life) * 5))], lx = at[0], ly = at[1] - 1;
       for (let i = 0; i < (s.big ? 2 : 1); i++) {
         const px = X + (flip ? -(lx + i) - 1 : lx + i), py = Y + ly;
         if (px >= 0 && py >= 0 && px < W && py < H) C[py * W + px] = c;
@@ -237,7 +249,7 @@ export function createAct(mod, o = {}) {
     last = q;
     return q;
   };
-  let scratch = null, snap = null;
+  let scratch = null, snap = null, eye = null;
   const scratchFor = (f) => {
     if (!scratch || scratch.a.w !== f.w || scratch.a.h !== f.h) scratch = { a: createFrame(f.w, f.h, f.ox, f.oy, !!meta.camera), b: createFrame(f.w, f.h, f.ox, f.oy, !!meta.camera) };
     return scratch;
@@ -313,11 +325,22 @@ export function createAct(mod, o = {}) {
     draw(frame, { body = true, target: showTarget = true } = {}) {
       const W = frame.w, H = frame.h, q = last ?? poseNow(), active = t >= 0;
       const tgt = showTarget ? targets : [];
-      const drawTargets = () => tgt.forEach((g) => g.draw(frame.color, W, H, FX, FY, flip));
-      const drawStraw = () => tgt.forEach((g) => g.drawStraw(frame.color, W, H, FX, FY, flip));
+      // a 3D act stands its body, target, straw and dust in the effect's own space: x and y as in 2D, z = 0, projected
+      // through the camera the effect is drawn with, so they stay where the effect's cues are from every side
+      const cam = meta.camera ? (eye ??= new Space(null)).setCamera(fx.options.camera) : null;
+      const pin = cam ? (x, y) => (cam.project(x, y, 0) ? [Math.round(cam.x), Math.round(cam.y), cam.d] : null) : flat;
+      // how deep a sprite stands: the floor under it, so it's a flat card facing the camera there
+      const depthAt = (x) => (cam && cam.project(x, 0, 0) ? cam.d : 0);
+      // seen from behind (+x points left on screen), the sprites turn round to keep facing the way they act
+      const mirror = flip !== (!!cam && cam.cy < -1e-9);
+      const drawTarget = (g) => g.draw(frame.color, W, H, FX, FY, flip, pin, mirror);
+      const drawTargets = () => tgt.forEach(drawTarget);
+      const drawStraw = () => tgt.forEach((g) => g.drawStraw(frame.color, W, H, FX, FY, flip, pin));
       const drawDust = () => {
         for (const k of specks) {
-          const c = k.c || DUST[Math.min(3, Math.floor((k.age / k.life) * 4))], lx = Math.round(k.x), py = FY + Math.round(k.y);
+          const at = pin(k.x, k.y);
+          if (!at) continue;
+          const c = k.c || DUST[Math.min(3, Math.floor((k.age / k.life) * 4))], lx = at[0], py = FY + at[1];
           for (let i = 0; i < (k.big ? 2 : 1); i++) {
             const px = flip ? FX - lx - i - 1 : FX + lx + i;
             if (px >= 0 && py >= 0 && px < W && py < H) frame.color[py * W + px] = c;
@@ -325,17 +348,22 @@ export function createAct(mod, o = {}) {
         }
       };
       const FX = X - (frame.ox | 0), FY = Y - (frame.oy | 0);
-      // a 3D effect: what paint() puts down (the target, the body) stands at depth 0, and the effect sorts round it
-      const atDepth0 = (paint) => {
+      // a 3D effect: what paint() puts down (a target, the body) stands at depth d, and the effect sorts round it
+      const atDepth = (d, paint) => {
         if (!frame.depth) frame.depth = new Float32Array(W * H).fill(Infinity);
         const C = frame.color, Dp = frame.depth;
         if (!snap || snap.length !== C.length) snap = new Uint32Array(C.length);
         snap.set(C);
         paint();
-        for (let i = 0; i < C.length; i++) if (C[i] !== snap[i] && C[i] >>> 24 === 255) Dp[i] = 0;
+        for (let i = 0; i < C.length; i++) if (C[i] !== snap[i] && C[i] >>> 24 === 255) Dp[i] = d;
       };
+      // the sprites far to near, so a nearer one covers a further one; a tie keeps the targets under the body
+      const stand = (layers) => {
+        for (const [d, paint] of layers.sort((p, q) => q[0] - p[0])) atDepth(d, paint);
+      };
+      const targetLayers = () => tgt.map((g) => [depthAt(g.x), () => drawTarget(g)]);
       if (!body && meta.camera) {
-        atDepth0(drawTargets);
+        stand(targetLayers());
         if (active) fx.draw(frame);
         drawStraw();
         return;
@@ -347,8 +375,8 @@ export function createAct(mod, o = {}) {
         drawStraw();
         return;
       }
-      const rx = Math.round(q.x ?? 0), ry = Math.round(q.y ?? 0), BX = FX + (flip ? -rx : rx), BY = FY + ry;
-      const r = bodyOf(q), mirror = flip;
+      const qx = q.x ?? 0, qy = q.y ?? 0, foot = pin(qx, qy), seen = !!foot, [rx, ry] = foot ?? [0, 0], BX = FX + (flip ? -rx : rx), BY = FY + ry;
+      const r = bodyOf(q);
       const paint = (i, color) => {
         const px = mirror ? BX - r.xs[i] - 1 : BX + r.xs[i], py = BY + r.ys[i];
         if (px < 0 || py < 0 || px >= W || py >= H) return;
@@ -359,8 +387,10 @@ export function createAct(mod, o = {}) {
       const drawGhosts = () => {
         for (const g of ghosts) {
           // after-images are light, not paint: they brighten what's behind them and leave nothing muddy
-          const gr = bodyOf(g.q), gx = FX + (flip ? -Math.round(g.q.x ?? 0) : Math.round(g.q.x ?? 0)), gy = FY + Math.round(g.q.y ?? 0), k = 0.5 * (1 - g.age / GHOST_LIFE);
-          const gm = flip, r0 = (gc & 255) * k, g0 = ((gc >>> 8) & 255) * k, b0 = ((gc >>> 16) & 255) * k;
+          const gp = pin(g.q.x ?? 0, g.q.y ?? 0);
+          if (!gp) continue;
+          const gr = bodyOf(g.q), gx = FX + (flip ? -gp[0] : gp[0]), gy = FY + gp[1], k = 0.5 * (1 - g.age / GHOST_LIFE);
+          const gm = mirror, r0 = (gc & 255) * k, g0 = ((gc >>> 8) & 255) * k, b0 = ((gc >>> 16) & 255) * k;
           for (let i = 0; i < gr.n; i++) {
             const px = gm ? gx - gr.xs[i] - 1 : gx + gr.xs[i], py = gy + gr.ys[i];
             if (px < 0 || py < 0 || px >= W || py >= H) continue;
@@ -370,7 +400,9 @@ export function createAct(mod, o = {}) {
         }
       };
       const shadow = () => {
-        const sy = FY, cx = FX + (flip ? -rx : rx), hw = 10 + (Math.abs(q.ffx - q.fbx) >> 1) - Math.min(8, Math.abs(ry) >> 1);
+        const fl = pin(qx, 0);
+        if (!fl) return;
+        const sy = FY + fl[1], cx = FX + (flip ? -fl[0] : fl[0]), hw = 10 + (Math.abs(q.ffx - q.fbx) >> 1) - Math.min(8, Math.abs(Math.round(qy)) >> 1);
         if (sy < 0 || sy >= H) return;
         for (let dy = 0; dy < 2; dy++)
           for (let x = -hw + dy * 2; x <= hw - dy * 2; x++) {
@@ -380,12 +412,13 @@ export function createAct(mod, o = {}) {
           }
       };
       if (!a.onBody && meta.camera) {
-        atDepth0(() => {
-          drawTargets();
+        const layers = targetLayers();
+        if (seen) layers.push([depthAt(qx), () => {
           shadow();
           drawGhosts();
           for (let i = 0; i < r.n; i++) paint(i, r.color[i]);
-        });
+        }]);
+        stand(layers);
         if (active) fx.draw(frame);
         drawStraw();
         drawDust();
@@ -413,16 +446,16 @@ export function createAct(mod, o = {}) {
       if (A.depth) B.depth.set(A.depth);
       const tt = meta.loop ? (t < 0 ? 0 : t % D) : clamp(t, 0, D), alpha = active ? actorAlphaOf(mod, tt, fx.options) : 1;
       // in 3D the standing body is at depth 0, so what the effect puts behind it stays behind it
-      drawActor(painterFor(B).place(FX, FY, flip), fx.options.actor ?? stockActor(2), alpha);
+      drawActor(painterFor(B).place(FX, FY, mirror), fx.options.actor ?? stockActor(2), alpha);
       if (active) fx.draw(B, meta.camera ? undefined : "front");
-      const follow = a.follow ?? 1, lean = (q.lean ?? 0) * follow, cr = (q.crouch ?? 0) * follow;
+      const follow = a.follow ?? 1, lean = (q.lean ?? 0) * follow * (mirror === flip ? 1 : -1), cr = (q.crouch ?? 0) * follow;
       // what's up on the body goes with it; what's on the floor stays on the floor
       const shiftOf = (ly) => {
         const k = clamp((-11 - ly) / 7, 0, 1), f = clamp((-1 - ly) / 6, 0, 1);
         return [Math.round(lean * k + rx * f), Math.round(cr * k + ry * f)];
       };
       const rest = (sx, sy) => {
-        const c = (flip ? FX - sx - 1 : sx - FX) + 12, r0 = sy - FY + 38;
+        const c = (mirror ? FX - sx - 1 : sx - FX) + 12, r0 = sy - FY + 38;
         return c >= 0 && r0 >= 0 && c < 24 && r0 < 38 && REST_MASK[r0 * 24 + c] === 1;
       };
       const C = frame.color, Ls = frame.light;
@@ -449,7 +482,7 @@ export function createAct(mod, o = {}) {
         }
       drawGhosts();
       const restIndex = (s) => {
-        const c = s % 24, r0 = (s / 24) | 0, sx = flip ? FX - (c - 12) - 1 : FX + c - 12, sy = FY + r0 - 38;
+        const c = s % 24, r0 = (s / 24) | 0, sx = mirror ? FX - (c - 12) - 1 : FX + c - 12, sy = FY + r0 - 38;
         return sx >= 0 && sy >= 0 && sx < W && sy < H ? sy * W + sx : -1;
       };
       for (let i = 0; i < r.n; i++) {
@@ -504,13 +537,25 @@ export function actTiming(mod) {
   };
 }
 
-/** The box an act needs in local space, so nothing gets cut off: { x0, y0, x1, y1 }, sampled over its poses. */
+/**
+ * The box an act needs in local space, so nothing gets cut off: { x0, y0, x1, y1, feet }, sampled over its poses; feet is
+ * the lowest the body or a target reaches. A 3D act's body and target can stand anywhere their x reaches as the camera
+ * turns, at its pitch: the box holds them from every side.
+ */
 export function actBounds(mod) {
-  const a = mod.act, [w, h] = mod.meta.size, [ox, oy] = mod.meta.origin;
-  let x0 = -ox, y0 = -oy, x1 = w - ox, y1 = h - oy;
+  const a = mod.act, [w, h] = mod.meta.size, [ox, oy] = mod.meta.origin, c = mod.meta.camera && { ...CAMERA, ...mod.meta.camera };
+  const cp = c ? Math.cos(c.pitch) : 1, sp = c ? Math.abs(Math.sin(c.pitch)) : 0, zm = c ? c.zoom : 1;
+  // where a point of the act's plane can be drawn: [x0, x1, y0, y1]
+  const reach = (x, y) => {
+    if (!c) return [x, x, y, y];
+    const r = Math.abs(x) * zm;
+    return [Math.floor(-r), Math.ceil(r), Math.floor((y * cp - Math.abs(x) * sp) * zm), Math.ceil((y * cp + Math.abs(x) * sp) * zm)];
+  };
+  let x0 = -ox, y0 = -oy, x1 = w - ox, y1 = h - oy, feet = 0;
   const see = (p) => {
-    const r = posed(p, posesOf(mod)), X = Math.round(p.x ?? 0), Y = Math.round(p.y ?? 0), a0 = r.x0, b = r.x1;
-    x0 = Math.min(x0, a0 + X - 1); x1 = Math.max(x1, b + X + 1); y0 = Math.min(y0, r.y0 + Y - 1); y1 = Math.max(y1, r.y1 + Y + 1);
+    const r = posed(p, posesOf(mod)), [xa, xb, ya, yb] = reach(Math.round(p.x ?? 0), Math.round(p.y ?? 0));
+    x0 = Math.min(x0, r.x0 + xa - 1); x1 = Math.max(x1, r.x1 + xb + 1); y0 = Math.min(y0, r.y0 + ya - 1); y1 = Math.max(y1, r.y1 + yb + 1);
+    feet = Math.max(feet, r.y1 + yb + 1);
   };
   const k = a?.poses;
   if (k) {
@@ -518,8 +563,10 @@ export function actBounds(mod) {
     for (const key of k) see(key[1]);
   } else see(STAND);
   for (const g of a?.targets ?? (a?.target ? [a.target] : [])) {
-    const tx = g.x ?? 66;
-    x0 = Math.min(x0, tx - 30); x1 = Math.max(x1, tx + 36); y0 = Math.min(y0, -56);
+    const [xa, xb, ya, yb] = reach(g.x ?? 66, 0);
+    x0 = Math.min(x0, xa - 30); x1 = Math.max(x1, xb + 36); y0 = Math.min(y0, ya - 56);
+    if (c) y1 = Math.max(y1, yb + 2);
+    feet = Math.max(feet, yb + 2);
   }
-  return { x0, y0, x1, y1 };
+  return { x0, y0, x1, y1, feet };
 }

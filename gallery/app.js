@@ -43,8 +43,8 @@ class Player {
     Object.assign(this, { aspect, pad });
     // an act needs room for the whole performance, not just the effect's canvas
     const acted = this.acted, b = acted ? { ...actBounds(this.fx.mod) } : null;
-    // an act happens above the floor: don't spend the tile on bricks
-    if (b) b.y1 = Math.min(b.y1, 22);
+    // an act happens above the floor: don't spend the tile on bricks, but keep in whatever stands nearer (3D)
+    if (b) b.y1 = Math.min(b.y1, Math.max(22, b.feet + 2));
     const [w, h] = acted ? [b.x1 - b.x0, b.y1 - b.y0] : this.fx.meta.size, [ox, oy] = acted ? [-b.x0, -b.y0] : this.fx.meta.origin;
     this.W = Math.ceil(Math.max(w * (acted ? Math.min(pad, 1.1) : pad), h * (acted ? Math.min(pad, 1.1) : pad) * aspect));
     this.H = Math.ceil(this.W / aspect);

@@ -189,8 +189,9 @@ function tick(dt) {
 }
 ```
 
-A 3D effect acts the same way: the body and the target stand at depth 0 and the effect sorts round them, so
-`3d/whirlwind` really sweeps behind the fighter and back across the front.
+A 3D effect acts the same way: the body and the target are placed through the effect's camera, so the hit lands on
+the target from every side, and the effect sorts round them: `3d/whirlwind` really sweeps behind the fighter and back
+across the front.
 
 **Got your own character?** The timing is plain data: read `slash.act`, or `meta.dotspace.act` in a sprite sheet's
 JSON (`windup`, `recovery`, `hits` with `t` and `freeze`, `poses`). Start your own wind-up animation that long before
