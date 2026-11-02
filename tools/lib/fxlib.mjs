@@ -331,7 +331,9 @@ export function spriteSheet(fx, r, name, { views, maps } = {}) {
   const img = canvas(cols * w, rows * h, [0, 0, 0, 0]);
   const json = { frames: [], meta: {} }, tags = [];
   for (const c of cells) {
-    img.paste(c.f.clear, w, h, c.x, c.y);
+    // cells don't overlap: copy each frame's RGBA as it is, so a PNG keeps straight alpha (pasting over transparency
+    // would multiply color by alpha and darken every translucent pixel)
+    for (let y = 0; y < h; y++) img.data.set(c.f.clear.subarray(y * w * 4, (y + 1) * w * 4), ((c.y + y) * cols * w + c.x) * 4);
     json.frames.push({
       filename: c.v.name ? `${name} ${c.v.name} ${c.i}` : `${name} ${c.i}`, frame: { x: c.x, y: c.y, w, h }, rotated: false, trimmed: false,
       spriteSourceSize: { x: 0, y: 0, w, h }, sourceSize: { w, h }, duration: Math.round(1000 / fps),
