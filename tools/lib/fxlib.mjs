@@ -4,7 +4,7 @@ import { readdirSync, existsSync, statSync, writeFileSync, mkdirSync } from "nod
 import { join, dirname, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
-import { createFrame, clearFrame, createFx, createAct, actBounds, actTiming, composite, painterFor, drawActor, stockActor, backdrop, actorAlphaOf } from "../../src/core/index.js";
+import { createFrame, clearFrame, createFx, createAct, actBounds, actTiming, composite, painterFor, drawActor, stockActor, backdrop, floorGrid, space, actorAlphaOf, CAMERA } from "../../src/core/index.js";
 import { rasterText, textWidth } from "../../src/core/font.js";
 import { encodePNG } from "./png.mjs";
 
@@ -48,16 +48,19 @@ export async function loadEffect(id, dir = FX_DIR) {
 
 /**
  * Render an effect's frames. Returns { w, h, fps, n, frames: [{ t, color: RGBA over the backdrop,
- * clear: RGBA on transparency }] }. opts: { fps, seed, bg, margin, options (passed to the effect) }.
+ * clear: RGBA on transparency, raw, light, depth }] }. opts: { fps, seed, bg, margin, camera (3D effects),
+ * options (passed to the effect) }.
  */
 export function renderFrames(fx, opts = {}) {
   const { meta } = fx, [W, H] = meta.size, [OX, OY] = meta.origin, m = opts.margin ?? 0;
   const w = W + m * 2, h = H + m * 2, fps = opts.fps ?? meta.fps;
   const n = Math.max(1, Math.round(meta.duration * fps) + (meta.loop ? 0 : 1));
-  const shown = createFrame(w, h, -m, -m), bare = createFrame(w, h, -m, -m);
+  const is3d = !!meta.camera, shown = createFrame(w, h, -m, -m, is3d), bare = createFrame(w, h, -m, -m, is3d);
   const bgKind = opts.bg ?? meta.bg;
-  const bg = bgKind === "none" ? null : backdrop(bgKind, w, h, OY + m);
-  const inst = createFx(fx.mod, { x: OX, y: OY, ...(opts.seed !== undefined ? { seed: opts.seed } : {}), ...(opts.options ?? {}) });
+  // a 3D effect's "ground" is a floor that turns with the camera, drawn with depth instead of a backdrop
+  const floor = is3d && bgKind === "ground";
+  const bg = bgKind === "none" ? null : backdrop(floor ? "dark" : bgKind, w, h, OY + m);
+  const inst = createFx(fx.mod, { x: OX, y: OY, ...(opts.seed !== undefined ? { seed: opts.seed } : {}), ...(opts.camera ? { camera: opts.camera } : {}), ...(opts.options ?? {}) });
   const actor = meta.actor && opts.actor !== false ? inst.options.actor ?? stockActor() : null;
   const fade = m === 0 && !isScreen(meta);
   const frames = [];
@@ -67,9 +70,17 @@ export function renderFrames(fx, opts = {}) {
     clearFrame(shown);
     clearFrame(bare);
     inst.draw(bare);
-    inst.draw(shown, "back");
-    if (actor) drawActor(painterFor(shown).place(OX, OY, !!opts.options?.flip), actor, actorAlphaOf(fx.mod, fx.meta.loop ? inst.t % fx.meta.duration : Math.min(inst.t, fx.meta.duration), inst.options));
-    inst.draw(shown, "front");
+    const actorAt = () => actor && drawActor(painterFor(shown).place(OX, OY, !!opts.options?.flip), actor, actorAlphaOf(fx.mod, fx.meta.loop ? inst.t % fx.meta.duration : Math.min(inst.t, fx.meta.duration), inst.options));
+    if (is3d) {
+      // depth sorts it all: the floor and the character go in first, so smoke in front of him stays in front
+      if (floor) floorGrid(space(painterFor(shown).place(OX, OY, !!opts.options?.flip), inst.options), Math.max(W, H) * 0.75);
+      actorAt();
+      inst.draw(shown);
+    } else {
+      inst.draw(shown, "back");
+      actorAt();
+      inst.draw(shown, "front");
+    }
     if (fade) (edgeFade(bare), edgeFade(shown));
     frames.push({
       t: i / fps,
@@ -77,9 +88,10 @@ export function renderFrames(fx, opts = {}) {
       clear: composite(bare, new Uint8ClampedArray(w * h * 4), null),
       raw: bare.color.slice(),
       light: bare.light.slice(),
+      depth: bare.depth?.slice(),
     });
   }
-  return { w, h, fps, n, frames, margin: m };
+  return { w, h, fps, n, frames, margin: m, camera: inst.options.camera ? { ...inst.options.camera } : undefined };
 }
 
 /**
@@ -89,11 +101,13 @@ export function renderFrames(fx, opts = {}) {
 export function renderAct(fx, opts = {}) {
   const { meta } = fx, fps = opts.fps ?? 60, b = actBounds(fx.mod), pad = opts.pad ?? 6;
   const w = b.x1 - b.x0 + pad * 2, h = b.y1 - b.y0 + pad * 2, X = pad - b.x0, Y = pad - b.y0;
-  const frame = createFrame(w, h), bgKind = opts.bg ?? meta.bg, bg = bgKind === "none" ? null : backdrop(bgKind, w, h, Y);
+  const floor = !!meta.camera && (opts.bg ?? meta.bg) === "ground";
+  const frame = createFrame(w, h, 0, 0, !!meta.camera), bgKind = opts.bg ?? meta.bg, bg = bgKind === "none" ? null : backdrop(floor ? "dark" : bgKind, w, h, Y);
   const act = createAct(fx.mod, { x: X, y: Y, ...(opts.seed !== undefined ? { seed: opts.seed } : {}), ...(opts.options ?? {}) });
   const frames = [], max = Math.round((opts.seconds ?? (meta.loop ? meta.duration * 2 - act.t : 8)) * fps);
   const show = () => {
     clearFrame(frame);
+    if (floor) floorGrid(space(painterFor(frame).place(X, Y, !!opts.options?.flip), act.fx.options), Math.max(w, h) * 0.75);
     act.draw(frame, { body: opts.actor !== false, target: opts.target !== false });
     const rgba = composite(frame, new Uint8ClampedArray(w * h * 4), bg), [sx, sy] = act.shake;
     frames.push({ t: act.t, frozen: act.frozen, color: sx || sy ? shifted(rgba, w, h, sx, sy) : rgba, clear: rgba });
@@ -217,28 +231,146 @@ export function contactSheet(fx, r, { max = 16, width = 1600, title, zoom } = {}
   return img.png();
 }
 
-/** A sprite sheet (transparent frames in a grid) plus Aseprite-style JSON that most engines import. */
-export function spriteSheet(fx, r, name) {
-  const { w, h, frames, fps } = r, n = frames.length;
-  const cols = Math.min(n, Math.max(1, Math.ceil(Math.sqrt((n * h) / w)))), rows = Math.ceil(n / cols);
+/**
+ * A 3D effect seen from `count` directions round it: [{ name, yaw, pitch, r }], r as renderFrames returns. The
+ * camera starts at opts.camera (over the effect's own) and turns round in equal steps; names count degrees from it.
+ */
+export function renderViews(fx, { count = 8, camera, ...opts } = {}) {
+  const cam = { ...CAMERA, ...fx.meta.camera, ...camera };
+  return Array.from({ length: count }, (_, i) => {
+    const deg = Math.round((i * 360) / count), yaw = cam.yaw + (deg * Math.PI) / 180;
+    return { name: `yaw${deg}`, yaw, pitch: cam.pitch, r: renderFrames(fx, { ...opts, camera: { ...cam, yaw } }) };
+  });
+}
+
+/** A contact sheet of views: one row per direction, the same moments in each column. Returns a PNG buffer. */
+export function viewSheet(fx, views, { cols = 8, width = 1600, zoom } = {}) {
+  const { w, h, n } = views[0].r, idx = pickFrames(n, cols);
+  const k = zoom ?? Math.max(1, Math.min(6, Math.floor((width - 120) / idx.length / (w + 6))));
+  const pad = 8, label = 96, head = 30, img = canvas(label + idx.length * (w * k + pad) + pad, head + views.length * (h * k + pad) + pad);
+  img.text(`${fx.id}  VIEWS  PITCH ${Math.round((views[0].pitch * 180) / Math.PI)}`, pad, 8, 3);
+  idx.forEach((fi, c) => img.text(views[0].r.frames[fi].t.toFixed(2), label + c * (w * k + pad), head - 12, 2, [140, 134, 160]));
+  views.forEach((v, row) => {
+    const y = head + row * (h * k + pad);
+    img.text(v.name.toUpperCase(), pad, y + 4, 2);
+    idx.forEach((fi, c) => img.paste(upscale(v.r.frames[fi].color, w, h, k), w * k, h * k, label + c * (w * k + pad), y));
+  });
+  return img.png();
+}
+
+// the maps an engine lights a sprite with, one RGBA image per frame
+function albedoOf(f, w, h) {
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    const c = f.raw[i];
+    out[i * 4] = c & 255; out[i * 4 + 1] = (c >>> 8) & 255; out[i * 4 + 2] = (c >>> 16) & 255; out[i * 4 + 3] = c >>> 24;
+  }
+  return out;
+}
+function emissionOf(f, w, h) {
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    const l = f.light[i];
+    out[i * 4] = l & 255; out[i * 4 + 1] = (l >>> 8) & 255; out[i * 4 + 2] = (l >>> 16) & 255; out[i * 4 + 3] = 255;
+  }
+  return out;
+}
+/**
+ * A tangent-space normal map (OpenGL convention, green up, as Godot and three.js read it). Pixels with a depth
+ * bend with it; translucent and 2D pixels bulge with their alpha, so smoke and flat sprites shade round. Empty
+ * pixels face the viewer.
+ */
+function normalOf(f, w, h) {
+  const H = new Float32Array(w * h), kind = new Uint8Array(w * h), out = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    const a = f.raw[i] >>> 24;
+    if (f.depth && Number.isFinite(f.depth[i])) (H[i] = -f.depth[i]), (kind[i] = 2);
+    else if (a) (H[i] = (a / 255) * 3), (kind[i] = 1);
+  }
+  const at = (i, x, y) => {
+    if (x < 0 || y < 0 || x >= w || y >= h) return kind[i] === 2 ? H[i] : 0;
+    const j = y * w + x;
+    return kind[j] === kind[i] ? H[j] : kind[i] === 2 ? H[i] : 0;
+  };
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      let nx = 0, ny = 0, nz = 1;
+      if (kind[i]) {
+        nx = -(at(i, x + 1, y) - at(i, x - 1, y)) / 2;
+        ny = (at(i, x, y + 1) - at(i, x, y - 1)) / 2;
+        const l = Math.hypot(nx, ny, 1);
+        (nx /= l), (ny /= l), (nz = 1 / l);
+      }
+      out[i * 4] = (nx * 0.5 + 0.5) * 255; out[i * 4 + 1] = (ny * 0.5 + 0.5) * 255; out[i * 4 + 2] = (nz * 0.5 + 0.5) * 255; out[i * 4 + 3] = 255;
+    }
+  return out;
+}
+function depthOf(f, w, h, near, far) {
+  const out = new Uint8ClampedArray(w * h * 4), span = far - near || 1;
+  for (let i = 0; i < w * h; i++) {
+    const d = f.depth[i];
+    if (!Number.isFinite(d)) continue;
+    const g = 255 * (1 - (d - near) / span);
+    out[i * 4] = out[i * 4 + 1] = out[i * 4 + 2] = g; out[i * 4 + 3] = 255;
+  }
+  return out;
+}
+
+/**
+ * A sprite sheet (transparent frames in a grid) plus Aseprite-style JSON that most engines import.
+ * views: renderViews' result for one row per direction, with a frame tag each. maps: also the albedo (color
+ * without glow), emission (glow alone), normal and, for 3D effects, depth sheets, laid out the same, so an engine
+ * can light the effect: returns them as pngs { albedo, emission, normal, depth }.
+ */
+export function spriteSheet(fx, r, name, { views, maps } = {}) {
+  const runs = views ?? [{ name: null, r }], { w, h, fps } = runs[0].r, n = runs[0].r.frames.length;
+  const cols = views ? n : Math.min(n, Math.max(1, Math.ceil(Math.sqrt((n * h) / w)))), rows = views ? views.length : Math.ceil(n / cols);
+  const cells = [];
+  runs.forEach((v, row) => v.r.frames.forEach((f, i) => cells.push({ f, i, v, x: (views ? i : i % cols) * w, y: (views ? row : Math.floor(i / cols)) * h })));
   const img = canvas(cols * w, rows * h, [0, 0, 0, 0]);
-  const json = { frames: [], meta: {} };
-  frames.forEach((f, i) => {
-    const x = (i % cols) * w, y = Math.floor(i / cols) * h;
-    img.paste(f.clear, w, h, x, y);
+  const json = { frames: [], meta: {} }, tags = [];
+  for (const c of cells) {
+    img.paste(c.f.clear, w, h, c.x, c.y);
     json.frames.push({
-      filename: `${name} ${i}`, frame: { x, y, w, h }, rotated: false, trimmed: false,
+      filename: c.v.name ? `${name} ${c.v.name} ${c.i}` : `${name} ${c.i}`, frame: { x: c.x, y: c.y, w, h }, rotated: false, trimmed: false,
       spriteSourceSize: { x: 0, y: 0, w, h }, sourceSize: { w, h }, duration: Math.round(1000 / fps),
     });
-  });
-  const m = fx.meta;
+  }
+  runs.forEach((v, row) => tags.push({ name: v.name ? `${name}@${v.name}` : name, from: row * n, to: row * n + n - 1, direction: "forward" }));
+  const m = fx.meta, out = {};
+  const info = { id: fx.id, name: m.name, fps, loop: m.loop, frames: n, frameSize: [w, h], pivot: m.origin, columns: cols, ...(fx.mod.act ? { act: actTiming(fx.mod) } : {}) };
+  if (views) info.views = views.map((v, row) => ({ name: v.name, yaw: +v.yaw.toFixed(4), pitch: +v.pitch.toFixed(4), row }));
+  if (m.camera) {
+    const { dist, ...camera } = { ...CAMERA, ...m.camera, ...runs[0].r.camera };
+    info.space = { axes: "x right, y down (up is -y), z towards the camera at yaw 0", unit: "px", camera: Number.isFinite(dist) ? { ...camera, dist } : camera };
+  }
+  if (maps) {
+    const sheetOf = (fn) => {
+      const im = canvas(cols * w, rows * h, [0, 0, 0, 0]);
+      for (const c of cells) {
+        const px = fn(c.f);
+        for (let y = 0; y < h; y++) im.data.set(px.subarray(y * w * 4, (y + 1) * w * 4), ((c.y + y) * cols * w + c.x) * 4);
+      }
+      return im.png();
+    };
+    out.albedo = sheetOf((f) => albedoOf(f, w, h));
+    out.emission = sheetOf((f) => emissionOf(f, w, h));
+    out.normal = sheetOf((f) => normalOf(f, w, h));
+    info.maps = { albedo: `${name}.albedo.png`, emission: `${name}.emission.png`, normal: `${name}.normal.png` };
+    let near = Infinity, far = -Infinity;
+    for (const c of cells) if (c.f.depth) for (const d of c.f.depth) if (Number.isFinite(d)) (near = Math.min(near, d)), (far = Math.max(far, d));
+    if (near <= far) {
+      out.depth = sheetOf((f) => depthOf(f, w, h, near, far));
+      info.maps.depth = `${name}.depth.png`;
+      info.depth = { near: +near.toFixed(2), far: +far.toFixed(2), encoding: "white is near, black is far, alpha 0 where nothing solid" };
+    }
+  }
   json.meta = {
-    app: "https://github.com/patch-gg/pixelfx", version: "1", image: `${name}.png`, format: "RGBA8888",
-    size: { w: cols * w, h: rows * h }, scale: "1",
-    frameTags: [{ name: name, from: 0, to: n - 1, direction: "forward" }],
-    pixelfx: { id: fx.id, name: m.name, fps, loop: m.loop, frames: n, frameSize: [w, h], pivot: m.origin, columns: cols, ...(fx.mod.act ? { act: actTiming(fx.mod) } : {}) },
+    app: "https://github.com/SeuPut0705/dotspace", version: "1", image: `${name}.png`, format: "RGBA8888",
+    size: { w: cols * w, h: rows * h }, scale: "1", frameTags: tags, dotspace: info,
   };
-  return { png: img.png(), json };
+  return { png: img.png(), json, ...out };
 }
 
 /** Animated preview through ffmpeg (GIF or MP4), scaled k times. Returns false if ffmpeg is missing. */

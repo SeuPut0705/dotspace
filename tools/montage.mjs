@@ -10,7 +10,7 @@
 
 import { join } from "node:path";
 import { allIds, loadEffect, writeVideo, save } from "./lib/fxlib.mjs";
-import { createFrame, clearFrame, createFx, composite, backdrop, drawActor, painterFor, stockActor, rand, actorAlphaOf, createAct, actBounds } from "../src/core/index.js";
+import { createFrame, clearFrame, createFx, composite, backdrop, floorGrid, space, drawActor, painterFor, stockActor, rand, actorAlphaOf, createAct, actBounds } from "../src/core/index.js";
 import { categories } from "../src/fx/categories.js";
 import { encodePNG } from "./lib/png.mjs";
 
@@ -41,19 +41,21 @@ ids = ids.slice(0, cols * rows);
 const W = cols * CW + (cols + 1) * gap, H = rows * CH + (rows + 1) * gap;
 const cells = [], cellPlace = {};
 for (const [i, id] of ids.entries()) {
-  const fx = await loadEffect(id), m = fx.meta, frame = createFrame(CW, CH);
+  const fx = await loadEffect(id), m = fx.meta, frame = createFrame(CW, CH, 0, 0, !!m.camera);
+  // a 3D effect on "ground" stands on a floor that turns with its camera, drawn in each frame
+  const kind = flags.bg ?? m.bg, floor = !!m.camera && kind === "ground";
   // a canvas that fits is centred; a bigger one is cropped round its anchor, keeping a strip of floor in view
   const [w, h] = m.size, [ox, oy] = m.origin;
   const x = w <= CW ? Math.floor((CW - w) / 2) + ox : Math.round(CW / 2 + ox - w / 2);
   const y = h <= CH ? Math.floor((CH - h) / 2) + oy : CH - Math.min(h - oy, Math.round(CH * 0.16));
-  const bg = backdrop(flags.bg ?? m.bg, CW, CH, y);
+  const bg = backdrop(floor ? "dark" : kind, CW, CH, y);
   if (fx.mod.act) {
     // an act stands on the floor near the bottom of its cell, with the whole performance in view if it fits
     const b = actBounds(fx.mod), bw = b.x1 - b.x0;
     Object.assign(cellPlace, { x: bw <= CW ? Math.floor((CW - bw) / 2) - b.x0 : Math.round(CW / 2 + (-b.x0 - bw / 2)), y: CH - 16 });
   }
   const acted = !!fx.mod.act, X = acted ? cellPlace.x : x, Y = acted ? cellPlace.y : y;
-  cells.push({ id, fx, m, acted, frame, x: X, y: Y, bg: acted ? backdrop(flags.bg ?? m.bg, CW, CH, Y) : bg, cx: gap + (i % cols) * (CW + gap), cy: gap + Math.floor(i / cols) * (CH + gap), delay: m.loop ? 0 : rand(i, 7) * stagger, inst: null, born: 0 });
+  cells.push({ id, fx, m, acted, frame, floor, x: X, y: Y, bg: acted ? backdrop(floor ? "dark" : kind, CW, CH, Y) : bg, cx: gap + (i % cols) * (CW + gap), cy: gap + Math.floor(i / cols) * (CH + gap), delay: m.loop ? 0 : rand(i, 7) * stagger, inst: null, born: 0 });
 }
 const n = Math.round(seconds * fps), frames = [], buf = new Uint8ClampedArray(CW * CH * 4);
 for (let f = 0; f < n; f++) {
@@ -67,6 +69,7 @@ for (let f = 0; f < n; f++) {
         c.ended = Infinity;
       }
       clearFrame(c.frame);
+      if (c.floor) floorGrid(space(painterFor(c.frame).place(c.x, c.y), c.act.fx.options), Math.max(CW, CH) * 0.75);
       if (local >= 0) {
         c.act.draw(c.frame);
         c.act.update(1 / fps);
@@ -88,12 +91,14 @@ for (let f = 0; f < n; f++) {
       c.born = Math.max(0, local);
     }
     clearFrame(c.frame);
+    if (c.floor) floorGrid(space(painterFor(c.frame).place(c.x, c.y), c.inst.options), Math.max(CW, CH) * 0.75);
     if (local >= 0) {
       const tt = local - c.born;
       while (c.inst.t < tt - 1e-6) c.inst.update(1 / fps);
-      c.inst.draw(c.frame, "back");
-      if (c.m.actor) drawActor(painterFor(c.frame).place(c.x, c.y), c.inst.options.actor ?? stockActor(), actorAlphaOf(c.fx.mod, c.m.loop ? c.inst.t % c.m.duration : Math.min(c.inst.t, c.m.duration), c.inst.options));
-      c.inst.draw(c.frame, "front");
+      const body = () => c.m.actor && drawActor(painterFor(c.frame).place(c.x, c.y), c.inst.options.actor ?? stockActor(), actorAlphaOf(c.fx.mod, c.m.loop ? c.inst.t % c.m.duration : Math.min(c.inst.t, c.m.duration), c.inst.options));
+      // a 3D effect sorts itself round the character by depth, so he goes in first
+      if (c.m.camera) body(), c.inst.draw(c.frame);
+      else c.inst.draw(c.frame, "back"), body(), c.inst.draw(c.frame, "front");
     }
     composite(c.frame, buf, c.bg);
     for (let yy = 0; yy < CH; yy++) out.set(buf.subarray(yy * CW * 4, (yy + 1) * CW * 4), ((c.cy + yy) * W + c.cx) * 4);

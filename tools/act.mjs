@@ -23,7 +23,7 @@ for (const id of ids) {
   if (flags.sheet) {
     const r = renderAct(fx, { fps: fx.meta.fps, bg: "none", target: !flags["no-target"], hold: 0 }), name = id.split("/")[1], base = join(ROOT, "records", "act", id.replace("/", "-"));
     const s = spriteSheet(fx, r, name);
-    s.json.meta.pixelfx.pivot = r.pivot;
+    s.json.meta.dotspace.pivot = r.pivot;
     save(`${base}.sheet.png`, s.png);
     save(`${base}.sheet.json`, JSON.stringify(s.json, null, 1));
     console.log(`${id}  ${r.n} frames of ${r.w} x ${r.h}  ->  ${base}.sheet.png`);
