@@ -227,7 +227,7 @@ export function createAct(mod, o = {}) {
     last = q;
     return q;
   };
-  let scratch = null;
+  let scratch = null, snap = null;
   const scratchFor = (f) => {
     if (!scratch || scratch.a.w !== f.w || scratch.a.h !== f.h) scratch = { a: createFrame(f.w, f.h, f.ox, f.oy), b: createFrame(f.w, f.h, f.ox, f.oy) };
     return scratch;
@@ -315,6 +315,21 @@ export function createAct(mod, o = {}) {
         }
       };
       const FX = X - (frame.ox | 0), FY = Y - (frame.oy | 0);
+      // a 3D effect: what paint() puts down (the target, the body) stands at depth 0, and the effect sorts round it
+      const atDepth0 = (paint) => {
+        if (!frame.depth) frame.depth = new Float32Array(W * H).fill(Infinity);
+        const C = frame.color, Dp = frame.depth;
+        if (!snap || snap.length !== C.length) snap = new Uint32Array(C.length);
+        snap.set(C);
+        paint();
+        for (let i = 0; i < C.length; i++) if (C[i] !== snap[i] && C[i] >>> 24 === 255) Dp[i] = 0;
+      };
+      if (!body && meta.camera) {
+        atDepth0(drawTargets);
+        if (active) fx.draw(frame);
+        drawStraw();
+        return;
+      }
       if (!body) {
         if (active) fx.draw(frame, "back");
         drawTargets();
@@ -354,6 +369,18 @@ export function createAct(mod, o = {}) {
             frame.color[i] = (frame.color[i] & 0xffffff) | (Math.max(frame.color[i] >>> 24, 110) << 24);
           }
       };
+      if (!a.onBody && meta.camera) {
+        atDepth0(() => {
+          drawTargets();
+          shadow();
+          drawGhosts();
+          for (let i = 0; i < r.n; i++) paint(i, r.color[i]);
+        });
+        if (active) fx.draw(frame);
+        drawStraw();
+        drawDust();
+        return;
+      }
       if (!a.onBody) {
         // the effect doesn't care about the body: back, body, front
         if (active) fx.draw(frame, "back");

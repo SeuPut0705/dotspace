@@ -24,6 +24,8 @@ export class Painter {
     this.w = f.w; this.h = f.h; this.ox = f.ox | 0; this.oy = f.oy | 0; this.C = f.color; this.L = f.light;
     this.tx = 0; this.ty = 0; this.fx = 1; this.cs = 1; this.sn = 0;
     this.fade = 1; this.lightK = 1; this.layer = "front";
+    // depth (src/core/space.js): with a depth buffer, a pixel nearer than z hides what's drawn at z; 2D drawing is at 0
+    this.D = f.depth ?? null; this.z = 0;
     return this;
   }
 
@@ -49,7 +51,14 @@ export class Painter {
     if (a < 1 && a <= BAYER[((sy & 3) << 2) | (sx & 3)]) return;
     const x = sx - this.ox, y = sy - this.oy;
     if (x < 0 || y < 0 || x >= this.w || y >= this.h) return;
-    this.C[y * this.w + x] = c;
+    const i = y * this.w + x;
+    if (this.D) {
+      // the buffer holds float32: compare in float32 too, or a pixel can hide behind itself
+      const z = Math.fround(this.z);
+      if (z > this.D[i]) return;
+      this.D[i] = z;
+    }
+    this.C[i] = c;
   }
   add(sx, sy, c, k = 1) {
     k *= this.fade * this.lightK;
@@ -57,6 +66,7 @@ export class Painter {
     const x = sx - this.ox, y = sy - this.oy;
     if (x < 0 || y < 0 || x >= this.w || y >= this.h) return;
     const i = y * this.w + x, d = this.L[i];
+    if (this.D && Math.fround(this.z) > this.D[i]) return;
     const r = Math.min(255, (d & 255) + (c & 255) * k) | 0;
     const g = Math.min(255, ((d >>> 8) & 255) + ((c >>> 8) & 255) * k) | 0;
     const b = Math.min(255, ((d >>> 16) & 255) + ((c >>> 16) & 255) * k) | 0;
@@ -72,6 +82,7 @@ export class Painter {
     const x = sx - this.ox, y = sy - this.oy;
     if (x < 0 || y < 0 || x >= this.w || y >= this.h) return;
     const i = y * this.w + x, d = this.C[i], da = (d >>> 24) / 255, oa = a + da * (1 - a), k = a / oa;
+    if (this.D && Math.fround(this.z) > this.D[i]) return;
     const ch = (s) => ((((c >>> s) & 255) * k + ((d >>> s) & 255) * (1 - k)) & 255);
     this.C[i] = (((oa * 255) & 255) << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0);
   }

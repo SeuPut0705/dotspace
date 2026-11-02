@@ -39,3 +39,21 @@ export function backdrop(kind, w, h, groundY = h) {
     }
   return out;
 }
+
+/**
+ * The floor for a 3D effect's preview, drawn through a Space (src/core/space.js): stone tiles on the plane y = 0
+ * that turn and tilt with the camera and fade out at radius R, with depth, so things below the floor hide.
+ * Its depth is pushed back by about a pixel's worth of floor, so whatever lies on it (cracks, embers, settled
+ * debris) never sinks into it.
+ */
+export function floorGrid(q, R = 120) {
+  // a pixel's worth of floor in depth, at the smallest scale the floor is drawn at (its far edge, in perspective)
+  const kmin = q.zoom * (q.dist === Infinity ? 1 : q.dist / (q.dist + R));
+  const bias = 1 + Math.min(40, 0.75 / (Math.max(0.02, Math.tan(Math.abs(q.camera.pitch))) * kmin));
+  q.plane(0, 0, 0, null, R, (u, v, out) => {
+    const tx = Math.floor(u / 12), tz = Math.floor(v / 12), fu = u - tx * 12, fv = v - tz * 12;
+    const d = Math.hypot(u, v) / R;
+    out.c = fu < 1 || fv < 1 ? MORTAR : (tx + tz) & 1 ? FLOOR : FLOOR_DARK;
+    out.a = d < 0.55 ? 1 : 1 - (d - 0.55) / 0.45;
+  }, bias);
+}

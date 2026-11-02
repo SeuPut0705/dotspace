@@ -23,10 +23,11 @@ export const PF = { SMOKES: 1, BIG: 2, BACK: 4 };
 const SOFT = new Set([P.VAPOUR, P.DUST, P.SMOKE]);
 
 /**
- * A particle system. opts: { seed, ground: (x) => floor y (local px; sparks bounce on it), sparks: [head..tail]
+ * A particle system. opts: { seed, ground: (x, z) => floor y (local px; sparks bounce on it), sparks: [head..tail]
  * colors for SPARK, haze: color vapour glows with }.
  * spawn(kind, x, y, vx, vy, life, color, size); update(dt); draw(p, layer): "back" draws the soft kinds
  * (vapour, dust, smoke), "front" the rest, nothing for both.
+ * In 3D, spawn3(kind, x, y, z, vx, vy, vz, ...) and draw(space): z drifts and drags like x, depth sorts the layers.
  */
 export class Particles {
   constructor(opts = {}) {
@@ -36,11 +37,15 @@ export class Particles {
     this.ground = opts.ground ?? (() => Infinity);
     this.sparks = (opts.sparks ?? HOT).map(hex);
     this.haze = opts.haze === undefined ? null : hex(opts.haze);
-    this.onLand = opts.onLand ?? null; // (x, y) when a BRAND hits the floor
+    this.onLand = opts.onLand ?? null; // (x, y, z) when a BRAND hits the floor
   }
   /** delay: seconds before it appears; flag: PF bits. col 0 lets FIRE and SMOKE use their own ramps. */
   spawn(k, x, y, vx, vy, life, col = WHITE, size = 1, delay = 0, flag = 0) {
-    this.list.push({ k, x, y, vx, vy, life, max: life, col: col ? hex(col) : 0, size, seed: this.R.next() * 100, delay, flag });
+    this.spawn3(k, x, y, 0, vx, vy, 0, life, col, size, delay, flag);
+  }
+  /** spawn in 3D: z towards the viewer, as in src/core/space.js. */
+  spawn3(k, x, y, z, vx, vy, vz, life, col = WHITE, size = 1, delay = 0, flag = 0) {
+    this.list.push({ k, x, y, z, vx, vy, vz, life, max: life, col: col ? hex(col) : 0, size, seed: this.R.next() * 100, delay, flag });
   }
   get count() {
     return this.list.length;
@@ -57,7 +62,7 @@ export class Particles {
       if ((p.life -= dt) <= 0) {
         if (p.k === P.FIRE && p.flag & PF.SMOKES) {
           const big = p.flag & PF.BIG;
-          this.spawn(P.SMOKE, p.x, p.y, p.vx * 0.6, p.vy * 0.6 - 6, big ? R.range(1.3, 2.3) : R.range(0.8, 1.4), 0, p.size * (big ? 0.85 : 0.7), 0, big ? PF.BIG : 0);
+          this.spawn3(P.SMOKE, p.x, p.y, p.z, p.vx * 0.6, p.vy * 0.6 - 6, p.vz * 0.6, big ? R.range(1.3, 2.3) : R.range(0.8, 1.4), 0, p.size * (big ? 0.85 : 0.7), 0, big ? PF.BIG : 0);
         }
         this.list.splice(i, 1);
         continue;
@@ -66,18 +71,22 @@ export class Particles {
         case P.FIRE:
           p.vy -= 95 * dt;
           p.vx += Math.sin(t * 17 + p.seed) * 30 * dt;
+          p.vz += Math.cos(t * 13 + p.seed) * 30 * dt;
           p.vx -= p.vx * 5 * dt;
+          p.vz -= p.vz * 5 * dt;
           p.vy -= p.vy * 3.2 * dt;
           break;
         case P.GRIT: {
           p.vy += GRAVITY * dt;
           p.vx -= p.vx * 0.8 * dt;
-          const g = this.ground(p.x), ny = p.y + p.vy * dt;
+          p.vz -= p.vz * 0.8 * dt;
+          const g = this.ground(p.x, p.z), ny = p.y + p.vy * dt;
           p.x += p.vx * dt;
+          p.z += p.vz * dt;
           if (p.vy > 0 && p.y <= g && ny >= g) {
             p.y = g - 0.25;
-            if (p.vy > 130 && R.chance(0.4)) (p.vy = -p.vy * 0.25), (p.vx = p.vx * 0.5 + R.range(-10, 10));
-            else (p.vx = p.vy = 0), (p.life = Math.min(p.life, 0.5));
+            if (p.vy > 130 && R.chance(0.4)) (p.vy = -p.vy * 0.25), (p.vx = p.vx * 0.5 + R.range(-10, 10)), (p.vz *= 0.5);
+            else (p.vx = p.vy = p.vz = 0), (p.life = Math.min(p.life, 0.5));
           } else p.y = ny;
           continue;
         }
@@ -85,11 +94,13 @@ export class Particles {
           // a burning chunk: arcs, trails flame, and starts a little fire where it lands
           p.vy += GRAVITY * 0.8 * dt;
           p.vx -= p.vx * 0.9 * dt;
-          if (R.chance(0.9 * Math.min(1, dt * 60))) this.spawn(P.FIRE, p.x, p.y, p.vx * 0.1 + R.range(-7, 7), p.vy * 0.1 - 10, R.range(0.16, 0.32), 0, R.range(0.9, 1.7) * (0.5 + (p.life / p.max) * 0.6), 0, R.chance(0.4) ? PF.SMOKES : 0);
-          const g = this.ground(p.x), ny = p.y + p.vy * dt;
+          p.vz -= p.vz * 0.9 * dt;
+          if (R.chance(0.9 * Math.min(1, dt * 60))) this.spawn3(P.FIRE, p.x, p.y, p.z, p.vx * 0.1 + R.range(-7, 7), p.vy * 0.1 - 10, p.vz * 0.1, R.range(0.16, 0.32), 0, R.range(0.9, 1.7) * (0.5 + (p.life / p.max) * 0.6), 0, R.chance(0.4) ? PF.SMOKES : 0);
+          const g = this.ground(p.x, p.z), ny = p.y + p.vy * dt;
           p.x += p.vx * dt;
+          p.z += p.vz * dt;
           if (p.vy > 0 && p.y <= g && ny >= g) {
-            this.onLand?.(p.x, g);
+            this.onLand?.(p.x, g, p.z);
             this.list.splice(i, 1);
           } else p.y = ny;
           continue;
@@ -97,155 +108,192 @@ export class Particles {
         case P.SPARK: {
           p.vy += GRAVITY * 0.45 * dt;
           p.vx -= p.vx * 2.2 * dt;
+          p.vz -= p.vz * 2.2 * dt;
           p.vy -= p.vy * 2.2 * dt;
-          const g = this.ground(p.x), ny = p.y + p.vy * dt;
+          const g = this.ground(p.x, p.z), ny = p.y + p.vy * dt;
           p.x += p.vx * dt;
-          if (p.vy > 0 && p.y <= g && ny >= g) (p.vy = -p.vy * 0.45), (p.vx *= 0.7), (p.y = g - 0.25);
+          p.z += p.vz * dt;
+          if (p.vy > 0 && p.y <= g && ny >= g) (p.vy = -p.vy * 0.45), (p.vx *= 0.7), (p.vz *= 0.7), (p.y = g - 0.25);
           else p.y = ny;
           continue;
         }
-        case P.STREAK: (p.vx += p.vx * 3 * dt), (p.vy += p.vy * 3 * dt); break;
+        case P.STREAK: (p.vx += p.vx * 3 * dt), (p.vy += p.vy * 3 * dt), (p.vz += p.vz * 3 * dt); break;
         case P.FLAKE:
           p.vx -= p.vx * 2.2 * dt;
+          p.vz -= p.vz * 2.2 * dt;
           p.vy -= p.vy * 2.2 * dt - 35 * dt;
           p.x += Math.sin(this.t * 2.5 + p.seed) * 7 * dt;
+          if (p.vz) p.z += Math.cos(this.t * 2.1 + p.seed) * 7 * dt;
           break;
         case P.EMBER:
           p.vy += (-30 + Math.sin(t * 3 + p.seed) * 20) * dt;
           p.vx += Math.cos(t * 2.3 + p.seed) * 45 * dt;
+          p.vz += Math.sin(t * 1.9 + p.seed) * 45 * dt;
           p.vx -= p.vx * 1.6 * dt;
+          p.vz -= p.vz * 1.6 * dt;
           p.vy -= p.vy * 1.6 * dt;
           break;
         case P.SMOKE: {
           const big = p.flag & PF.BIG;
           p.vy -= (big ? 23 : 16) * dt;
           p.vx += Math.sin(t * 1.3 + p.seed) * 8 * dt;
+          p.vz += Math.cos(t * 1.1 + p.seed) * 8 * dt;
           p.vx -= p.vx * 1.6 * dt;
+          p.vz -= p.vz * 1.6 * dt;
           p.vy -= p.vy * 1.2 * dt;
           break;
         }
-        case P.MOTE: p.vx -= p.vx * 0.6 * dt; p.vy -= p.vy * 0.6 * dt; break;
+        case P.MOTE: p.vx -= p.vx * 0.6 * dt; p.vy -= p.vy * 0.6 * dt; p.vz -= p.vz * 0.6 * dt; break;
         default: {
           const drag = SOFT.has(p.k) ? 4 : 1.6;
           p.vx -= p.vx * drag * dt;
+          p.vz -= p.vz * drag * dt;
           p.vy -= p.vy * drag * dt + 5 * dt;
         }
       }
       p.x += p.vx * dt;
       p.y += p.vy * dt;
+      p.z += p.vz * dt;
     }
   }
   draw(p, layer) {
+    if (p.project) return this.draw3(p);
     for (const q of this.list) {
       if (q.delay > 0) continue;
       if (layer && (SOFT.has(q.k) || q.flag & PF.BACK ? "back" : "front") !== layer) continue;
-      const k = q.life / q.max, x = q.x, y = q.y, sp = Math.hypot(q.vx, q.vy) || 1, ux = q.vx / sp, uy = q.vy / sp;
-      switch (q.k) {
-        case P.SPARK: {
-          const S = this.sparks, head = k > 0.6 ? S[0] : k > 0.3 ? S[1] : S[2], len = Math.min(9, 1 + sp * 0.022);
-          p.line(x - ux * len, y - uy * len, x - ux * len * 0.4, y - uy * len * 0.4, k > 0.5 ? head : S[S.length - 1]);
-          p.line(x - ux * len * 0.45, y - uy * len * 0.45, x, y, head);
-          p.glow(x, y, 3, head, 0.45 * k);
+      this.drawOne(p, q, q.x, q.y, q.vx, q.vy, q.size);
+    }
+  }
+  /**
+   * Through a Space: depth decides what's in front, so layers don't apply. Solid kinds nearest first (so a glow
+   * behind one never lights it), then soft ones far to near. Each is drawn flat, as thick as it is big, so one
+   * lying on the floor doesn't sink into it.
+   */
+  draw3(s) {
+    const solid = [], soft = [], e = 1 / 60;
+    for (const q of this.list) {
+      if (q.delay > 0 || !s.project(q.x, q.y, q.z)) continue;
+      const it = { q, x: s.x, y: s.y, d: s.d, k: s.k, vx: 0, vy: 0 };
+      if (s.project(q.x + q.vx * e, q.y + q.vy * e, q.z + q.vz * e)) (it.vx = (s.x - it.x) / e), (it.vy = (s.y - it.y) / e);
+      (SOFT.has(q.k) ? soft : solid).push(it);
+    }
+    solid.sort((a, b) => a.d - b.d);
+    soft.sort((a, b) => b.d - a.d);
+    const p = s.p, z0 = p.z;
+    for (const it of solid.concat(soft)) {
+      p.z = it.d - Math.max(1.5, it.q.size);
+      this.drawOne(p, it.q, it.x, it.y, it.vx, it.vy, it.q.size * it.k);
+    }
+    p.z = z0;
+  }
+  drawOne(p, q, x, y, vx, vy, size) {
+    const k = q.life / q.max, sp = Math.hypot(vx, vy) || 1, ux = vx / sp, uy = vy / sp;
+    switch (q.k) {
+      case P.SPARK: {
+        const S = this.sparks, head = k > 0.6 ? S[0] : k > 0.3 ? S[1] : S[2], len = Math.min(9, 1 + sp * 0.022);
+        p.line(x - ux * len, y - uy * len, x - ux * len * 0.4, y - uy * len * 0.4, k > 0.5 ? head : S[S.length - 1]);
+        p.line(x - ux * len * 0.45, y - uy * len * 0.45, x, y, head);
+        p.glow(x, y, 3, head, 0.45 * k);
+        break;
+      }
+      case P.MOTE: {
+        const len = Math.min(16, 0.5 + sp * 0.026) * size, a = k < 0.35 ? k / 0.35 : 1;
+        p.line(x - ux * len, y - uy * len, x - ux * len * 0.35, y - uy * len * 0.35, scale(q.col, 0.55), a);
+        p.line(x - ux * len * 0.4, y - uy * len * 0.4, x, y, q.col, a);
+        p.glow(x, y, 2.5 + size, q.col, 0.4 * k);
+        break;
+      }
+      case P.STREAK: {
+        const L = clamp(sp / 30, 1, 7);
+        for (let d = L; d >= 0; d -= 0.5) p.dot(x - ux * d, y - uy * d, d < 1 ? WHITE : d < L * 0.5 ? q.col : scale(q.col, 0.6), d < L * 0.5 ? 1 : 1.2 - d / L);
+        p.glow(x, y, 4, q.col, 0.4);
+        break;
+      }
+      case P.FLAKE: {
+        const a = Math.min(1, k * 3);
+        p.dot(x, y, q.col, a);
+        if (size > 1.3) for (const [dx, dy] of CROSS) p.dot(x + dx, y + dy, scale(q.col, 0.8), a * 0.8);
+        break;
+      }
+      case P.VAPOUR: {
+        const r = size * (0.6 + (1 - k) * 0.9);
+        p.disc(x, y, r, q.col, Math.pow(k, 1.3) * 0.45);
+        if (this.haze) p.glow(x, y, r * 1.8, this.haze, 0.16 * k);
+        break;
+      }
+      case P.DUST: p.disc(x, y, size * (0.6 + (1 - k) * 0.9), q.col, Math.pow(k, 1.3) * 0.7); break;
+      case P.SMOKE: {
+        // three soft discs: a body, a denser core sitting low, a lit cap while it's young
+        const age = 1 - k, big = q.flag & PF.BIG;
+        const r = size * (0.65 + Math.min(1, age * 2.5) * 0.45 + age * (big ? 0.5 : 0.4));
+        const a = Math.min(1, age * 12) * Math.min(1, k * 2.4) * (big ? 0.7 : 0.58);
+        const c = q.col ? mix(q.col, rampAt(SMOKE_RAMP, age), age) : rampAt(SMOKE_RAMP, age * 1.05);
+        p.disc(x, y, r, c, a * 0.45);
+        p.disc(x + r * 0.05, y + r * 0.06, r * 0.74, c, a * 0.62);
+        if (age < 0.5) p.disc(x - r * 0.22, y - r * 0.3, r * 0.5, mix(c, WHITE, 0.12), a * 0.4 * (1 - age * 2));
+        break;
+      }
+      case P.FIRE: {
+        // a ball of flame that cools down the ramp as it rises: a darker rim, a lit core, a tongue on top
+        const age = 1 - k, heat = Math.min(0.999, Math.pow(age, 0.62) + (q.seed % 1) * 0.1), F = FIRE_RAMP, n = F.length;
+        const idx = Math.min(n - 2, Math.floor(heat * (n - 1)));
+        const r = size * (0.55 + 0.45 * Math.min(1, age * 7)) * (1 - age * 0.55), c = F[idx];
+        if (idx >= n - 2) p.disc(x, y, r, c, Math.min(1, k * 3) * 0.85);
+        else {
+          p.circle(x, y, r, F[Math.min(n - 1, idx + 2)]);
+          p.circle(x - r * 0.16, y - r * 0.22, r * 0.78, c);
+          if (r > 1.6) p.circle(x, y - r * 0.9, r * 0.42, c);
+          if (idx <= 3 && r > 1.8) p.circle(x - r * 0.28, y - r * 0.34, r * 0.36, F[Math.max(0, idx - 1)]);
+          if (idx < 6) p.glow(x, y, r * 2.4 + 2, c, 0.18 * k);
+        }
+        break;
+      }
+      case P.BRAND:
+        p.circle(x, y, 1.6, HOT[3]);
+        p.px(x, y, Math.sin(this.t * 40 + q.seed) > 0 ? HOT[0] : HOT[1]);
+        p.px(x + 1, y, HOT[1]);
+        p.glow(x, y, 7, HOT[2], 0.45);
+        break;
+      case P.GRIT:
+        if (k > 0.25 || k * 4 > 0.5) {
+          p.px(x, y, q.col);
+          if (size >= 2) p.px(x + 1, y, q.col), p.px(x, y + 1, scale(q.col, 0.8)), p.px(x + 1, y + 1, scale(q.col, 0.7));
+        }
+        break;
+      case P.EMBER: {
+        const c = k > 0.6 ? this.sparks[0] : k > 0.3 ? this.sparks[1] : this.sparks[2];
+        if (k < 0.25 && Math.sin(this.t * 40 + q.seed) < 0) break;
+        p.px(x, y, c);
+        if (size > 1.5) p.px(x, y + 1, this.sparks[this.sparks.length - 1]);
+        p.glow(x, y, 3 + size, c, 0.35 * k);
+        break;
+      }
+      default: {
+        // STAR: a twinkling cross, arms set by size
+        const tw = 0.6 + 0.4 * Math.sin(this.t * (8 + (q.seed % 5)) + q.seed);
+        if (size < 1) {
+          if (tw * k > 0.25) p.px(x, y, tw > 0.8 ? WHITE : q.col);
+          p.glow(x, y, 3, q.col, 0.4 * k * tw);
           break;
         }
-        case P.MOTE: {
-          const len = Math.min(16, 0.5 + sp * 0.026) * q.size, a = k < 0.35 ? k / 0.35 : 1;
-          p.line(x - ux * len, y - uy * len, x - ux * len * 0.35, y - uy * len * 0.35, scale(q.col, 0.55), a);
-          p.line(x - ux * len * 0.4, y - uy * len * 0.4, x, y, q.col, a);
-          p.glow(x, y, 2.5 + q.size, q.col, 0.4 * k);
-          break;
-        }
-        case P.STREAK: {
-          const L = clamp(sp / 30, 1, 7);
-          for (let d = L; d >= 0; d -= 0.5) p.dot(x - ux * d, y - uy * d, d < 1 ? WHITE : d < L * 0.5 ? q.col : scale(q.col, 0.6), d < L * 0.5 ? 1 : 1.2 - d / L);
-          p.glow(x, y, 4, q.col, 0.4);
-          break;
-        }
-        case P.FLAKE: {
-          const a = Math.min(1, k * 3);
-          p.dot(x, y, q.col, a);
-          if (q.size > 1.3) for (const [dx, dy] of CROSS) p.dot(x + dx, y + dy, scale(q.col, 0.8), a * 0.8);
-          break;
-        }
-        case P.VAPOUR: {
-          const r = q.size * (0.6 + (1 - k) * 0.9);
-          p.disc(x, y, r, q.col, Math.pow(k, 1.3) * 0.45);
-          if (this.haze) p.glow(x, y, r * 1.8, this.haze, 0.16 * k);
-          break;
-        }
-        case P.DUST: p.disc(x, y, q.size * (0.6 + (1 - k) * 0.9), q.col, Math.pow(k, 1.3) * 0.7); break;
-        case P.SMOKE: {
-          // three soft discs: a body, a denser core sitting low, a lit cap while it's young
-          const age = 1 - k, big = q.flag & PF.BIG;
-          const r = q.size * (0.65 + Math.min(1, age * 2.5) * 0.45 + age * (big ? 0.5 : 0.4));
-          const a = Math.min(1, age * 12) * Math.min(1, k * 2.4) * (big ? 0.7 : 0.58);
-          const c = q.col ? mix(q.col, rampAt(SMOKE_RAMP, age), age) : rampAt(SMOKE_RAMP, age * 1.05);
-          p.disc(x, y, r, c, a * 0.45);
-          p.disc(x + r * 0.05, y + r * 0.06, r * 0.74, c, a * 0.62);
-          if (age < 0.5) p.disc(x - r * 0.22, y - r * 0.3, r * 0.5, mix(c, WHITE, 0.12), a * 0.4 * (1 - age * 2));
-          break;
-        }
-        case P.FIRE: {
-          // a ball of flame that cools down the ramp as it rises: a darker rim, a lit core, a tongue on top
-          const age = 1 - k, heat = Math.min(0.999, Math.pow(age, 0.62) + (q.seed % 1) * 0.1), F = FIRE_RAMP, n = F.length;
-          const idx = Math.min(n - 2, Math.floor(heat * (n - 1)));
-          const r = q.size * (0.55 + 0.45 * Math.min(1, age * 7)) * (1 - age * 0.55), c = F[idx];
-          if (idx >= n - 2) p.disc(x, y, r, c, Math.min(1, k * 3) * 0.85);
-          else {
-            p.circle(x, y, r, F[Math.min(n - 1, idx + 2)]);
-            p.circle(x - r * 0.16, y - r * 0.22, r * 0.78, c);
-            if (r > 1.6) p.circle(x, y - r * 0.9, r * 0.42, c);
-            if (idx <= 3 && r > 1.8) p.circle(x - r * 0.28, y - r * 0.34, r * 0.36, F[Math.max(0, idx - 1)]);
-            if (idx < 6) p.glow(x, y, r * 2.4 + 2, c, 0.18 * k);
-          }
-          break;
-        }
-        case P.BRAND:
-          p.circle(x, y, 1.6, HOT[3]);
-          p.px(x, y, Math.sin(this.t * 40 + q.seed) > 0 ? HOT[0] : HOT[1]);
-          p.px(x + 1, y, HOT[1]);
-          p.glow(x, y, 7, HOT[2], 0.45);
-          break;
-        case P.GRIT:
-          if (k > 0.25 || k * 4 > 0.5) {
-            p.px(x, y, q.col);
-            if (q.size >= 2) p.px(x + 1, y, q.col), p.px(x, y + 1, scale(q.col, 0.8)), p.px(x + 1, y + 1, scale(q.col, 0.7));
-          }
-          break;
-        case P.EMBER: {
-          const c = k > 0.6 ? this.sparks[0] : k > 0.3 ? this.sparks[1] : this.sparks[2];
-          if (k < 0.25 && Math.sin(this.t * 40 + q.seed) < 0) break;
-          p.px(x, y, c);
-          if (q.size > 1.5) p.px(x, y + 1, this.sparks[this.sparks.length - 1]);
-          p.glow(x, y, 3 + q.size, c, 0.35 * k);
-          break;
-        }
-        default: {
-          // STAR: a twinkling cross, arms set by size
-          const tw = 0.6 + 0.4 * Math.sin(this.t * (8 + (q.seed % 5)) + q.seed);
-          if (q.size < 1) {
-            if (tw * k > 0.25) p.px(x, y, tw > 0.8 ? WHITE : q.col);
-            p.glow(x, y, 3, q.col, 0.4 * k * tw);
-            break;
-          }
-          sparkle(p, x, y, q.size * tw * Math.min(1, k * 3), q.col, scale(q.col, 0.75), 0.5 * k * tw);
-        }
+        sparkle(p, x, y, size * tw * Math.min(1, k * 3), q.col, scale(q.col, 0.75), 0.5 * k * tw);
       }
     }
   }
 }
 
 /**
- * Little fires burning where something landed: add(x, y, life, power) feeds FIRE puffs (and the odd ember)
- * into a particle system, fading over its life. update(dt); drawBack(p) adds a hot pixel and a glow at its foot.
+ * Little fires burning where something landed: add(x, y, life, power, z) feeds FIRE puffs (and the odd ember)
+ * into a particle system, fading over its life. update(dt); drawBack(p) adds a hot pixel and a glow at its foot
+ * (p may be a Space).
  */
 export class Blazes {
   constructor(ps) {
     this.ps = ps;
     this.list = [];
   }
-  add(x, y, life, power) {
-    this.list.push({ x, y, life, max: life, acc: this.ps.R.next(), power });
+  add(x, y, life, power, z = 0) {
+    this.list.push({ x, y, z, life, max: life, acc: this.ps.R.next(), power });
   }
   get count() {
     return this.list.length;
@@ -261,16 +309,17 @@ export class Blazes {
       const k = b.life / b.max, intensity = b.power * (k > 0.7 ? 1 : 0.35 + (k / 0.7) * 0.65);
       for (b.acc += dt * (6 + 16 * intensity); b.acc > 1; b.acc--) {
         const s = R.range(1.2, 2.8) * intensity;
-        ps.spawn(P.FIRE, b.x + R.range(-1.5, 1.5), b.y - s * 0.6, R.range(-6, 6), R.range(-30, -12), R.range(0.28, 0.6), 0, s, 0, PF.BACK | (R.chance(0.3) ? PF.SMOKES : 0));
-        if (R.chance(0.06)) ps.spawn(P.EMBER, b.x, b.y - 1.5, R.range(-15, 15), R.range(-45, -15), R.range(0.6, 1.4), HOT[2], 1, 0, PF.BACK);
+        ps.spawn3(P.FIRE, b.x + R.range(-1.5, 1.5), b.y - s * 0.6, b.z, R.range(-6, 6), R.range(-30, -12), 0, R.range(0.28, 0.6), 0, s, 0, PF.BACK | (R.chance(0.3) ? PF.SMOKES : 0));
+        if (R.chance(0.06)) ps.spawn3(P.EMBER, b.x, b.y - 1.5, b.z, R.range(-15, 15), R.range(-45, -15), 0, R.range(0.6, 1.4), HOT[2], 1, 0, PF.BACK);
       }
     }
   }
   drawBack(p) {
+    const s = p.project ? p : null;
     for (const b of this.list) {
-      const k = b.life / b.max;
-      p.px(b.x, b.y, k > 0.4 ? (Math.sin(b.life * 31 + b.x) > 0 ? HOT[1] : HOT[2]) : HOT[3]);
-      p.glow(b.x, b.y, 6 + 5 * k * b.power, HOT[2], 0.3 * k * b.power);
+      const k = b.life / b.max, c = k > 0.4 ? (Math.sin(b.life * 31 + b.x) > 0 ? HOT[1] : HOT[2]) : HOT[3], r = 6 + 5 * k * b.power;
+      if (s) s.px(b.x, b.y, b.z, c), s.glow(b.x, b.y, b.z, r, HOT[2], 0.3 * k * b.power);
+      else p.px(b.x, b.y, c), p.glow(b.x, b.y, r, HOT[2], 0.3 * k * b.power);
     }
   }
 }
@@ -279,8 +328,8 @@ export class Blazes {
 export const B = { SHARD: 0, CHUNK: 1, DRIP: 2 };
 
 /**
- * Rigid debris that tumbles, bounces and settles. add({ kind, x, y, vx, vy, a, va, s (size), c (color), ramp
- * (chunk shading, dark to bright), g (gravity scale), drag, bounce, life }); update(dt); draw(p).
+ * Rigid debris that tumbles, bounces and settles. add({ kind, x, y, z, vx, vy, vz, a, va, s (size), c (color), ramp
+ * (chunk shading, dark to bright), g (gravity scale), drag, bounce, life }); update(dt); draw(p), p a painter or a Space.
  */
 export class Bits {
   constructor(opts = {}) {
@@ -289,7 +338,7 @@ export class Bits {
   }
   add(b) {
     const life = b.life ?? 1;
-    this.list.push({ kind: B.SHARD, vx: 0, vy: 0, a: 0, va: 0, s: 1, c: WHITE, g: 1, drag: 0, bounce: 0, rest: false, ...b, life, max: life });
+    this.list.push({ kind: B.SHARD, z: 0, vx: 0, vy: 0, vz: 0, a: 0, va: 0, s: 1, c: WHITE, g: 1, drag: 0, bounce: 0, rest: false, ...b, life, max: life });
   }
   get count() {
     return this.list.length;
@@ -304,57 +353,70 @@ export class Bits {
       if (b.rest) continue;
       b.vy += GRAVITY * b.g * dt;
       b.vx -= b.vx * b.drag * dt;
+      b.vz -= b.vz * b.drag * dt;
       b.vy -= b.vy * b.drag * dt;
       b.x += b.vx * dt;
       b.y += b.vy * dt;
+      b.z += b.vz * dt;
       b.a += b.va * dt;
-      const floor = this.ground(b.x), sp = b.vy;
+      const floor = this.ground(b.x, b.z), sp = b.vy;
       if (b.g <= 0 || b.y < floor || sp <= 0) continue;
       b.y = floor - 0.01;
       if (b.kind === B.DRIP) b.life = 0;
-      else if (b.bounce > 0 && sp > 70) (b.vy = -sp * b.bounce), (b.vx *= 0.7), (b.va *= 0.6);
-      else (b.rest = true), (b.vx = b.vy = 0);
+      else if (b.bounce > 0 && sp > 70) (b.vy = -sp * b.bounce), (b.vx *= 0.7), (b.vz *= 0.7), (b.va *= 0.6);
+      else (b.rest = true), (b.vx = b.vy = b.vz = 0);
     }
   }
   draw(p) {
-    for (const b of this.list) {
-      const a = Math.min(1, b.life / 0.4), ca = Math.cos(b.a), sa = Math.sin(b.a);
-      if (b.kind === B.SHARD) {
-        for (let d = -b.s / 2; d <= b.s / 2; d += 0.5) p.dot(b.x + ca * d, b.y + sa * d, d > b.s / 2 - 0.6 ? WHITE : hex(b.c), a);
-      } else if (b.kind === B.DRIP) {
-        p.dot(b.x, b.y, hex(b.c), a);
-        p.dot(b.x, b.y - 1, hex(b.c), a * 0.5);
-      } else {
-        // a shaded chunk: lit top-left, dark bottom-right, a dark rim
-        const R = (b.ramp ?? ["#1c2030", "#3a4a66", "#6e86a8", "#a8c0dc", "#e8f2ff"]).map(hex), n = R.length;
-        const x = Math.round(b.x), y = Math.round(b.y), r = Math.ceil(b.s) + 1;
-        for (let py = -r; py <= r; py++)
-          for (let px = -r; px <= r; px++) {
-            const u = (px + 0.5) * ca + (py + 0.5) * sa, v = -(px + 0.5) * sa + (py + 0.5) * ca;
-            const d = Math.abs(u) / b.s + Math.abs(v) / (b.s * 0.62);
-            if (d > 1.3) continue;
-            p.dot(x + px, y + py, d > 1 ? R[0] : v < 0 ? (u < 0 ? R[n - 1] : R[n - 2]) : u < 0 ? R[n - 3] : R[Math.max(1, n - 4)], a);
-          }
-      }
+    if (p.project) {
+      // through a Space: nearest first, each as thick as it is big
+      const s = p, P2 = s.p, z0 = P2.z, near = [];
+      for (const b of this.list) if (s.project(b.x, b.y, b.z)) near.push({ b, x: s.x, y: s.y, d: s.d, k: s.k });
+      near.sort((a, c) => a.d - c.d);
+      for (const it of near) (P2.z = it.d - it.b.s), this.drawOne(P2, it.b, it.x, it.y, it.b.s * it.k);
+      P2.z = z0;
+      return;
+    }
+    for (const b of this.list) this.drawOne(p, b, b.x, b.y, b.s);
+  }
+  drawOne(p, b, bx, by, bs) {
+    const a = Math.min(1, b.life / 0.4), ca = Math.cos(b.a), sa = Math.sin(b.a);
+    if (b.kind === B.SHARD) {
+      for (let d = -bs / 2; d <= bs / 2; d += 0.5) p.dot(bx + ca * d, by + sa * d, d > bs / 2 - 0.6 ? WHITE : hex(b.c), a);
+    } else if (b.kind === B.DRIP) {
+      p.dot(bx, by, hex(b.c), a);
+      p.dot(bx, by - 1, hex(b.c), a * 0.5);
+    } else {
+      // a shaded chunk: lit top-left, dark bottom-right, a dark rim
+      const R = (b.ramp ?? ["#1c2030", "#3a4a66", "#6e86a8", "#a8c0dc", "#e8f2ff"]).map(hex), n = R.length;
+      const x = Math.round(bx), y = Math.round(by), r = Math.ceil(bs) + 1;
+      for (let py = -r; py <= r; py++)
+        for (let px = -r; px <= r; px++) {
+          const u = (px + 0.5) * ca + (py + 0.5) * sa, v = -(px + 0.5) * sa + (py + 0.5) * ca;
+          const d = Math.abs(u) / bs + Math.abs(v) / (bs * 0.62);
+          if (d > 1.3) continue;
+          p.dot(x + px, y + py, d > 1 ? R[0] : v < 0 ? (u < 0 ? R[n - 1] : R[n - 2]) : u < 0 ? R[n - 3] : R[Math.max(1, n - 4)], a);
+        }
     }
   }
 }
 
-/** Lights that flare and die: add(x, y, r, color, k, life); update(dt); draw(p). */
+/** Lights that flare and die: add(x, y, r, color, k, life, z); update(dt); draw(p), p a painter or a Space. */
 export class Lights {
   constructor() {
     this.list = [];
   }
-  add(x, y, r, color, k, life) {
-    this.list.push({ x, y, r, color: hex(color), k, life, max: life });
+  add(x, y, r, color, k, life, z = 0) {
+    this.list.push({ x, y, z, r, color: hex(color), k, life, max: life });
   }
   update(dt) {
     for (let i = this.list.length - 1; i >= 0; i--) if ((this.list[i].life -= dt) <= 0) this.list.splice(i, 1);
   }
   draw(p) {
     for (const l of this.list) {
-      const k = l.life / l.max;
-      p.glow(l.x, l.y, l.r * (0.55 + 0.45 * k), l.color, l.k * k * k);
+      const k = l.life / l.max, r = l.r * (0.55 + 0.45 * k);
+      if (p.project) p.glow(l.x, l.y, l.z, r, l.color, l.k * k * k);
+      else p.glow(l.x, l.y, r, l.color, l.k * k * k);
     }
   }
 }

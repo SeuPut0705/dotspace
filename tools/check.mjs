@@ -88,8 +88,13 @@ for (const id of ids) {
     if (!Array.isArray(meta.origin) || meta.origin.length !== 2) errs.push("meta.origin must be [x, y]");
     if (!(meta.duration > 0 && meta.duration <= 12)) errs.push("meta.duration must be 0..12 s");
     if (!BACKDROPS.includes(meta.bg)) errs.push(`meta.bg must be one of ${BACKDROPS.join(", ")}`);
-    const taken = Object.keys(meta.options ?? {}).filter((k) => ["x", "y", "flip", "angle", "light"].includes(k));
-    if (taken.length) errs.push(`option ${taken.join(", ")} is reserved for placement and glow: rename it`);
+    const taken = Object.keys(meta.options ?? {}).filter((k) => ["x", "y", "flip", "angle", "light", "camera", "depth"].includes(k));
+    if (taken.length) errs.push(`option ${taken.join(", ")} is reserved for placement, glow, the camera and depth: rename it`);
+    if (meta.camera) {
+      const bad = Object.entries(meta.camera).filter(([k, v]) => !["yaw", "pitch", "dist", "zoom"].includes(k) || typeof v !== "number");
+      if (bad.length) errs.push(`meta.camera takes numbers yaw, pitch, dist, zoom, not ${bad.map(([k]) => k).join(", ")}`);
+      if (Math.abs(meta.camera.pitch ?? 0) > Math.PI / 2) errs.push("meta.camera.pitch must be within ±π/2");
+    }
     if (/Math\.random/.test(src)) errs.push("uses Math.random: use rng/rand/burst/cycle so frames repeat");
     if (mod.act) checkAct(fx, errs, notes);
     if (errs.length) throw new Error(errs.join("; "));
@@ -101,7 +106,31 @@ for (const id of ids) {
     };
     const opts = { ...(meta.options ?? {}), seed: meta.options?.seed ?? 1 };
     if (meta.actor) opts.actor = stockActor(meta.actor === 2 ? 2 : 1);
+    if (meta.camera) opts.camera = { ...meta.camera };
     const n = Math.max(2, Math.round(meta.duration * meta.fps));
+    // a 3D effect fits its canvas from every side, not only from its own camera
+    if (meta.camera) {
+      let worst = 0, at = 0;
+      for (let v = 0; v < 8; v++) {
+        const o2 = { ...opts, camera: { ...opts.camera, yaw: (opts.camera.yaw ?? 0) + (v * Math.PI) / 4 } };
+        const out = () => count(frame.color, (c, j) => c >>> 24 && !inside(j));
+        let sp = 0;
+        if (mod.create) {
+          const inst = createFx(mod, { x: meta.origin[0], y: meta.origin[1], ...o2 });
+          for (let i = 0; i <= n; i++) {
+            if (i) inst.update(1 / meta.fps);
+            clearFrame(frame);
+            inst.draw(frame);
+            sp = Math.max(sp, out());
+          }
+        } else for (let i = 0; i <= n; i += 2) {
+          drawAt(fx, meta.loop ? ((i % n) / n) * meta.duration : (i / n) * meta.duration, frame, o2);
+          sp = Math.max(sp, out());
+        }
+        if (sp > worst) (worst = sp), (at = v * 45);
+      }
+      if (worst > 0) notes.push(`${worst} px drawn outside the ${W}x${H} canvas seen from yaw ${at}°: grow size so it fits from every side`);
+    }
     let maxPx = 0, spill = 0, spillLight = 0, ms = [], bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
     const bounds = () => frame.color.forEach((c, j) => {
       if (!(c >>> 24)) return;

@@ -8,13 +8,18 @@ import { fit, toHex } from "./color.js";
 /**
  * A frame: w x h pixels whose top-left sits at (ox, oy) in world space. `color` holds opaque pixels,
  * `light` additive glow; composite() puts them together. Same shape as Sprite Fusion's VFX frames.
+ * depth: true adds `depth` (per pixel, smaller is nearer) for 3D effects, so a character drawn before the
+ * effect already hides what's behind it; a 3D effect adds one by itself otherwise.
  */
-export function createFrame(w, h, ox = 0, oy = 0) {
-  return { w, h, ox, oy, color: new Uint32Array(w * h), light: new Uint32Array(w * h) };
+export function createFrame(w, h, ox = 0, oy = 0, depth = false) {
+  const f = { w, h, ox, oy, color: new Uint32Array(w * h), light: new Uint32Array(w * h) };
+  if (depth) f.depth = new Float32Array(w * h).fill(Infinity);
+  return f;
 }
 export function clearFrame(f) {
   f.color.fill(0);
   f.light.fill(0);
+  f.depth?.fill(Infinity);
   return f;
 }
 
@@ -40,6 +45,7 @@ export function resolveOptions(meta, o = {}) {
   for (const [k, def] of Object.entries(meta.options ?? {}))
     if (isRamp(def) && isRamp(o[k]) && o[k].length !== def.length) opts[k] = fit(o[k], def.length).map(toHex);
   if (meta.actor && !opts.actor) opts.actor = stockActor(meta.actor === 2 ? 2 : 1);
+  if (meta.camera || o.camera) opts.camera = { ...meta.camera, ...o.camera };
   return opts;
 }
 
@@ -73,12 +79,16 @@ export function createFx(mod, o = {}) {
       p.fade = stopAt === Infinity ? 1 : clamp(1 - (t - stopAt) / FADE);
       p.lightK = opts.light ?? 1;
       const tt = meta.loop ? t % D : Math.min(t, D);
+      // o.depth: where a 2D effect stands in a 3D frame; its back layer goes a hair behind, so a character there covers it
+      const z = opts.depth ?? 0;
       if (layer !== "front" && impl.drawBack) {
         p.layer = "back";
+        p.z = opts.depth === undefined ? 0 : z + 0.5;
         impl.drawBack(p, tt, opts);
       }
       if (layer !== "back") {
         p.layer = "front";
+        p.z = z;
         impl.draw(p, tt, opts);
       }
     },
