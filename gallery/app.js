@@ -1,14 +1,23 @@
-// The gallery: every effect playing live from its own code. Tiles start when they scroll into view; a click
-// opens one effect with its options, a sprite sheet and the code to use it.
+// The gallery: every effect playing live from its own code, in 2D or in 3D. Tiles start when they scroll into view;
+// a click opens one effect with its options, a sprite sheet and the code to use it.
 
 import { effects, categories } from "../src/fx/index.js";
 import { createFrame, clearFrame, createFx, createAct, actBounds, composite, backdrop, floorGrid, space, CAMERA, drawActor, painterFor, stockActor, actorAlphaOf, PAL, BACKDROPS } from "../src/core/index.js";
 
 const REPO = "https://github.com/SeuPut0705/dotspace";
-const FX = Object.entries(effects).map(([id, mod]) => {
+const record = (id, mod) => {
   const meta = { fps: 30, bg: "dark", loop: false, duration: 1, tags: [], options: {}, ...mod.meta };
-  return { id, cat: id.split("/")[0], name: meta.name, mod: { ...mod, meta }, meta };
-});
+  return { id, base: id.replace(/@3d$/, ""), cat: id.split("/")[0], name: meta.name, mod: { ...mod, meta }, meta };
+};
+// one entry per effect: its 2D version (v2) and its 3D one (v3), either of which may be missing
+const FX = Object.entries(effects)
+  .filter(([id]) => !id.endsWith("@3d"))
+  .map(([id, mod]) => {
+    const r = record(id, mod), v3 = effects[id + "@3d"];
+    return { id, cat: r.cat, name: r.name, v2: mod.meta?.camera ? null : r, v3: mod.meta?.camera ? r : v3 ? record(id + "@3d", v3) : null };
+  });
+// what a tile shows in a dimension: that version, or the other one when it has only one
+const shown = (fx, dim) => (dim === "3d" ? fx.v3 ?? fx.v2 : fx.v2 ?? fx.v3);
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 // full-screen effects (transitions, weather, impact frames) fill a 16:9 stage edge to edge instead of floating in it
 const isScreen = (fx) => fx.meta.size[0] >= 320 && Math.abs(fx.meta.size[0] / fx.meta.size[1] - 16 / 9) < 0.05;
@@ -134,19 +143,15 @@ function build() {
     const sec = el("section", { id: c.id }, [el("div", { className: "section-head" }, [el("h2", { textContent: c.name + "." }), el("p", { textContent: c.blurb })]), grid]);
     sections.push({ c, sec, list });
     for (const fx of list) {
-      const cv = el("canvas", { ariaLabel: fx.name });
-      const b = fx.mod.act ? actBounds(fx.mod) : null, [fw, fh] = b ? [b.x1 - b.x0, b.y1 - b.y0] : fx.meta.size;
-      const fig = el("figure", { className: isScreen(fx) ? "tile big screen" : fw > 200 || fh > 170 || (b && (fw > 130 || fx.mod.act.target || fx.mod.act.targets)) ? "tile big" : "tile", tabIndex: 0 }, [
-        el("div", { className: "stage" }, cv),
-        el("figcaption", {}, [el("b", { textContent: fx.name }), el("small", { textContent: fx.meta.loop ? "loop" : `${+fx.meta.duration.toFixed(2)}s` })]),
-      ]);
-      const t = { fx, fig, cv, player: null, visible: false, hover: false };
-      fig.addEventListener("click", () => openDetail(fx));
-      fig.addEventListener("keydown", (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), openDetail(fx)));
+      const fig = el("figure", { tabIndex: 0 });
+      const t = { fx, rec: null, fig, cv: null, player: null, visible: false, hover: false };
+      fig.addEventListener("click", () => openDetail(fx, t.rec));
+      fig.addEventListener("keydown", (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), openDetail(fx, t.rec)));
       fig.addEventListener("pointerenter", () => (t.hover = true));
       fig.addEventListener("pointerleave", () => (t.hover = false));
       grid.append(fig);
       tiles.push(t);
+      dress(t);
     }
     main.append(sec);
   }
@@ -154,17 +159,40 @@ function build() {
     for (const e of entries) {
       const t = tiles.find((x) => x.fig === e.target);
       t.visible = e.isIntersecting;
-      if (t.visible && !t.player) {
-        t.player = isScreen(t.fx) ? new Player(t.cv, t.fx, 16 / 9, 1) : new Player(t.cv, t.fx, 6 / 5, 1.25);
-        if (reduced) t.player.seek(t.fx.meta.duration * 0.4);
-      }
+      if (t.visible && !t.player) start(t);
     }
   }, { rootMargin: "200px" });
   tiles.forEach((t) => io.observe(t.fig));
 }
+// a tile's stage, caption and size for the version it shows now
+function dress(t) {
+  const rec = shown(t.fx, state.dim);
+  if (t.rec === rec) return;
+  t.rec = rec;
+  t.player = null;
+  t.cv = el("canvas", { ariaLabel: rec.name });
+  const b = rec.mod.act ? actBounds(rec.mod) : null, [fw, fh] = b ? [b.x1 - b.x0, b.y1 - b.y0] : rec.meta.size;
+  t.fig.className = isScreen(rec) ? "tile big screen" : fw > 200 || fh > 170 || (b && (fw > 130 || rec.mod.act.target || rec.mod.act.targets)) ? "tile big" : "tile";
+  const tag = t.fx.v2 && t.fx.v3 ? "" : rec.meta.camera ? " · 3d" : " · 2d";
+  t.fig.replaceChildren(
+    el("div", { className: "stage" }, t.cv),
+    el("figcaption", {}, [el("b", { textContent: rec.name }), el("small", { textContent: (rec.meta.loop ? "loop" : `${+rec.meta.duration.toFixed(2)}s`) + tag })]),
+  );
+  if (t.visible) start(t);
+}
+function start(t) {
+  t.player = isScreen(t.rec) ? new Player(t.cv, t.rec, 16 / 9, 1) : new Player(t.cv, t.rec, 6 / 5, 1.25);
+  if (reduced) t.player.seek(t.rec.meta.duration * 0.4);
+}
+function setDim(dim) {
+  state.dim = dim;
+  $("#dim-2d").setAttribute("aria-pressed", String(dim === "2d"));
+  $("#dim-3d").setAttribute("aria-pressed", String(dim === "3d"));
+  tiles.forEach(dress);
+}
 
 // ---- filters
-const state = { cat: "all", q: "" };
+const state = { cat: "all", q: "", dim: "2d" };
 function chips() {
   const box = $("#chips");
   const mk = (id, label, n) => {
@@ -190,7 +218,7 @@ function filter() {
     let any = false;
     for (const fx of s.list) {
       const t = tiles.find((x) => x.fx === fx);
-      const hit = (state.cat === "all" || state.cat === s.c.id) && (!q || [fx.id, fx.name, fx.meta.desc, ...fx.meta.tags].join(" ").toLowerCase().includes(q));
+      const r = t.rec, hit = (state.cat === "all" || state.cat === s.c.id) && (!q || [fx.id, r.name, r.meta.desc, ...r.meta.tags].join(" ").toLowerCase().includes(q));
       t.fig.hidden = !hit;
       any ||= hit;
       shown += hit;
@@ -202,22 +230,27 @@ function filter() {
 
 // ---- detail
 let detail = null;
-function openDetail(fx) {
+function openDetail(fx, rec) {
   const d = $("#detail");
-  const big = $("#big"), screen = isScreen(fx);
+  const big = $("#big"), screen = isScreen(rec);
   big.parentElement.classList.toggle("screen", screen);
-  detail = screen ? new Player(big, fx, 16 / 9, 1) : new Player(big, fx, 16 / 10, 1.6);
+  detail = screen ? new Player(big, rec, 16 / 9, 1) : new Player(big, rec, 16 / 10, 1.6);
+  detail.entry = fx;
   // on a 3D stage a touch drag turns the camera; elsewhere it scrolls the sheet
   big.style.touchAction = detail.cam ? "none" : "";
-  const m = fx.meta;
+  const m = rec.meta;
   $("#d-name").textContent = m.name;
-  $("#d-id").textContent = fx.id;
+  $("#d-id").textContent = rec.id;
   $("#d-desc").textContent = m.desc;
   const frames = Math.round(m.duration * m.fps) + (m.loop ? 0 : 1);
   $("#d-facts").replaceChildren(
-    ...[["kind", m.loop ? "loop" : "one-shot"], ...(m.camera ? [["space", "3D: drag it, or use the arrow keys, to turn the camera"]] : []), ["length", `${+m.duration.toFixed(2)} s, ${frames} frames at ${m.fps} fps`], ...(fx.mod.act ? [["acted", actFacts(fx.mod)]] : []), ["canvas", `${m.size[0]} × ${m.size[1]} px`], ["tags", m.tags.join(", ")]].flatMap(([k, v]) => [el("dt", { textContent: k }), el("dd", { textContent: v })]),
+    ...[["kind", m.loop ? "loop" : "one-shot"], ...(m.camera ? [["space", "3D: drag it, or use the arrow keys, to turn the camera"]] : []), ["length", `${+m.duration.toFixed(2)} s, ${frames} frames at ${m.fps} fps`], ...(rec.mod.act ? [["acted", actFacts(rec.mod)]] : []), ["canvas", `${m.size[0]} × ${m.size[1]} px`], ["tags", m.tags.join(", ")]].flatMap(([k, v]) => [el("dt", { textContent: k }), el("dd", { textContent: v })]),
   );
   // controls
+  for (const [b, v] of [[$("#d-2d"), fx.v2], [$("#d-3d"), fx.v3]]) {
+    b.disabled = !v;
+    b.setAttribute("aria-pressed", String(v === rec));
+  }
   $("#d-bg").replaceChildren(...BACKDROPS.concat("none").map((b) => btn(b, () => detail.setBg(b), b === m.bg, "bg")));
   $("#d-speed").replaceChildren(...[0.25, 0.5, 1].map((s) => btn(`${s}×`, () => (detail.speed = s), s === 1, "speed")));
   const pal = $("#d-pal");
@@ -229,8 +262,8 @@ function openDetail(fx) {
   $("#d-play").setAttribute("aria-pressed", "true");
   $("#d-play").textContent = "pause";
   $("#d-sheet").replaceChildren();
-  code(fx);
-  d.showModal();
+  code(rec);
+  if (!d.open) d.showModal();
   d.scrollTop = 0;
 }
 // what the body does around the effect, in a line: the wind-up, the freeze, the recovery
@@ -251,17 +284,18 @@ function btn(label, fn, on, group) {
   });
   return b;
 }
-function code(fx) {
-  const v = fx.id.split("/")[1].replace(/-(\w)/g, (_, c) => c.toUpperCase());
+function code(rec) {
+  const v = rec.base.split("/")[1].replace(/-(\w)/g, (_, c) => c.toUpperCase());
+  const variant = rec.id !== rec.base, use = variant ? `in3d(${v})` : v;
   const cam = detail.cam ? { camera: { yaw: +detail.cam.yaw.toFixed(2), pitch: +detail.cam.pitch.toFixed(2) } } : {};
   const opts = { x: 160, y: 120, ...(detail.opts.palette ? { palette: "[…]" } : {}), ...(detail.flip ? { flip: true } : {}), ...cam };
-  const acted = !!fx.mod.act, make = acted ? "createAct" : "createFx";
+  const acted = !!rec.mod.act, make = acted ? "createAct" : "createFx";
   $("#d-code").textContent = [
-    `import { createFrame, ${make}, composite } from "dotspace";`,
-    `import * as ${v} from "dotspace/fx/${fx.id}";`,
+    `import { createFrame, ${make}, composite${variant ? ", in3d" : ""} } from "dotspace";`,
+    `import * as ${v} from "dotspace/fx/${rec.base}";`,
     ``,
     detail.cam ? `const frame = createFrame(320, 180, 0, 0, true);   // with depth, for a 3D effect` : `const frame = createFrame(320, 180);`,
-    `const fx = ${make}(${v}, ${JSON.stringify(opts).replace(/"\[…\]"/, "[…]").replace(/"(\w+)":/g, "$1: ").replace(/,/g, ", ")});`,
+    `const fx = ${make}(${use}, ${JSON.stringify(opts).replace(/"\[…\]"/, "[…]").replace(/"(\w+)":/g, "$1: ").replace(/,/g, ", ")});`,
     ``,
     `// every tick`,
     `fx.update(dt);`,
@@ -269,7 +303,7 @@ function code(fx) {
     `composite(frame, imageData.data, null);`,
     ...(acted ? [``, `// your own character? read the timing: ${v}.act (poses, hits, freezes)`] : []),
   ].join("\n");
-  $("#d-src").href = `${REPO}/blob/main/src/fx/${fx.id}.js`;
+  $("#d-src").href = `${REPO}/blob/main/src/fx/${rec.base}.js`;
 }
 function sheet() {
   const fx = detail.fx, m = fx.meta, [w, h] = m.size, n = Math.max(1, Math.round(m.duration * m.fps) + (m.loop ? 0 : 1));
@@ -352,6 +386,9 @@ function wireDetail() {
     code(detail.fx);
   });
   $("#d-make").addEventListener("click", sheet);
+  // the other version of the same effect, in the same sheet
+  $("#d-2d").addEventListener("click", () => detail.entry.v2 && openDetail(detail.entry, detail.entry.v2));
+  $("#d-3d").addEventListener("click", () => detail.entry.v3 && openDetail(detail.entry, detail.entry.v3));
   $("#d-copy").addEventListener("click", async (e) => {
     const text = $("#d-code").textContent;
     try {
@@ -378,6 +415,8 @@ function frameLoop(now) {
 build();
 chips();
 wireDetail();
+$("#dim-2d").addEventListener("click", () => setDim("2d"));
+$("#dim-3d").addEventListener("click", () => setDim("3d"));
 $("#q").addEventListener("input", (e) => {
   state.q = e.target.value;
   filter();
