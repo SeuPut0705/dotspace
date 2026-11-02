@@ -2,9 +2,9 @@
 // opens one effect with its options, a sprite sheet and the code to use it.
 
 import { effects, categories } from "../src/fx/index.js";
-import { createFrame, clearFrame, createFx, createAct, actBounds, composite, backdrop, drawActor, painterFor, stockActor, actorAlphaOf, PAL, BACKDROPS } from "../src/core/index.js";
+import { createFrame, clearFrame, createFx, createAct, actBounds, composite, backdrop, floorGrid, space, CAMERA, drawActor, painterFor, stockActor, actorAlphaOf, PAL, BACKDROPS } from "../src/core/index.js";
 
-const REPO = "https://github.com/patch-gg/pixelfx";
+const REPO = "https://github.com/SeuPut0705/dotspace";
 const FX = Object.entries(effects).map(([id, mod]) => {
   const meta = { fps: 30, bg: "dark", loop: false, duration: 1, tags: [], options: {}, ...mod.meta };
   return { id, cat: id.split("/")[0], name: meta.name, mod: { ...mod, meta }, meta };
@@ -23,6 +23,9 @@ function el(tag, props = {}, kids = []) {
 class Player {
   constructor(canvas, fx, aspect, pad) {
     Object.assign(this, { canvas, fx, ctx: canvas.getContext("2d"), opts: {}, flip: false, actor: true, speed: 1, playing: true });
+    // a 3D effect turns slowly until someone drags it round
+    this.cam = fx.meta.camera ? { ...CAMERA, ...fx.meta.camera } : null;
+    this.turning = true;
     this.bg = fx.meta.bg;
     this.layout(aspect, pad);
   }
@@ -44,14 +47,16 @@ class Player {
     // shrinking pixel art nearest-neighbour drops whole 1 px lines; smooth it only when it has to shrink
     const shown = this.canvas.getBoundingClientRect().width * devicePixelRatio;
     this.canvas.style.imageRendering = shown && shown < this.W ? "auto" : "";
-    this.frame = createFrame(this.W, this.H);
+    this.frame = createFrame(this.W, this.H, 0, 0, !!this.cam);
     this.img = this.ctx.createImageData(this.W, this.H);
     this.setBg(this.bg);
     this.restart();
   }
   setBg(kind) {
     this.bg = kind;
-    this.bgBuf = kind === "none" ? null : backdrop(kind, this.W, this.H, this.y);
+    // a 3D effect stands on a floor that turns with the camera
+    this.floor = !!this.cam && kind === "ground";
+    this.bgBuf = kind === "none" ? null : backdrop(this.floor ? "dark" : kind, this.W, this.H, this.y);
     this.dirty = true;
   }
   // an effect with an act plays it, unless the character is switched off
@@ -59,7 +64,7 @@ class Player {
     return !!this.fx.mod.act && this.actor;
   }
   restart() {
-    this.inst = (this.acted ? createAct : createFx)(this.fx.mod, { x: this.x, y: this.y, flip: this.flip, ...this.opts });
+    this.inst = (this.acted ? createAct : createFx)(this.fx.mod, { x: this.x, y: this.y, flip: this.flip, ...(this.cam ? { camera: { ...this.cam } } : {}), ...this.opts });
     this.acc = 0;
     this.wait = 0;
     this.dirty = true;
@@ -67,6 +72,7 @@ class Player {
   tick(dt) {
     const m = this.fx.meta, step = 1 / m.fps;
     if (this.playing) this.acc = Math.min(this.acc + dt * this.speed, 0.25);
+    if (this.cam && this.turning && this.playing) (this.cam.yaw += dt * 0.5 * this.speed), (this.dirty = true);
     let moved = false;
     while (this.acc >= step) {
       this.acc -= step;
@@ -84,7 +90,11 @@ class Player {
     this.render();
   }
   render() {
-    const f = clearFrame(this.frame);
+    const f = clearFrame(this.frame), m = this.fx.meta;
+    if (this.cam) {
+      Object.assign((this.acted ? this.inst.fx : this.inst).options.camera, this.cam);
+      if (this.floor) floorGrid(space(painterFor(f).place(this.x, this.y, this.flip), { camera: this.cam }), Math.max(...m.size) * 0.75);
+    }
     if (this.acted) {
       this.inst.draw(f);
       composite(f, this.img.data, this.bgBuf);
@@ -94,10 +104,17 @@ class Player {
       this.dirty = false;
       return;
     }
-    this.inst.draw(f, "back");
-    const m = this.fx.meta, tt = m.loop ? this.inst.t % m.duration : Math.min(this.inst.t, m.duration);
-    if (m.actor && this.actor) drawActor(painterFor(f).place(this.x, this.y, this.flip), this.inst.options.actor ?? stockActor(), actorAlphaOf(this.fx.mod, tt, this.inst.options));
-    this.inst.draw(f, "front");
+    const tt = m.loop ? this.inst.t % m.duration : Math.min(this.inst.t, m.duration);
+    const body = () => m.actor && this.actor && drawActor(painterFor(f).place(this.x, this.y, this.flip), this.inst.options.actor ?? stockActor(), actorAlphaOf(this.fx.mod, tt, this.inst.options));
+    if (this.cam) {
+      // depth sorts a 3D effect round the character: he goes in first
+      body();
+      this.inst.draw(f);
+    } else {
+      this.inst.draw(f, "back");
+      body();
+      this.inst.draw(f, "front");
+    }
     composite(f, this.img.data, this.bgBuf);
     this.ctx.putImageData(this.img, 0, 0);
     this.dirty = false;
@@ -190,13 +207,15 @@ function openDetail(fx) {
   const big = $("#big"), screen = isScreen(fx);
   big.parentElement.classList.toggle("screen", screen);
   detail = screen ? new Player(big, fx, 16 / 9, 1) : new Player(big, fx, 16 / 10, 1.6);
+  // on a 3D stage a touch drag turns the camera; elsewhere it scrolls the sheet
+  big.style.touchAction = detail.cam ? "none" : "";
   const m = fx.meta;
   $("#d-name").textContent = m.name;
   $("#d-id").textContent = fx.id;
   $("#d-desc").textContent = m.desc;
   const frames = Math.round(m.duration * m.fps) + (m.loop ? 0 : 1);
   $("#d-facts").replaceChildren(
-    ...[["kind", m.loop ? "loop" : "one-shot"], ["length", `${+m.duration.toFixed(2)} s, ${frames} frames at ${m.fps} fps`], ...(fx.mod.act ? [["acted", actFacts(fx.mod)]] : []), ["canvas", `${m.size[0]} × ${m.size[1]} px`], ["tags", m.tags.join(", ")]].flatMap(([k, v]) => [el("dt", { textContent: k }), el("dd", { textContent: v })]),
+    ...[["kind", m.loop ? "loop" : "one-shot"], ...(m.camera ? [["space", "3D: drag it, or use the arrow keys, to turn the camera"]] : []), ["length", `${+m.duration.toFixed(2)} s, ${frames} frames at ${m.fps} fps`], ...(fx.mod.act ? [["acted", actFacts(fx.mod)]] : []), ["canvas", `${m.size[0]} × ${m.size[1]} px`], ["tags", m.tags.join(", ")]].flatMap(([k, v]) => [el("dt", { textContent: k }), el("dd", { textContent: v })]),
   );
   // controls
   $("#d-bg").replaceChildren(...BACKDROPS.concat("none").map((b) => btn(b, () => detail.setBg(b), b === m.bg, "bg")));
@@ -234,13 +253,14 @@ function btn(label, fn, on, group) {
 }
 function code(fx) {
   const v = fx.id.split("/")[1].replace(/-(\w)/g, (_, c) => c.toUpperCase());
-  const opts = { x: 160, y: 120, ...(detail.opts.palette ? { palette: "[…]" } : {}), ...(detail.flip ? { flip: true } : {}) };
+  const cam = detail.cam ? { camera: { yaw: +detail.cam.yaw.toFixed(2), pitch: +detail.cam.pitch.toFixed(2) } } : {};
+  const opts = { x: 160, y: 120, ...(detail.opts.palette ? { palette: "[…]" } : {}), ...(detail.flip ? { flip: true } : {}), ...cam };
   const acted = !!fx.mod.act, make = acted ? "createAct" : "createFx";
   $("#d-code").textContent = [
-    `import { createFrame, ${make}, composite } from "pixelfx";`,
-    `import * as ${v} from "pixelfx/fx/${fx.id}";`,
+    `import { createFrame, ${make}, composite } from "dotspace";`,
+    `import * as ${v} from "dotspace/fx/${fx.id}";`,
     ``,
-    `const frame = createFrame(320, 180);`,
+    detail.cam ? `const frame = createFrame(320, 180, 0, 0, true);   // with depth, for a 3D effect` : `const frame = createFrame(320, 180);`,
     `const fx = ${make}(${v}, ${JSON.stringify(opts).replace(/"\[…\]"/, "[…]").replace(/"(\w+)":/g, "$1: ").replace(/,/g, ", ")});`,
     ``,
     `// every tick`,
@@ -255,8 +275,9 @@ function sheet() {
   const fx = detail.fx, m = fx.meta, [w, h] = m.size, n = Math.max(1, Math.round(m.duration * m.fps) + (m.loop ? 0 : 1));
   const cols = Math.min(n, Math.max(1, Math.ceil(Math.sqrt((n * h) / w)))), rows = Math.ceil(n / cols);
   const cv = el("canvas", { width: cols * w, height: rows * h }), ctx = cv.getContext("2d");
-  const frame = createFrame(w, h), img = ctx.createImageData(w, h);
-  const inst = createFx(fx.mod, { x: m.origin[0], y: m.origin[1], ...detail.opts, flip: detail.flip });
+  const frame = createFrame(w, h, 0, 0, !!detail.cam), img = ctx.createImageData(w, h);
+  // a 3D effect's sheet is seen from where the stage's camera is now, as the code below the stage says
+  const inst = createFx(fx.mod, { x: m.origin[0], y: m.origin[1], ...detail.opts, flip: detail.flip, ...(detail.cam ? { camera: { ...detail.cam } } : {}) });
   for (let i = 0; i < n; i++) {
     if (i) inst.update(1 / m.fps);
     inst.draw(clearFrame(frame));
@@ -272,6 +293,35 @@ function wireDetail() {
   $("#d-close").addEventListener("click", () => d.close());
   d.addEventListener("close", () => (detail = null));
   d.addEventListener("click", (e) => e.target === d && d.close());
+  // a 3D effect: drag the stage, or press the arrow keys on it, to turn the camera round and tilt it
+  const big = $("#big");
+  big.tabIndex = 0;
+  const turn = (dyaw, dpitch) => {
+    if (!detail?.cam) return false;
+    detail.turning = false;
+    detail.cam.yaw += dyaw;
+    detail.cam.pitch = Math.max(-0.2, Math.min(1.4, detail.cam.pitch + dpitch));
+    detail.dirty = true;
+    code(detail.fx);
+    return true;
+  };
+  let drag = null;
+  big.addEventListener("pointerdown", (e) => {
+    if (!detail?.cam) return;
+    drag = { x: e.clientX, y: e.clientY };
+    big.setPointerCapture(e.pointerId);
+  });
+  big.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    turn((e.clientX - drag.x) * -0.01, (e.clientY - drag.y) * 0.006);
+    drag = { x: e.clientX, y: e.clientY };
+  });
+  big.addEventListener("pointerup", () => (drag = null));
+  big.addEventListener("pointercancel", () => (drag = null));
+  big.addEventListener("keydown", (e) => {
+    const k = { ArrowLeft: [0.2, 0], ArrowRight: [-0.2, 0], ArrowUp: [0, 0.1], ArrowDown: [0, -0.1] }[e.key];
+    if (k && turn(...k)) e.preventDefault();
+  });
   $("#d-play").addEventListener("click", (e) => {
     detail.playing = !detail.playing;
     e.target.setAttribute("aria-pressed", String(detail.playing));
