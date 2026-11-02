@@ -11,9 +11,10 @@ Pixel art effects as code. Each effect is one file, `src/fx/<category>/<name>.js
 **color** (pixels: opaque, dithered or truly translucent) and **light** (additive glow). No images, so an effect
 can be played live, recolored, mirrored, reseeded and rendered to a sprite sheet for any engine.
 
-An effect is **2D** (drawn in screen pixels, the way most of the library is) or **3D** (`meta.camera` set, drawn in
-world space through a camera, a depth for every pixel). Both are still pixel art on one grid. 3D effects live in
-`src/fx/3d/`; `docs/3D.md` is their reference.
+Every effect plays in 3D. A 2D effect (drawn in screen pixels) also exports its **3D variant** `three` in the same
+file, addressed as `<id>@3d` (`fire/torch@3d`) and built with `in3d(mod)`; the effects in `src/fx/3d/` are 3D only
+(`meta.camera` set). 3D draws in world space through a camera with a depth for every pixel, still pixel art on one
+grid. `docs/3D.md` is the reference.
 
 The method is Hugo Duprez's ([How to make (good) pixel art effects with
 Claude](https://www.spritefusion.com/blog/how-to-make-good-pixel-art-effects-with-claude)): code is clay, trust
@@ -104,10 +105,11 @@ up, when to freeze, how the target reacts. Use it whichever way the game is buil
 
 Read `docs/AUTHORING.md` first: it is the contract (meta, `draw(p, t, o)` for pure effects or `create(o)` for
 simulated ones, local coordinates, seamless loops, ending empty), the toolkit, the painter API and the quality bar.
-For a 3D effect read `docs/3D.md` too: world space, the Space (`q = space(p, o)`), particles in 3D, depth rules.
+For a 3D effect read `docs/3D.md` too: world space, the Space (`q = space(p, o)`), particles in 3D, depth rules, and
+"Give a 2D effect its 3D variant".
 
-Make it **3D** when it has to read from more than one angle, wrap round a body in depth, travel towards or away from
-the camera, or sit in a 3D game as a billboard. Otherwise make it 2D. Then:
+A new 2D effect gets its `three` variant in the same file before it is done: `node tools/check.mjs <id>` checks both
+`<id>` and `<id>@3d`. Make an effect 3D only when it has no sensible 2D form. Then:
 
 1. **Say it in one line** with art direction: what it is, how it moves, its palette, its timing. "A frost nova:
    crystals erupt in a ring from the feet outward, a white flash at the center, shards spin off, the floor stays

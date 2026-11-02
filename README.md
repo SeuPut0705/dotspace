@@ -1,14 +1,14 @@
 <p align="center">
-  <img src="docs/readme/orbit.gif" width="800" alt="Four 3D pixel art effects while the camera circles them: a meteor falling in perspective, orbs orbiting a character, a shockwave across a tiled floor and a whirlwind slash round a fighter and a straw target.">
+  <img src="docs/readme/orbit.gif" width="800" alt="Eight pixel art effects in 3D while the camera circles them: a campfire, a frost nova round a fighter, a tesla coil, a treasure chest bursting open, a fountain, a tornado, a portal and a whirlwind slash.">
 </p>
 
 # dotspace.
 
-**<!-- count -->248<!-- /count --> pixel art effects and animations, in 2D and 3D, every one a small piece of code.**
-Fire, explosions, magic, weather, UI, pickups, critters and more. Play them live, recolor and mirror them, turn the
-camera round the 3D ones, drop them into a browser game, or export sprite sheets, directional views and lighting
-maps for any engine. Plus a Claude Code skill that makes new ones the way a picky pixel artist would: draft, render,
-look, refine.
+**<!-- count -->248<!-- /count --> pixel art effects and animations, every one a small piece of code.** All
+<!-- count3d -->248<!-- /count3d --> play in 3D, and all but the four 3D-only ones in 2D too. Fire, explosions, magic,
+weather, UI, pickups, critters and more. Play them live, recolor and mirror them, turn the camera round them, drop
+them into a browser game, or export sprite sheets, directional views and lighting maps for any engine. Plus a Claude
+Code skill that makes new ones the way a picky pixel artist would: draft, render, look, refine.
 
 **3D is pixel art too.** A 3D effect draws in world space through a camera, with a depth for every pixel, onto the
 same pixel grid with the same palettes and dither. A ring on the floor is a true circle from any side, a slash really
@@ -27,30 +27,30 @@ dimension.
 ## what's in it.
 
 <!-- catalog -->
-| category | effects | some of them |
-|---|---|---|
-| **3d** | 4 | meteor, orbit orbs, shockwave, whirlwind |
-| **moves** | 12 | arrow shot, dash strike, earth stomp, fireball throw, ground pound, holy smite… |
-| **fire** | 12 | brazier, campfire, candle, fire breath, fire ring, fire tornado… |
-| **explosions** | 12 | barrel explosion, big explosion, cartoon pow, dirt explosion, firework burst, firework rocket… |
-| **water** | 12 | bubbles, drip, fountain, geyser, rain splash, ripples… |
-| **ice** | 10 | blizzard vortex, freeze, frost breath, frost nova, ice crystal, ice lance… |
-| **lightning** | 11 | ball lightning, chain lightning, charge up, electrified, lightning strike, plasma ball… |
-| **sci-fi** | 12 | emp blast, energy core, force field, glitch, hologram, jetpack… |
-| **melee** | 12 | claw swipe, dagger flurry, double slash, hammer smash, heavy cleave, scythe reap… |
-| **impacts** | 11 | blunt hit, bullet impact, critical hit, ground slam, heavy landing, hit flash… |
-| **projectiles** | 13 | arrow, bullet tracer, cannon shot, energy disc, signal flare, homing missile… |
-| **spawn & death** | 10 | coin drop, disintegrate, dissolve burn, egg hatch, poof, respawn beam… |
-| **arcane** | 12 | arcane beam, arcane missiles, arcane orb, blink in, blink out, magic circle cast… |
-| **holy** | 10 | blessing, divine shield, feather burst, halo, heal, healing ring… |
-| **shadow** | 12 | black hole, curse, dark explosion, eclipse, grasping hands, hex sigil… |
-| **status** | 13 | bleeding, burning, charmed, confused, cursed, frozen… |
-| **nature** | 13 | acid splash, boulder, earth spike, healing bloom, leaf storm, poison cloud… |
-| **weather** | 12 | aurora, blizzard, cherry blossoms, clouds, falling leaves, fireflies… |
-| **ui** | 12 | achievement, coin collect, combo counter, confetti, countdown, crit number… |
-| **pickups** | 11 | chest open, coin spin, collect burst, crystal shard, gem spin, heart pickup… |
-| **transitions** | 10 | blinds, burn away, crt off, diamond wipe, glitch wipe, iris… |
-| **critters** | 12 | bat, bird, butterfly, eyeball, fish school, flying skull… |
+| category | effects | in 3D | some of them |
+|---|---|---|---|
+| **3d** | 4 | 4 | meteor, orbit orbs, shockwave, whirlwind |
+| **moves** | 12 | 12 | arrow shot, dash strike, earth stomp, fireball throw, ground pound, holy smite… |
+| **fire** | 12 | 12 | brazier, campfire, candle, fire breath, fire ring, fire tornado… |
+| **explosions** | 12 | 12 | barrel explosion, big explosion, cartoon pow, dirt explosion, firework burst, firework rocket… |
+| **water** | 12 | 12 | bubbles, drip, fountain, geyser, rain splash, ripples… |
+| **ice** | 10 | 10 | blizzard vortex, freeze, frost breath, frost nova, ice crystal, ice lance… |
+| **lightning** | 11 | 11 | ball lightning, chain lightning, charge up, electrified, lightning strike, plasma ball… |
+| **sci-fi** | 12 | 12 | emp blast, energy core, force field, glitch, hologram, jetpack… |
+| **melee** | 12 | 12 | claw swipe, dagger flurry, double slash, hammer smash, heavy cleave, scythe reap… |
+| **impacts** | 11 | 11 | blunt hit, bullet impact, critical hit, ground slam, heavy landing, hit flash… |
+| **projectiles** | 13 | 13 | arrow, bullet tracer, cannon shot, energy disc, signal flare, homing missile… |
+| **spawn & death** | 10 | 10 | coin drop, disintegrate, dissolve burn, egg hatch, poof, respawn beam… |
+| **arcane** | 12 | 12 | arcane beam, arcane missiles, arcane orb, blink in, blink out, magic circle cast… |
+| **holy** | 10 | 10 | blessing, divine shield, feather burst, halo, heal, healing ring… |
+| **shadow** | 12 | 12 | black hole, curse, dark explosion, eclipse, grasping hands, hex sigil… |
+| **status** | 13 | 13 | bleeding, burning, charmed, confused, cursed, frozen… |
+| **nature** | 13 | 13 | acid splash, boulder, earth spike, healing bloom, leaf storm, poison cloud… |
+| **weather** | 12 | 12 | aurora, blizzard, cherry blossoms, clouds, falling leaves, fireflies… |
+| **ui** | 12 | 12 | achievement, coin collect, combo counter, confetti, countdown, crit number… |
+| **pickups** | 11 | 11 | chest open, coin spin, collect burst, crystal shard, gem spin, heart pickup… |
+| **transitions** | 10 | 10 | blinds, burn away, crt off, diamond wipe, glitch wipe, iris… |
+| **critters** | 12 | 12 | bat, bird, butterfly, eyeball, fish school, flying skull… |
 <!-- /catalog -->
 
 Every effect is a file in `src/fx/<category>/<name>.js`. The [catalog](docs/CATALOG.md) lists them all.
@@ -103,9 +103,21 @@ node tools/render.mjs fire/torch --gif --opts '{"palette": ["#102","#215","#43a"
 
 ## 3d.
 
+Every 2D effect also exports its 3D variant, `three`, in the same file: `fire/torch` and `fire/torch@3d`. The 2D
+version is untouched, so a 2D game sees no change. The variant is the same effect standing in space: flames and glows
+stay upright, built from the effect's own 2D pixel art; rings, runes, scorches and slashes lie on real planes; sparks,
+debris, smoke and bolts fly in all three axes. The 4 effects in `3d/` are 3D only.
+
+```js
+import { createFx, in3d } from "dotspace";
+import * as torch from "dotspace/fx/fire/torch";
+
+const fx = createFx(in3d(torch), { x: 160, y: 120, camera: { yaw: 0.8, pitch: 0.3 } });   // the 3D torch
+```
+
 A 3D effect has a `camera` in its meta and draws through a Space: world coordinates (x right, y down, z towards
-the viewer), a depth for every pixel, rings and slashes on any plane, shaded balls, particles and debris that fly in
-all three axes.
+the viewer), a depth for every pixel, rings and slashes on any plane, 2D drawing laid on a plane or stood upright,
+shaded balls, particles and debris that fly in all three axes.
 
 ```js
 import { space, lit, fit, PAL } from "dotspace";
