@@ -8,7 +8,7 @@
 import { readFileSync } from "node:fs";
 import { shortfall } from "../src/core/rig.js";
 import { resolveIds, allIds, loadEffect } from "./lib/fxlib.mjs";
-import { createFrame, clearFrame, painterFor, createFx, createAct, poseAt, stockActor, resolveOptions, Painter, BACKDROPS } from "../src/core/index.js";
+import { createFrame, clearFrame, painterFor, createFx, createAct, actBounds, poseAt, stockActor, resolveOptions, Painter, BACKDROPS } from "../src/core/index.js";
 
 const ids = process.argv.slice(2).length ? resolveIds(process.argv.slice(2)) : allIds();
 const M = 24; // margin around the canvas, to catch pixels drawn outside it
@@ -67,6 +67,23 @@ function checkAct(fx, errs, notes) {
     if (i % 3 === 0) inst.draw(clearFrame(f));
   }
   if (!meta.loop && !inst.done()) errs.push("the act never ends");
+  // 3D, seen from the side: where the body and a target overlap, the nearer one shows whole (before the effect starts)
+  const tg = a.targets ?? (a.target ? [a.target] : []);
+  if (meta.camera && tg.length && first < 0) {
+    const b = actBounds(mod), w = b.x1 - b.x0 + 12, h = b.y1 - b.y0 + 12, bx = poseAt(k, first).x ?? 0;
+    for (const deg of [90, 270]) {
+      const yaw = (deg * Math.PI) / 180, near = (x) => x * Math.sin(yaw), nb = near(bx), nt = tg.map((g) => near(g.x ?? 66));
+      const front = nt.every((v) => nb > v) ? { target: false } : nt.every((v) => nb < v) ? { body: false } : null;
+      if (!front) continue;
+      const shot = (o) => {
+        const fr = createFrame(w, h, 0, 0, true);
+        createAct(mod, { x: 6 - b.x0, y: 6 - b.y0, camera: { ...meta.camera, yaw } }).draw(fr, o);
+        return fr.color;
+      };
+      const whole = shot(front), all = shot({}), hidden = count(whole, (c, i) => c >>> 24 === 255 && all[i] !== c);
+      if (hidden) errs.push(`act seen from yaw ${deg}°: ${hidden} px of the nearer ${front.body === false ? "target" : "body"} are covered by what stands behind it`);
+    }
+  }
 }
 const count = (buf, test) => {
   let n = 0;

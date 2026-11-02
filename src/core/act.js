@@ -249,7 +249,7 @@ export function createAct(mod, o = {}) {
     last = q;
     return q;
   };
-  let scratch = null, snap = null, eye = null;
+  let scratch = null, snap = null, eye = null, tzb = null;
   const scratchFor = (f) => {
     if (!scratch || scratch.a.w !== f.w || scratch.a.h !== f.h) scratch = { a: createFrame(f.w, f.h, f.ox, f.oy, !!meta.camera), b: createFrame(f.w, f.h, f.ox, f.oy, !!meta.camera) };
     return scratch;
@@ -349,17 +349,22 @@ export function createAct(mod, o = {}) {
       };
       const FX = X - (frame.ox | 0), FY = Y - (frame.oy | 0);
       // a 3D effect: what paint() puts down (a target, the body) stands at depth d, and the effect sorts round it
-      const atDepth = (d, paint) => {
+      // also: a second depth buffer that records only these pixels
+      const atDepth = (d, paint, also) => {
         if (!frame.depth) frame.depth = new Float32Array(W * H).fill(Infinity);
         const C = frame.color, Dp = frame.depth;
         if (!snap || snap.length !== C.length) snap = new Uint32Array(C.length);
         snap.set(C);
         paint();
-        for (let i = 0; i < C.length; i++) if (C[i] !== snap[i] && C[i] >>> 24 === 255) Dp[i] = d;
+        for (let i = 0; i < C.length; i++)
+          if (C[i] !== snap[i] && C[i] >>> 24 === 255) {
+            Dp[i] = d;
+            if (also) also[i] = d;
+          }
       };
       // the sprites far to near, so a nearer one covers a further one; a tie keeps the targets under the body
-      const stand = (layers) => {
-        for (const [d, paint] of layers.sort((p, q) => q[0] - p[0])) atDepth(d, paint);
+      const stand = (layers, also) => {
+        for (const [d, paint] of layers.sort((p, q) => q[0] - p[0])) atDepth(d, paint, also);
       };
       const targetLayers = () => tgt.map((g) => [depthAt(g.x), () => drawTarget(g)]);
       if (!body && meta.camera) {
@@ -377,9 +382,12 @@ export function createAct(mod, o = {}) {
       }
       const qx = q.x ?? 0, qy = q.y ?? 0, foot = pin(qx, qy), seen = !!foot, [rx, ry] = foot ?? [0, 0], BX = FX + (flip ? -rx : rx), BY = FY + ry;
       const r = bodyOf(q);
+      // a 3D act whose effect paints the body: where a target stands, nothing further back than it is drawn over it
+      let tz = null, bodyZ = 0;
       const paint = (i, color) => {
         const px = mirror ? BX - r.xs[i] - 1 : BX + r.xs[i], py = BY + r.ys[i];
         if (px < 0 || py < 0 || px >= W || py >= H) return;
+        if (tz && bodyZ > tz[py * W + px]) return;
         frame.color[py * W + px] = color;
         // he stays crisp in front of his own after-images
         if (ghosts.length) frame.light[py * W + px] = 0;
@@ -452,17 +460,20 @@ export function createAct(mod, o = {}) {
       // what's up on the body goes with it; what's on the floor stays on the floor
       const shiftOf = (ly) => {
         const k = clamp((-11 - ly) / 7, 0, 1), f = clamp((-1 - ly) / 6, 0, 1);
-        return [Math.round(lean * k + rx * f), Math.round(cr * k + ry * f)];
+        return [Math.round(lean * k + rx * f), Math.round(cr * k + ry * f), f];
       };
       const rest = (sx, sy) => {
         const c = (mirror ? FX - sx - 1 : sx - FX) + 12, r0 = sy - FY + 38;
         return c >= 0 && r0 >= 0 && c < 24 && r0 < 38 && REST_MASK[r0 * 24 + c] === 1;
       };
       const C = frame.color, Ls = frame.light;
-      const copy = (buf, sx, sy, s) => {
-        const [dx, dy] = shiftOf(sy - FY), px = sx + (flip ? -dx : dx), py = sy + dy;
+      // z: the pixel's depth where the effect drew it, round the standing body; it goes with him as far as it moves
+      let d0 = 0;
+      const copy = (buf, sx, sy, s, z) => {
+        const [dx, dy, f] = shiftOf(sy - FY), px = sx + (flip ? -dx : dx), py = sy + dy;
         if (px < 0 || py < 0 || px >= W || py >= H) return;
         const i = py * W + px;
+        if (tz && (z < Infinity ? z : d0) + f * (bodyZ - d0) > tz[i]) return;
         if (buf === Ls) {
           const d = Ls[i];
           Ls[i] = (255 << 24) | (Math.min(255, ((d >>> 16) & 255) + ((s >>> 16) & 255)) << 16) | (Math.min(255, ((d >>> 8) & 255) + ((s >>> 8) & 255)) << 8) | Math.min(255, (d & 255) + (s & 255));
@@ -473,12 +484,18 @@ export function createAct(mod, o = {}) {
           C[i] = (Math.max(s >>> 24, d >>> 24) << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0);
         }
       };
-      drawTargets();
+      if (cam && tgt.length) {
+        if (!tzb || tzb.length !== W * H) tzb = new Float32Array(W * H);
+        tz = tzb.fill(Infinity);
+        d0 = depthAt(0);
+        bodyZ = depthAt(qx);
+        stand(targetLayers(), tz);
+      } else drawTargets();
       shadow();
       for (let sy = 0; sy < H; sy++)
         for (let sx = 0; sx < W; sx++) {
-          const c = A.color[sy * W + sx];
-          if (c) copy(C, sx, sy, c);
+          const j = sy * W + sx, c = A.color[j];
+          if (c) copy(C, sx, sy, c, A.depth?.[j]);
         }
       drawGhosts();
       const restIndex = (s) => {
@@ -499,8 +516,8 @@ export function createAct(mod, o = {}) {
       for (let sy = 0; sy < H; sy++)
         for (let sx = 0; sx < W; sx++) {
           const j = sy * W + sx;
-          if (B.color[j] && B.color[j] !== A.color[j] && !rest(sx, sy)) copy(C, sx, sy, B.color[j]);
-          if (B.light[j] & 0xffffff) copy(Ls, sx, sy, B.light[j]);
+          if (B.color[j] && B.color[j] !== A.color[j] && !rest(sx, sy)) copy(C, sx, sy, B.color[j], B.depth?.[j]);
+          if (B.light[j] & 0xffffff) copy(Ls, sx, sy, B.light[j], B.depth?.[j]);
         }
       drawStraw();
       drawDust();
