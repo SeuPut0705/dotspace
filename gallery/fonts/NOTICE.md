@@ -1,4 +1,5 @@
-# Patch Pixel
+# Galmuri
 
-`PatchPixel-Regular.woff2` is Patch's own typeface, used here for the gallery's display type.
-© 2026 Patch. All rights reserved. It is not covered by this repository's MIT license.
+`Galmuri11.woff2` is a Latin subset of Galmuri11 by Lee Minseo (https://github.com/quiple/galmuri), used for the
+gallery's display type. It is licensed under the SIL Open Font License 1.1, not this repository's MIT license: see
+`OFL.txt`.

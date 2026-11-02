@@ -1,9 +1,10 @@
 {
-  "name": "pixelfx",
-  "version": "0.3.0",
-  "description": "Code-driven pixel art effects and animations, and a Claude Code skill to make your own.",
+  "name": "dotspace",
+  "version": "0.1.0",
+  "description": "Pixel art effects as code, in 2D and 3D: a library, sprite sheets with lighting maps for any engine, and a Claude Code skill to make your own.",
   "type": "module",
   "license": "MIT",
+  "repository": "github:SeuPut0705/dotspace",
   "engines": {
     "node": ">=18"
   },

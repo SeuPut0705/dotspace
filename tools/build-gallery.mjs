@@ -21,12 +21,12 @@ writeFileSync(join(OUT, "index.html"), readFileSync(join(G, "index.html")));
 // the one-page version: <title> and <style> first, then the body markup, the font as a data URI
 const html = readFileSync(join(G, "index.html"), "utf8");
 const body = html.slice(html.indexOf("<!--BODY-->") + 11, html.indexOf("<!--/BODY-->"));
-const font = readFileSync(join(G, "fonts", "PatchPixel-Regular.woff2")).toString("base64");
-const css = readFileSync(join(G, "style.css"), "utf8").replace("url(fonts/PatchPixel-Regular.woff2)", `url(data:font/woff2;base64,${font})`);
+const font = readFileSync(join(G, "fonts", "Galmuri11.woff2")).toString("base64");
+const css = readFileSync(join(G, "style.css"), "utf8").replace("url(fonts/Galmuri11.woff2)", `url(data:font/woff2;base64,${font})`);
 writeFileSync(
   join(PAGE, "index.html"),
   [
-    "<title>pixelfx</title>",
+    "<title>dotspace</title>",
     '<meta name="claude:viewport-fit-sides" content="cover">',
     '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Funnel+Sans:wght@400;500&family=Red+Hat+Mono:wght@400;500&display=swap">',
     `<style>\n${css}\n</style>`,

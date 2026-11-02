@@ -1,17 +1,17 @@
 {
-  "name": "pixelfx",
-  "description": "pixelfx by Patch: pixel art effects and animations as code.",
+  "name": "dotspace",
+  "description": "dotspace: pixel art effects and animations as code, in 2D and 3D.",
   "owner": {
-    "name": "Patch",
-    "url": "https://patch.gg"
+    "name": "SeuPut",
+    "url": "https://github.com/SeuPut0705"
   },
   "plugins": [
     {
-      "name": "pixelfx",
+      "name": "dotspace",
       "source": "./",
-      "description": "A skill for pixel art effects and sprite animations: use, recolor and export the library's effects, or draft, render, look at and refine new ones until they look hand-animated.",
+      "description": "A skill for pixel art effects in 2D and 3D: use, recolor, turn and export the library's effects, or draft, render, look at and refine new ones until they look hand-animated from every angle.",
       "category": "gamedev",
-      "tags": ["pixel-art", "vfx", "animation", "sprite-sheet", "gamedev"]
+      "tags": ["pixel-art", "vfx", "animation", "sprite-sheet", "3d", "gamedev"]
     }
   ]
 }

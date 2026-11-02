@@ -84,4 +84,3 @@ export const RAMP = Object.fromEntries(Object.entries(PAL).map(([k, v]) => [k, r
 export const WHITE = hex("#ffffff");
 export const BLACK = hex("#000000");
 export const INK = hex("#0b0a10");
-export const PATCH = hex("#f53cd1");

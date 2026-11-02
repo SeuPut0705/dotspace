@@ -43,6 +43,10 @@ export function create(o) {
 `draw(p, t, o)` (and `drawBack(p, t, o)`): the frame at `t` from `t` alone, so it loops with no seam. Particles
 that loop come from `cycle`, motion from `fly`, noise from `loopNoise`/`tileFbm`.
 
+**2D or 3D.** Either kind can live in 3D: add `camera` to its meta and draw through `space(p, o)` in world
+coordinates with a depth for every pixel. Everything below holds for both. [3D.md](3D.md) has the world space, the
+Space API, particles in 3D, the depth rules and how to export views and lighting maps.
+
 ## The contract
 
 - **Scale.** The stock character is 24 x 38 px (`actor: 2`): every effect is drawn at that scale, detail at the
@@ -55,7 +59,7 @@ that loop come from `cycle`, motion from `fly`, noise from `loopNoise`/`tileFbm`
   smoke to clear). Loops are seamless.
 - **Options** `o`: `meta.options` merged with the caller's. Honour `o.palette` (main ramp, dark to bright; use
   `fit(o.palette, n)` so any length works) and `o.seed`. Other color ramps as options are resampled too.
-  `x`, `y`, `flip`, `angle`, `light` are reserved.
+  `x`, `y`, `flip`, `angle`, `light`, `camera`, `depth` are reserved.
 - **Deterministic.** Never `Math.random()` or `Date`.
 - **Layers.** `drawBack` for what's behind a character or the far half of a ring; `draw` for the rest.
 - **Actor effects** (`actor: 2`) get `o.actor = { mask, pixels, x, y, w, h, head, chest }`: the character's
@@ -111,7 +115,8 @@ export const act = {
   Raised hands go behind the head by themselves, so the face stays visible; put wind-ups beside or above the head, not across it.
 
 **Moves** (`src/fx/moves/`) are effects made of effects. `chain` plays other effects as cues; a projectile is an effect whose `x`
-is a function of time; `shiftKeys` reuses other effects' acts.
+is a function of time; `shiftKeys` reuses other effects' acts. A 3D move places its cues in its own space with `z` too
+([3D.md](3D.md), "Moves").
 
 ```js
 export const create = chain([
@@ -187,7 +192,8 @@ What makes Sprite Fusion's effects good, and what every effect here must do:
    hero frame, a flare, light, a burst), spread, hold (twinkles, glints, embers), break or melt, a long decay.
    Many small events, each varied in size, speed, timing and life.
 6. **Depth.** Rings on the floor are flat ellipses with a far half behind the character and a near half in
-   front. Back rows of crystals or flames are dimmer.
+   front. Back rows of crystals or flames are dimmer. A 3D effect gets this from its depth buffer; it still has to
+   read from every side (`views.png`).
 7. **Timing.** Fast attack, slow release. Big effects linger 2 to 4 s while smoke clears and sparkles fade;
    hits are snappy (0.3 to 0.8 s) but still have follow-through.
 8. **Reads at 1x** with a clear focal point, no speckle noise inside shapes.
@@ -205,7 +211,7 @@ your eyes, feed your references.
    read its source for the choreography and numbers. His code uses world units, 2 per pixel.
 2. **Say it in one line** with the art direction, then draft.
 3. **Render and look**: `node tools/render.mjs <id> --zoom 3` (contact sheet in `records/<id>/contact.png`;
-   `--all` every frame, `--mp4` motion).
+   `--all` every frame, `--mp4` motion; a 3D effect also gets `views.png`, 8 directions).
 4. **Benchmark**: put his and yours next to each other at the same height on screen. If his has more detail, light
    or life, yours isn't done.
 5. **Fix the worst thing, render again.** Three rounds minimum; showpieces take more.

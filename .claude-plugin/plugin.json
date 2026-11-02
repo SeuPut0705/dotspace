@@ -1,14 +1,14 @@
 {
-  "name": "pixelfx",
-  "displayName": "pixelfx",
-  "version": "0.3.0",
-  "description": "Pixel art effects and animations as code: a library of ready-made effects in 20 categories, sprite sheet export for any engine, and a skill that makes new effects by drafting, rendering, looking and refining.",
+  "name": "dotspace",
+  "displayName": "dotspace",
+  "version": "0.1.0",
+  "description": "Pixel art effects as code, in 2D and 3D: a library of ready-made effects in 22 categories, a camera that turns 3D effects to any angle, sprite sheets with directional views and lighting maps for any engine, and a skill that makes new effects by drafting, rendering, looking and refining.",
   "author": {
-    "name": "Patch",
-    "url": "https://patch.gg"
+    "name": "SeuPut",
+    "url": "https://github.com/SeuPut0705"
   },
-  "homepage": "https://github.com/patch-gg/pixelfx",
-  "repository": "https://github.com/patch-gg/pixelfx",
+  "homepage": "https://github.com/SeuPut0705/dotspace",
+  "repository": "https://github.com/SeuPut0705/dotspace",
   "license": "MIT",
-  "keywords": ["pixel-art", "vfx", "effects", "animation", "sprite-sheet", "gamedev", "canvas", "godot", "unity", "phaser"]
+  "keywords": ["pixel-art", "vfx", "effects", "animation", "sprite-sheet", "3d", "billboard", "normal-map", "gamedev", "canvas", "godot", "unity", "three.js", "phaser"]
 }
