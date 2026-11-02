@@ -259,3 +259,32 @@ export function eyes(a) {
   EYES.set(a.mask, list);
   return list;
 }
+
+/**
+ * 3D: the world y that lands on the same screen row as height y of the upright 2D sprite, whatever the pitch (the
+ * character is a billboard, so a part placed round it by its 2D height lifts by 1 / cos(pitch) to meet it).
+ */
+export const lift = (q, y) => y / q.cp;
+
+/**
+ * 3D: the world point on the upright sprite's own plane that lands at screen offset sx (px right of the sprite's
+ * centre) and 2D height y, whatever the yaw and pitch; dz brings it that far towards the camera (a part standing
+ * off the body's surface). Icicles, wounds and the like that hang from a body pixel are placed with it.
+ */
+export const onSprite = (q, sx, y, dz = 0) => [sx * q.cy + dz * q.sy, y / q.cp, -sx * q.sy + dz * q.cy];
+
+/**
+ * 3D: a soft translucent ring lying in a plane (default the floor), a true circle of radius r and half-thickness w,
+ * colour c at alpha a at its crest; it thins to nothing either side (a ripple, a shock front; a plain `q.ring` at
+ * low alpha dithers into scattered dots). A bit of the ring may be left out by returning false from `keep(u, v)`.
+ */
+export function softRing(q, cx, cy, cz, r, w, c, a, n = null, keep = null) {
+  if (a <= 0.01 || r <= 0) return;
+  q.plane(cx, cy, cz, n, r + w + 1, (u, v, out) => {
+    const k = 1 - Math.abs(Math.hypot(u, v) - r) / w;
+    if (k <= 0 || (keep && !keep(u, v))) return;
+    out.c = typeof c === "function" ? c(u, v) : c;
+    out.a = a * k;
+    out.blend = true;
+  });
+}

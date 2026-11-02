@@ -1,6 +1,6 @@
 // The layered flame tongues and the licks, embers and smoke shed off a burning edge follow Sprite Fusion's
 // open-source fire (https://www.spritefusion.com/pixel-art-vfx/fire), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, hex, mix, clamp, smooth, ease, fbm, noise, noise2, rand, TAU, WHITE, SMOKE_RAMP } from "../../core/index.js";
+import { Particles, Lights, P, Rng, fit, hex, mix, clamp, smooth, ease, fbm, noise, noise2, rand, space, TAU, WHITE, SMOKE_RAMP } from "../../core/index.js";
 import { W, H, screenMeta, clipTo, field, pixels, lifeLeft, rect } from "./_lib.js";
 
 export const meta = screenMeta({
@@ -260,3 +260,195 @@ export function create(o) {
     },
   };
 }
+
+// 3D: a sheet of paper lying on the stage burns in from its edges behind a ragged ember line (white-hot, cooling into
+// char) with licking flames standing on it, embers, ash and smoke climbing into the air; then the black smoulders and
+// burns open from the middle. The sheet is the screen laid on the floor (two field pixels to a world pixel), so the
+// same fire fields, flames and sheds run, but the flames stand up in space and the smoke rises round the camera.
+const SXW = 80, SZW = 45, FS = 2;
+export const three = {
+  meta: { size: [212, 140], origin: [106, 92], bg: "ground", camera: { pitch: 0.4 } },
+  create(o) {
+    const F = fit(o.palette, 9), ink = hex(o.color), R = new Rng(o.seed), seed = o.seed * 13;
+    const CHAR = mix(ink, F[0], 0.45), SCORCH = mix(ink, hex("#3a2216"), 0.6), WARM = mix(F[4], F[5], 0.4);
+    const SMOKE = mix(hex("#8a7276"), F[2], 0.2);
+    const A = inField(seed), B = outField(seed + 1);
+    const heat = new Float32Array(W * H), ph = new Uint8Array(W * H), fleck = new Float32Array(W * H), jit = new Float32Array(W * H), vein = new Float32Array(W * H);
+    for (let i = 0; i < W * H; i++) {
+      const x = i % W, y = (i / W) | 0;
+      heat[i] = 0.5 + 0.5 * noise2(x / 13, y / 13, seed + 41);
+      ph[i] = Math.min(63, Math.floor((0.5 + 0.5 * noise2(x / 23, y / 23, seed + 43)) * 64));
+      fleck[i] = rand(x, y, seed + 45) < 0.04 ? 9 + 22 * rand(x, y, seed + 47) : 0;
+      jit[i] = (rand(x, y, seed + 49) - 0.5) * 1.5;
+      const rx = x * 0.8 + y * 0.6, ry = y * 0.8 - x * 0.6;
+      vein[i] = Math.min(Math.abs(noise2(rx / 11, ry / 9, seed + 61)), Math.abs(noise2(ry / 5.5, rx / 5, seed + 63)) * 1.5);
+    }
+    const FL = new Float32Array(64), HV = new Float32Array(64), TW = new Uint8Array(64), seen = new Uint8Array(W * H);
+    const kIn = (t) => A.lo - 8 + (A.hi - A.lo + 8) * Math.pow(Math.max(0, t) / CLOSE, 1.25);
+    const kOut = (t) => (t < POP ? B.lo - 24 + 24 * ease.inQuad(clamp((t - SMOULDER) / (POP - SMOULDER))) : B.lo + (B.hi - B.lo + 16) * ease.outQuad(clamp((t - POP) / (OPEN - POP))));
+    const ps = new Particles({ rng: R, ground: () => 0, sparks: [F[7], F[6], F[4], F[2]] }), sm = new Particles({ rng: R, ground: () => 0 });
+    const ash = new Particles({ rng: R, ground: () => 0, sparks: ASH }), lights = new Lights();
+    const line = [];
+    let t = 0, pin = 0, pout = 0, closed = false, popped = false;
+    const wx = (i) => ((i % W) + 0.5 - W / 2) / FS, wz = (i) => (((i / W) | 0) + 0.5 - H / 2) / FS;
+    const RATE = { in: [0.006, 0.0014, 0.0006, 0.0024, 0.0012, 0.0004], out: [0.006, 0.0005, 0.0004, 0.0012, 0.0004, 0.0004] };
+    // what a patch of edge gives off as the front crosses it, as in the 2D, but out into space
+    const shed = (i, inA) => {
+      const [fl, em, smk, sh, as, li] = inA ? RATE.in : RATE.out, x = wx(i), z = wz(i), end = inA ? POP + 0.1 : D - 0.05;
+      let r = R.next();
+      if ((r -= fl) < 0) {
+        const life = lifeLeft(R.range(0.18, 0.4), t, end);
+        if (life > 0.08) ps.spawn3(P.FIRE, x, -3, z, R.range(-6, 6), -R.range(25, 50), R.range(-6, 6), life, 0, R.range(0.8, 1.5));
+      } else if ((r -= em) < 0) {
+        const life = lifeLeft(inA ? R.range(0.6, 1.3) : R.range(0.5, 1), t, end);
+        if (life > 0.2) ps.spawn3(P.EMBER, x, -2, z, R.range(-22, 22), -R.range(40, 100), R.range(-22, 22), life, 0, R.chance(0.25) ? 2 : 1);
+      } else if ((r -= smk + sh * heat[i] ** 2) < 0) {
+        const n = R.int(4, 6), vx = R.range(-5, 5), vz = R.range(-5, 5), up = (inA ? A : B).ny[i] < -0.25;
+        for (let j = 0; j < n; j++) {
+          const life = lifeLeft(up ? R.range(0.8, 1.3) : R.range(0.35, 0.65), t + j * 0.05, end);
+          if (life > 0.4) sm.spawn3(P.SMOKE, x + R.range(-2.5, 2.5), -4 - j * 1.2, z + R.range(-2.5, 2.5), vx + R.range(-3, 3), -R.range(18, 34), vz + R.range(-3, 3), life, SMOKE, R.range(2.2, 3.8), j * 0.05);
+        }
+      } else if ((r -= as) < 0) {
+        const life = lifeLeft(R.range(0.9, 1.6), t, end);
+        if (life > 0.3) ash.spawn3(P.EMBER, x, -2, z, R.range(-14, 14), -R.range(25, 60), R.range(-14, 14), life);
+      } else if ((r -= li) < 0) lights.add(x, -4, R.range(14, 24), WARM, R.range(0.14, 0.26), R.range(0.18, 0.4), z);
+    };
+    // smoke shows where firelight catches it: lit warm near the burning line, dark over the picture
+    const LIT = mix(hex("#8a7276"), F[3], 0.25), DIM = hex(SMOKE_RAMP[3]);
+    const drawSmoke = (q) => {
+      const inPhase = t < COVER, open = t >= SMOULDER && t < OPEN + 0.25, k = inPhase ? kIn(t) : kOut(t), f = inPhase ? A.f : B.f;
+      const puffs = [];
+      for (const e of sm.list) if (e.delay <= 0) puffs.push(e);
+      for (const e of q.sort(puffs, (e) => [e.x, e.y, e.z])) {
+        const kk = e.life / e.max, age = 1 - kk, r = e.size * (0.65 + Math.min(1, age * 2.5) * 0.45 + age * 0.4);
+        const i = clamp(Math.floor(e.z * FS + H / 2), 0, H - 1) * W + clamp(Math.floor(e.x * FS + W / 2), 0, W - 1);
+        const en = inPhase || open ? (inPhase ? k - f[i] : f[i] - k) : 99, lit = clamp(1 - Math.abs(en) / 30);
+        const a = Math.min(1, age * 12) * Math.min(1, kk * 2.4) * 0.58 * (en > 0 ? 0.05 + 0.95 * lit : inPhase ? 1 : 0.2 + 0.8 * lit);
+        if (a < 0.04) continue;
+        const c = mix(mix(DIM, LIT, lit), SMOKE_RAMP[2], age * 0.5);
+        q.disc(e.x, e.y, e.z, r, c, a * 0.45);
+        q.disc(e.x + r * 0.05, e.y + r * 0.06, e.z, r * 0.74, c, a * 0.62);
+        if (age < 0.5) q.disc(e.x - r * 0.22, e.y - r * 0.3, e.z, r * 0.5, mix(c, WHITE, 0.15), a * 0.4 * (1 - age * 2));
+      }
+    };
+    return {
+      update(dt) {
+        t += dt;
+        if (t < COVER) {
+          const k = kIn(t);
+          while (pin < A.order.length && A.f[A.order[pin]] <= k) shed(A.order[pin++], true);
+          if (!closed && t >= CLOSE) {
+            // the last of the picture goes up in a puff
+            closed = true;
+            const i = A.order[A.order.length - 1], x = wx(i), z = wz(i);
+            lights.add(x, -4, 40, WARM, 0.5, 0.4, z);
+            for (let j = 0; j < 12; j++) ps.spawn3(P.EMBER, x + R.range(-4, 4), -2, z + R.range(-2, 2), R.range(-30, 30), -R.range(40, 120), R.range(-30, 30), R.range(0.5, 0.75), 0, R.chance(0.3) ? 2 : 1);
+            for (let j = 0; j < 5; j++) sm.spawn3(P.SMOKE, x + R.range(-5, 5), -3, z + R.range(-3, 3), R.range(-8, 8), -R.range(12, 28), R.range(-8, 8), R.range(1.1, 1.6), SMOKE, R.range(3, 4.5), R.range(0, 0.15));
+          }
+        }
+        // the black smoulders in the middle, then burns open
+        if (t >= SMOULDER && t < POP && R.chance(0.1)) {
+          const i = B.order[R.int(0, 400)], x = wx(i), z = wz(i);
+          if (R.chance(0.6)) sm.spawn3(P.SMOKE, x, -2, z, R.range(-3, 3), -R.range(8, 16), R.range(-3, 3), lifeLeft(R.range(0.9, 1.4), t, D - 0.05), SMOKE, R.range(1.6, 3));
+          else ps.spawn3(P.EMBER, x, -2, z, R.range(-8, 8), -R.range(15, 40), R.range(-8, 8), R.range(0.4, 0.8));
+        }
+        if (!popped && t >= POP) {
+          popped = true;
+          const ox = (B.ox - W / 2) / FS, oz = (B.oy - H / 2) / FS;
+          lights.add(ox, -4, 60, WARM, 0.6, 0.45, oz);
+          lights.add(ox, -4, 22, F[7], 0.7, 0.12, oz);
+          for (let j = 0; j < 12; j++) {
+            const a = R.range(0, TAU), sp = R.range(30, 90);
+            ps.spawn3(P.EMBER, ox + Math.cos(a) * 2, -2, oz + Math.sin(a) * 2, Math.cos(a) * sp, -R.range(30, 90), Math.sin(a) * sp, R.range(0.4, 0.9), 0, R.chance(0.3) ? 2 : 1);
+          }
+          for (let j = 0; j < 10; j++) {
+            const a = R.range(0, TAU), sp = R.range(60, 150);
+            ps.spawn3(P.SPARK, ox, -3, oz, Math.cos(a) * sp, -R.range(40, 120), Math.sin(a) * sp, R.range(0.15, 0.35));
+          }
+        }
+        if (t >= POP && t < OPEN + 0.2) {
+          const k = kOut(t);
+          while (pout < B.order.length && B.f[B.order[pout]] <= k) shed(B.order[pout++], false);
+        }
+        ps.update(dt);
+        sm.update(dt);
+        ash.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o);
+        line.length = 0;
+        if (t < OPEN + 0.25) {
+          const inPhase = t < COVER, k = inPhase ? kIn(t) : kOut(t), Fd = inPhase ? A : B, f = Fd.f, g = Fd.g;
+          const fade = inPhase ? 1 - smooth(COVER - 0.15, COVER, t) : 1, solid = t >= COVER && t < SMOULDER;
+          for (let j = 0; j < 64; j++) {
+            const qq = j / 63;
+            FL[j] = 0.75 + 0.25 * Math.sin(t * 7 + qq * 9);
+            HV[j] = 0.3 * Math.sin(t * 5.5 + qq * 11);
+            TW[j] = Math.sin(t * 13 + qq * 40) > -0.5 ? 1 : 0;
+          }
+          const su = clamp((t - SMOULDER) / (POP - SMOULDER)), SR = 5 + 17 * su;
+          const sk = inPhase || t < SMOULDER ? 0 : t < POP ? 0.3 + 0.7 * su : 1 - (t - POP) / 0.3;
+          q.plane(0, 0, 0, null, Math.hypot(SXW, SZW) + 1, (u, v, out) => {
+            if (u < -SXW || u >= SXW || v < -SZW || v >= SZW) return;
+            if (solid) return ink;
+            const i = Math.floor(v * FS + H / 2) * W + Math.floor(u * FS + W / 2);
+            // e: how far into the cover this pixel is in field units (smooth, for light); s: in field px from the burning line
+            const e = inPhase ? k - f[i] : f[i] - k, s = e * g[i];
+            if (e < 0) {
+              if (inPhase && s > -2.5) (out.c = SCORCH), (out.blend = true), (out.a = 0.5 * (1 + s / 2.5));
+              const uu = Math.max(0, 1 + e / HALO), vv = 1 + e / POOL;
+              out.l = WARM;
+              out.k = (0.3 * uu * uu + 0.12 * vv * vv) * FL[ph[i]];
+              return;
+            }
+            const hv = clamp(heat[i] + HV[ph[i]]), th = 0.6 + 0.6 * hv, uh = s / th;
+            if (uh < 6.4) {
+              // the ember line: white-hot at the edge, cooling down the ramp into char
+              if (uh < 0.9 && !seen[i]) (seen[i] = 1), line.push(i);
+              if (uh < 4.6) (out.l = WARM), (out.k = 0.45 * (1 - uh / 4.6) * (0.7 + 0.3 * hv));
+              return uh < 0.9 ? (hv > 0.6 ? F[8] : F[7]) : uh < 1.7 ? F[6] : uh < 2.4 ? F[5] : uh < 3.1 ? F[4] : uh < 3.8 ? F[3] : uh < 4.6 ? F[2] : uh < 5.5 ? F[1] : F[0];
+            }
+            if (sk > 0 && f[i] < B.lo + SR) {
+              const hm = (1 - (f[i] - B.lo) / SR) * sk * (0.7 + 0.6 * hv);
+              if (vein[i] < 0.04 + 0.08 * hm) {
+                out.l = WARM;
+                out.k = 0.4 * hm;
+                return hm > 0.95 ? F[6] : hm > 0.75 ? F[5] : hm > 0.55 ? F[4] : hm > 0.38 ? F[3] : hm > 0.22 ? F[2] : F[1];
+              }
+              (out.l = WARM), (out.k = 0.2 * hm * hm);
+            }
+            const L = fleck[i] * (0.8 + 0.4 * hv);
+            if (L > 0 && s < L) {
+              const vv = (s - 6.4 * th) / Math.max(1, L - 6.4 * th);
+              if (vv < 1 && TW[(ph[i] * 5) & 63] && !(fade < 1 && fade <= jit[i] / 1.5 + 0.5)) {
+                out.l = WARM;
+                out.k = 0.3 * (1 - vv);
+                return vv < 0.3 ? F[4] : vv < 0.55 ? F[3] : vv < 0.8 ? F[2] : F[1];
+              }
+            }
+            if (e < 22) (out.l = WARM), (out.k = 0.2 * (1 - e / 22) ** 2);
+            return uh - 6.4 < 1.6 * th + jit[i] ? CHAR : ink;
+          });
+          // flames stand on the white-hot line: tall and many where the char lies below it, short and few where they would only lick over it
+          let nl = 0;
+          for (const i of line) {
+            seen[i] = 0;
+            // the fire lights the floor round it
+            if (++nl % 14 === 0) q.glow(wx(i), -3, wz(i), 13, WARM, 0.22 * fade);
+            const x = i % W, y = (i / W) | 0, dn = inPhase ? -Fd.ny[i] : Fd.ny[i], h0 = rand(x, y, seed + 51);
+            if (h0 > 0.2 + 0.2 * Math.max(0, dn)) continue;
+            const n = (x * 7 + (y >> 4) * 131) % 977, hv = heat[i];
+            const leap = 1 + Math.max(0, noise(t * 2.6 + n * 3.1, n + 70) - 0.5) * 1.8;
+            const h = (5 + 7 * rand(x, 1, seed + 53)) * (0.6 + 0.4 * noise(t * 3.3 + n * 1.7, n)) * (0.6 + 0.6 * hv) * leap * fade * (dn > 0 ? 0.65 + 0.5 * dn : 0.5) * 1.9;
+            if (h >= 1.5) q.at(wx(i), -0.5, wz(i), (pp) => tongue(pp, F, 0, 0, h, (1.1 + 0.7 * hv) * (0.8 + h / 16) * 1.25, noise(t * 2.2 + n, n + 40) * 1.5, t, n));
+          }
+        }
+        ash.draw(q);
+        ps.draw(q);
+        drawSmoke(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

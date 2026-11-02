@@ -1,6 +1,6 @@
 // The flames that cool into smoke, the embers and the smouldering glow are adapted from Sprite Fusion's
 // open-source fire (https://www.spritefusion.com/pixel-art-vfx/fire), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, PF, Rng, fit, clamp, smooth, ease, rand, noise, WHITE, hex, mix, READY } from "../../core/index.js";
+import { Particles, Lights, P, PF, Rng, fit, clamp, smooth, ease, rand, noise, space, TAU, WHITE, hex, mix, READY } from "../../core/index.js";
 import { bodyOf } from "./_lib.js";
 
 export const meta = {
@@ -139,3 +139,144 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the body is the stock character's flat sprite, charred and burnt row by row exactly as in 2D. The fire is
+// built round it: a ring of flame tongues stands on the seam and climbs the body with it, the seam is a true ring of
+// light, and ash, embers, flame and smoke come off the whole disc of the body, so the heat column reads from every
+// side. A scorch grows on the floor under it.
+export const three = {
+  meta: { size: [112, 118], origin: [56, 106], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), A = fit(o.ash, 3), R = new Rng(o.seed), floor = () => 0;
+    const body = bodyOf(o.actor, C), H = body.h;
+    for (const b of body.list) {
+      b.key = (body.h - 1 - b.my) / H + 0.08 * (rand(b.mx, b.my, 3) - 0.5) + 0.06 * noise(b.mx * 0.35, 4) - (b.edge ? 0.02 : 0);
+      b.gone = false;
+    }
+    // how wide the body is at each row: the ring of fire stands just outside it
+    const rowL = new Array(H).fill(Infinity), rowR = new Array(H).fill(-Infinity);
+    for (const b of body.list) (rowL[b.my] = Math.min(rowL[b.my], b.mx)), (rowR[b.my] = Math.max(rowR[b.my], b.mx));
+    const front = (t) => -0.04 + 1.1 * ease.inOutSine(clamp((t - IGNITE) / BURN));
+    const ps = new Particles({ rng: R, ground: floor, sparks: [C[6], C[5], C[4], C[3]] }), lights = new Lights();
+    let t = 0;
+    const left = (a, b) => Math.max(0.05, Math.min(R.range(a, b), meta.duration - 0.1 - t));
+    // a point somewhere in the body's thickness at column x
+    const thick = (x) => R.range(-1, 1) * 4.5 * Math.sqrt(Math.max(0, 1 - (x / 13) ** 2));
+    // a point on the heat column round the seam: a disc across the body
+    const disc = (r) => {
+      const a = R.range(0, TAU), d = Math.sqrt(R.next()) * r;
+      return [Math.cos(a) * d, Math.sin(a) * d];
+    };
+    const tongues = Array.from({ length: 8 }, (_, i) => ({ a: (i / 8) * TAU + 0.4, h: 6 + rand(i, 2) * 6, s: i * 13 }));
+    function tongue(p, x, y, h, n) {
+      for (const [lw, lh, c] of [[1, 1, C[3]], [0.7, 0.8, C[4]], [0.45, 0.6, C[5]], [0.25, 0.35, C[6]]]) {
+        const Hh = h * lh;
+        for (let r = 0; r <= Hh; r++) {
+          const u = r / Math.max(1, Hh), half = 1.8 * lw * Math.pow(1 - u, 0.9) + noise(t * 9 + r * 0.5, n) * 0.4;
+          const cxr = x + noise(t * 4 + r * 0.25, n + 7) * u * 1.6;
+          if (half < 0.3) continue;
+          for (let px = Math.round(cxr - half); px <= Math.round(cxr + half); px++) p.px(px, Math.round(y - r), c);
+        }
+      }
+    }
+
+    return {
+      update(dt) {
+        t += dt;
+        const f = front(t);
+        for (const b of body.list) {
+          if (b.gone || b.key >= f) continue;
+          b.gone = true;
+          // a burnt pixel goes to ash that sifts down, an ember that rises, or a lick of flame
+          const r = R.next(), z = thick(b.x);
+          if (r < 0.2) {
+            if (b.y > -7) ps.spawn3(P.GRIT, b.x, b.y, z, R.range(-12, 12), R.range(-20, 0), R.range(-12, 12), left(0.6, 1.2), R.pick(A), 1);
+            else ps.spawn3(P.FLAKE, b.x, b.y, z, R.range(-10, 10), R.range(-8, 4), R.range(-10, 10), left(0.5, Math.min(1.5, -b.y / 18)), R.pick(A), R.chance(0.2) ? 1.4 : 1);
+          } else if (r < 0.32) ps.spawn3(P.EMBER, b.x, b.y, z, R.range(-12, 12), -R.range(15, 45), R.range(-12, 12), left(0.6, 1.4), C[5], R.range(1, 1.6));
+          else if (r < 0.46) ps.spawn3(P.FIRE, b.x, b.y, z, R.range(-6, 6), -R.range(14, 30), R.range(-6, 6), R.range(0.2, 0.42), 0, R.range(1.2, 2.2), 0, R.chance(0.5) ? PF.SMOKES : 0);
+          else if (r < 0.5) ps.spawn3(P.SMOKE, b.x, b.y - 2, z, R.range(-5, 5), -R.range(14, 26), R.range(-5, 5), left(1.2, 2), mix(A[1], C[1], 0.3), R.range(2, 3.4));
+        }
+        // the feet catch with a spit of sparks, all round, and a puff of light
+        if (t >= IGNITE && t - dt < IGNITE) {
+          lights.add(0, -4, 34, C[4], 0.8, 0.4, 0);
+          for (let i = 0; i < 14; i++) {
+            const a = R.range(0, TAU), sp = R.range(30, 90);
+            ps.spawn3(P.SPARK, Math.cos(a) * R.range(0, 8), -1, Math.sin(a) * R.range(0, 8), Math.cos(a) * sp, -R.range(40, 150), Math.sin(a) * sp, R.range(0.2, 0.5));
+          }
+        }
+        // while it burns: steady embers and smoke off the front, from the whole disc of the seam
+        if (f > 0 && f < 1.02) {
+          const fy = body.y + (1 - clamp(f)) * H;
+          if (R.chance(0.34)) {
+            const [x, z] = disc(8);
+            ps.spawn3(P.SMOKE, x, fy - 5, z, R.range(-6, 6), -R.range(16, 30), R.range(-6, 6), left(1.4, 2.4), mix(A[1], C[3], 0.35), R.range(2.6, 4.2));
+          }
+          if (R.chance(0.5)) {
+            const [x, z] = disc(10);
+            ps.spawn3(P.FIRE, x, fy, z, R.range(-6, 6), -R.range(18, 34), R.range(-6, 6), R.range(0.18, 0.36), 0, R.range(1.2, 2.4), 0, R.chance(0.35) ? PF.SMOKES : 0);
+          }
+          if (R.chance(0.15)) {
+            const [x, z] = disc(10);
+            ps.spawn3(P.EMBER, x, fy, z, R.range(-15, 15), -R.range(30, 70), R.range(-15, 15), left(0.8, 1.6), C[5], 1.4);
+          }
+        }
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), f = front(t), fr = Math.floor(t * 30);
+        for (const b of body.list) {
+          if (b.gone) continue;
+          const d = b.key - f;
+          let c;
+          if (d < 0.025) c = rand(b.mx, b.my, fr) < 0.35 ? WHITE : C[6];
+          else if (d < 0.05) c = rand(b.mx, b.my, fr + 7) < 0.5 ? C[5] : C[4];
+          else if (d < 0.11) c = rand(b.mx, b.my, 13) < 0.15 && rand(b.mx, fr, 2) < 0.6 ? C[3] : CHAR[d < 0.075 ? 0 : 1];
+          else if (d < 0.16) c = mix(b.c, CHAR[2], 0.6);
+          else if (d < 0.26) c = mix(b.c, C[2], 0.18);
+          else c = b.c;
+          p.px(b.x, b.y, c);
+        }
+        // the floor: a scorch that grows as the body burns down to it, ember specks glowing in it
+        const burnt = smooth(IGNITE, IGNITE + BURN, t), warm = smooth(0, IGNITE + 0.2, t) * (1 - smooth(IGNITE + BURN * 0.6, IGNITE + BURN + 0.4, t));
+        if (burnt > 0) {
+          const rs = 8 + 8 * burnt, fade = 1 - smooth(meta.duration - 1, meta.duration - 0.2, t);
+          q.plane(0, 0, 0, null, rs, (u, v, out) => {
+            const d = Math.hypot(u, v) / rs, ragged = 1 - 0.22 * rand(Math.round(u), Math.round(v), 5);
+            if (d > ragged) return;
+            out.c = d > 0.8 * ragged ? CHAR[1] : CHAR[0];
+            out.a = 0.55 * fade * (1 - d * 0.5);
+            out.blend = true;
+            if (rand(Math.round(u), Math.round(v), 11) < 0.07 * (1 - d) * Math.min(1, fade * 2)) {
+              out.c = C[3];
+              out.a = 1;
+              out.blend = false;
+              out.l = C[4];
+              out.k = 0.25 * warm;
+            }
+          });
+        }
+        // the flames stand round the seam and climb with it; the seam itself is a ring of light
+        if (f > -0.02 && f < 1.05) {
+          const fy = body.y + (1 - clamp(f)) * H, k = 1 - smooth(0.95, 1.05, f), row = Math.min(H - 1, Math.max(0, Math.round(fy - body.y)));
+          if (rowR[row] >= rowL[row]) {
+            const cx = body.x + (rowL[row] + rowR[row] + 1) / 2, hw = (rowR[row] - rowL[row] + 1) / 2 + 1;
+            for (const g of tongues) {
+              const h = g.h * k * (0.6 + 0.6 * (noise(t * 2.6 + g.s, g.s) * 0.5 + 0.5)) * smooth(-0.02, 0.06, f);
+              if (h >= 1) q.at(cx + Math.cos(g.a) * hw, fy + 1, Math.sin(g.a) * hw * 0.8, (pp) => tongue(pp, 0, 0, h, g.s));
+            }
+            q.ring(cx, fy, 0, hw + 1.5, 1.6, (v) => (v > 0.5 ? C[5] : C[4]), 0.6 * k);
+          }
+          const fl = 0.85 + 0.15 * noise(t * 11, 9);
+          q.glow(0, fy, 0, 12, C[4], 0.45 * k);
+          q.glow(0, fy - 6, 0, 56, C[4], 0.38 * k * fl);
+          q.glow(0, fy - 2, 0, 18, C[5], 0.28 * k * fl);
+        }
+        // warm light on the floor while the body burns down to it
+        if (warm > 0) q.glow(0, -1, 0, 30, C[4], 0.3 * warm);
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

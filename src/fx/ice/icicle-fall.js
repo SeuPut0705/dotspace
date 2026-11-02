@@ -1,8 +1,8 @@
 // The break recipe (a white frame, the ice flung apart as shards with ice dust and glints) is adapted from
 // Sprite Fusion's open-source ice (https://www.spritefusion.com/pixel-art-vfx/ice), MIT License,
 // Copyright (c) 2026 Hugo Duprez.
-import { Particles, Bits, Lights, P, B, Rng, fit, sparkle, band, clamp, smooth, seg, ease, rand, TAU, WHITE, GRAVITY } from "../../core/index.js";
-import { Panes, splitPoly, centroid, endBy } from "./_lib.js";
+import { Particles, Bits, Lights, P, B, Rng, fit, space, lit, sparkle, band, clamp, smooth, seg, ease, rand, TAU, WHITE, GRAVITY } from "../../core/index.js";
+import { Panes, Panes3, splitPoly, centroid, endBy, cone3, frostFloor } from "./_lib.js";
 
 export const meta = {
   name: "Icicle fall",
@@ -206,3 +206,145 @@ export function create(o) {
     },
   };
 }
+
+// 3D: an icicle hanging from a lumpy ledge of rime, a true faceted cone. It trembles, snaps, drops, and when it stabs
+// the floor it bursts into panes and shards that fly out all round while a ring of frost races out across the floor.
+export const three = {
+  meta: { size: [200, 156], origin: [100, 130], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), R = new Rng(o.seed), floor = () => 0;
+    const ps = new Particles({ rng: R, ground: floor, sparks: [C[7], C[6], C[5], C[4]], haze: C[5] });
+    const bits = new Bits({ ground: floor }), lights = new Lights();
+    const splinter = (x, y, z, vx, vz, n) => {
+      for (let i = 0; i < n; i++) bits.add({ kind: B.SHARD, x: x + R.range(-2, 2), y: y - 1, z: z + R.range(-2, 2), vx: vx * 0.5 + R.range(-45, 45), vy: -R.range(30, 100), vz: vz * 0.5 + R.range(-45, 45), g: 0.8, drag: 0.6, bounce: 0.35, life: R.range(0.4, 0.75), a: R.range(0, TAU), va: R.range(-18, 18), s: R.range(1.2, 2.4), c: C[R.int(4, 7)] });
+    };
+    const panes = new Panes3({
+      ground: floor,
+      onLand: (q, x, y, z, v) => {
+        if (v < 100) return;
+        ps.spawn3(P.VAPOUR, x, y - 1, z, R.range(-15, 15), -R.range(2, 8), R.range(-15, 15), R.range(0.4, 0.6), C[6], R.range(1.4, 2.2));
+        splinter(x, y, z, q.vx, q.vz, 2);
+      },
+      onCrumble: (q) => splinter(q.x, 0, q.z, q.vx, q.vz, 3),
+    });
+    // the eave it hangs from: a frozen beam with rime lumps along its top and little icicles hanging off its underside
+    const lumps = [], stubs = [], shade = lit([C[3], C[5], C[6], C[7], C[7]]), BEAM = 7, BY = ROOT - BEAM + 1;
+    for (let i = 0; i < 9; i++) lumps.push({ x: -22 + i * 5.5 + R.range(-1.5, 1.5), z: R.range(-3.5, 3.5), y: BY - BEAM + 1 - R.range(0, 1.5), r: R.range(2.6, 4.4) });
+    for (let i = 0; i < 10; i++) stubs.push({ x: -22 + i * 4.8 + R.range(-1.5, 1.5), z: R.range(-3, 3), L: i === 5 ? 0 : 2 + R.range(0, 6) * (1 - Math.abs(i - 4.5) / 6), w: R.range(1.2, 2.2) });
+    const jag = Array.from({ length: 4 }, (_, i) => ({ x: Math.cos(i * 1.7) * 2.8, z: Math.sin(i * 1.7) * 2.8, L: 1.5 + R.range(0, 2.5) }));
+    let t = 0, snapped = false, landed = false, dripped = false;
+    const top = () => ROOT + (t < FREE ? 0 : 0.5 * GRAVITY * (t - FREE) ** 2);
+
+    return {
+      update(dt) {
+        t += dt;
+        if (!dripped && t >= DRIP) {
+          dripped = true;
+          bits.add({ kind: B.DRIP, x: 0.5, y: ROOT + LEN + 1, z: 0, vy: 20, g: 0.9, life: 1.2, c: C[6] });
+        }
+        if (t > TREMBLE && t < SNAP && R.chance(0.3)) ps.spawn3(P.FLAKE, R.range(-6, 6), ROOT + R.range(0, 3), R.range(-6, 6), R.range(-8, 8), R.range(5, 20), R.range(-8, 8), R.range(0.6, 1.1), R.chance(0.5) ? WHITE : C[6], R.range(0.5, 1.1));
+        if (!snapped && t >= SNAP) {
+          snapped = true;
+          lights.add(0, ROOT + 4, 0, 24, WHITE, 0.6, 0.1);
+          lights.add(0, ROOT + 4, 0, 32, C[5], 0.4, 0.3);
+          for (let i = 0; i < 8; i++) {
+            const a = R.range(0, TAU), sp = R.range(30, 110);
+            bits.add({ kind: B.SHARD, x: R.range(-4, 4), y: ROOT + 2, z: R.range(-4, 4), vx: Math.cos(a) * sp, vy: -R.range(-10, 30), vz: Math.sin(a) * sp, g: 0.8, drag: 0.8, bounce: 0.3, life: R.range(0.5, 0.9), a: R.range(0, TAU), va: R.range(-20, 20), s: R.range(1, 2), c: C[R.int(5, 7)] });
+          }
+          for (let i = 0; i < 3; i++) ps.spawn3(P.VAPOUR, R.range(-5, 5), ROOT + 2, R.range(-5, 5), R.range(-25, 25), R.range(-5, 5), R.range(-25, 25), R.range(0.4, 0.7), C[6], R.range(1.6, 2.6));
+          for (let i = 0; i < 6; i++) ps.spawn3(P.FLAKE, R.range(-6, 6), ROOT + 2, R.range(-6, 6), R.range(-30, 30), R.range(-20, 20), R.range(-30, 30), R.range(0.6, 1.2), R.chance(0.5) ? WHITE : C[6], R.range(0.5, 1.3));
+        }
+        if (t > FREE && t < IMPACT && R.chance(0.5)) {
+          const tp = top();
+          ps.spawn3(P.MOTE, R.range(-3, 3), tp + R.range(0, LEN * 0.6), R.range(-3, 3), R.range(-10, 10), R.range(-40, -10), R.range(-10, 10), R.range(0.2, 0.35), R.chance(0.5) ? C[6] : C[5], 0.6);
+        }
+        if (!landed && t >= IMPACT) {
+          landed = true;
+          lights.add(0, -16, 0, 46, WHITE, 0.85, 0.12);
+          lights.add(0, -16, 0, 58, C[4], 0.5, 0.5);
+          // the icicle in pieces: cut across its length, then down the middle
+          let parts = [[[-W / 2, -LEN], [W / 2, -LEN], [0.5, 0]]];
+          for (const v of [0.3, 0.58, 0.8]) parts = parts.flatMap((poly) => splitPoly(poly, 0, -LEN + LEN * v + R.range(-2, 2), R.range(-0.4, 0.4)));
+          parts = parts.flatMap((poly) => (centroid(poly).area > 22 ? splitPoly(poly, centroid(poly).x, centroid(poly).y, Math.PI / 2 + R.range(-0.5, 0.5)) : [poly]));
+          for (const part of parts) {
+            const m = centroid(part), low = clamp(-m.y / LEN), a = R.range(0, TAU), sp = R.range(30, 110);
+            panes.add({
+              pts: part.map(([x, y]) => [x - m.x, y - m.y]), x: m.x * 0.5, y: m.y, z: 0, vx: Math.cos(a) * sp, vy: -R.range(70, 200) * (0.4 + low), vz: Math.sin(a) * sp, az: a + Math.PI / 2, a: 0, va: R.range(-12, 12), f: R.range(-0.7, 0.7), vf: R.range(-8, 8),
+              lit: 0.75, g: 0.9, drag: 0.6, bounce: 0.35, solid: true, ridge: Math.PI / 2, brittle: 2, crumble: R.range(0.15, 0.45), life: R.range(1, 1.4),
+            });
+          }
+          for (let i = 0; i < 56; i++) {
+            const a = R.range(0, TAU), el = R.range(0.1, 1.2), sp = R.range(60, 230);
+            bits.add({ kind: R.chance(0.15) ? B.CHUNK : B.SHARD, x: R.range(-3, 3), y: -R.range(1, 10), z: R.range(-3, 3), vx: Math.cos(a) * sp * 0.7, vy: -sp * el * 0.8, vz: Math.sin(a) * sp * 0.7, g: 0.85, drag: 0.6, bounce: 0.32, life: R.range(0.6, 1.2), a: R.range(0, TAU), va: R.range(-22, 22), s: R.range(1.2, 3), c: C[R.int(4, 7)], ramp: [C[1], C[3], C[4], C[6], C[7]] });
+          }
+          for (let i = 0; i < 14; i++) {
+            const a = R.range(0, TAU), sp = R.range(25, 90);
+            ps.spawn3(P.VAPOUR, Math.cos(a) * R.range(0, 8), -R.range(1, 6), Math.sin(a) * R.range(0, 8), Math.cos(a) * sp, -R.range(2, 14), Math.sin(a) * sp, R.range(0.6, 1.1), C[6], R.range(2.2, 3.8));
+          }
+          for (let i = 0; i < 14; i++) {
+            const a = R.range(0, TAU), sp = R.range(10, 70);
+            ps.spawn3(P.FLAKE, R.range(-6, 6), -R.range(2, 16), R.range(-6, 6), Math.cos(a) * sp, -R.range(30, 110), Math.sin(a) * sp, R.range(1, 1.5), R.chance(0.6) ? WHITE : C[6], R.range(0.5, 1.5));
+          }
+          for (let i = 0; i < 6; i++) ps.spawn3(P.STAR, R.range(-24, 24), -R.range(4, 34), R.range(-24, 24), R.range(-10, 10), -R.range(4, 14), R.range(-10, 10), R.range(0.4, 0.8), R.chance(0.5) ? WHITE : C[6], R.range(1, 2.2));
+        }
+        if (landed && t < IMPACT + 0.9 && R.chance(0.08) && bits.list.length) {
+          const b = R.pick(bits.list);
+          ps.spawn3(P.STAR, b.x, b.y - 1, b.z, 0, -3, 0, R.range(0.2, 0.4), R.chance(0.5) ? WHITE : C[6], R.range(0.6, 1.4));
+        }
+        ps.update(dt);
+        bits.update(dt);
+        panes.update(dt);
+        lights.update(dt);
+        endBy(t, meta.duration, ps, bits, panes);
+      },
+      draw(p) {
+        const q = space(p, o), ra = 1 - smooth(meta.duration - 0.7, meta.duration - 0.2, t);
+        // its shadow gathers on the floor as it comes down: a true disc
+        if (t > TREMBLE && t < IMPACT + 0.05) {
+          const k = t < FREE ? seg(t, TREMBLE, FREE) * 0.35 : 0.35 + 0.65 * seg(t, FREE, IMPACT), rr = 3 + 8 * k;
+          q.plane(0, 0, 0, null, rr, (u, v, out) => {
+            const d = Math.hypot(u, v) / rr;
+            if (d > 1) return;
+            out.c = C[0];
+            out.a = 0.7 * k * (1 - d * d);
+            out.blend = true;
+          });
+        }
+        // frost splashed across the floor where it struck, melting away from the edge in
+        if (t >= IMPACT) {
+          const g = ease.outCubic(seg(t, IMPACT, IMPACT + 0.25)), out = 1 - smooth(IMPACT + 0.8, IMPACT + 1.5, t), k = seg(t, IMPACT, IMPACT + 0.35);
+          frostFloor(q, C, 0, 0, 27, 27, g * out, 0, o.seed);
+          if (k < 1) q.ring(0, 0, 0, 6 + 34 * ease.outCubic(k), Math.max(1, 4 * (1 - k)), (v) => (k < 0.15 ? WHITE : [C[3], C[4], C[5], C[6]][Math.min(3, Math.floor(v * 4))]), 1.1 - k);
+        }
+        // the eave: a frozen beam, lumps of rime along its top, little icicles hanging off it; it fades at the end
+        cone3(q, [-26, BY, 0], [26, BY, 0], BEAM, BEAM, C, { sides: 6, phase: 0.5, a: ra, dim: 2 });
+        for (const l of lumps) q.ball(l.x, l.y, l.z, l.r, shade, ra);
+        for (const s of stubs) if (s.L > 0) cone3(q, [s.x, ROOT - 1, s.z], [s.x, ROOT - 1 + s.L, s.z], s.w, 0, C, { sides: 4, a: ra, dim: 1 });
+        if (snapped) for (const j of jag) cone3(q, [j.x, ROOT, j.z], [j.x, ROOT + j.L, j.z], 1.8, 0, C, { sides: 4, a: ra, white: t < SNAP + 0.15 });
+        q.glow(0, ROOT, 0, 22, C[4], 0.3 * ra);
+        if (t < IMPACT) {
+          const tp = top(), jx = t > TREMBLE && t < SNAP ? (Math.floor(t * 36) % 2 ? 1 : 0) * Math.round(seg(t, TREMBLE, SNAP) * 1.4 + 0.4) : 0, falling = t >= FREE, sp = falling ? GRAVITY * (t - FREE) : 0;
+          if (falling)
+            for (let i = 0; i < 4; i++) {
+              const a = i * 1.6 + 0.4, rr = 4.5, L = Math.min(30, sp * 0.07) * (i % 2 ? 0.7 : 1);
+              if (L > 2) q.line(Math.cos(a) * rr, tp - L, Math.sin(a) * rr, Math.cos(a) * rr * 0.6, tp + 3, Math.sin(a) * rr * 0.6, (u) => (u > 0.75 ? C[6] : u > 0.4 ? C[4] : C[3]));
+            }
+          const gl = (t - 0.04) / 0.3;
+          cone3(q, [jx + 0.5, tp, 0], [0.5, tp + LEN, 0], W / 2, 0, C, { sides: 6, phase: 0.2, white: t >= IMPACT - 0.025 || (t >= SNAP && t < SNAP + 0.03), glint: gl >= 0 && gl <= 1 ? 1 - gl : -1 });
+          if (snapped && t < SNAP + 0.12) q.ring(0, ROOT + 1, 0, W / 2 + 1, 1, WHITE, 1);
+          q.glow(0.5, tp + LEN * 0.5, 0, 22, C[4], 0.28);
+          if (t < DRIP) {
+            const s = seg(t, 0, DRIP);
+            q.dot(0.5, ROOT + LEN + 1, 0, C[6], s);
+            if (s > 0.6) q.px(0.5, ROOT + LEN + 2, 0, WHITE);
+          }
+        }
+        if (t >= IMPACT && t < IMPACT + 0.22) q.at(0.5, -3, 0, (pp) => sparkle(pp, 0, 0, 10 * ease.outBack(Math.min(1, (t - IMPACT) / 0.05)) * (1 - (t - IMPACT) / 0.22), C[6], C[4], 0.7));
+        panes.draw(q, C);
+        bits.draw(q);
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

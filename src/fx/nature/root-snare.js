@@ -1,8 +1,8 @@
 // The hold-then-break (it closes round the character, holds with glints, cracks, then bursts into tumbling
 // pieces, mist and light) is adapted from Sprite Fusion's open-source ice freeze (https://www.spritefusion.com/pixel-art-vfx/ice),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, sparkle, clamp, smooth, ease, lerp, rand, TAU, WHITE, READY } from "../../core/index.js";
-import { drawRock, stoneShape, drawLeaf, floorCrack } from "./_lib.js";
+import { Particles, Bits, Lights, P, B, Rng, fit, space, sparkle, clamp, smooth, ease, lerp, rand, TAU, WHITE, READY } from "../../core/index.js";
+import { drawRock, stoneShape, drawLeaf, floorCrack, tube, shade3, facing3, leaf3, bits3, rock3 } from "./_lib.js";
 
 export const meta = {
   name: "Root snare",
@@ -184,3 +184,137 @@ export function create(o) {
     },
   };
 }
+
+// ---- 3D: the roots really wind round his legs, a true helix in space that passes behind him and in front; they burst
+// up from a ring on the floor, cracks run out from his feet every way and the bark flies out all round.
+const path3 = (r, cinch) => {
+  const pts = [];
+  for (let i = 0; i <= NP; i++) {
+    const s = i / NP, th = r.th0 + r.dir * TAU * r.turns * s, rad = lerp(r.r0, r.leg - cinch * 1.6, ease.outCubic(Math.min(1, s * 3.5)));
+    pts.push([Math.cos(th) * rad, -r.h * Math.pow(s, 1.05), Math.sin(th) * rad, s]);
+  }
+  return pts;
+};
+
+export const three = {
+  meta: { size: [144, 108], origin: [72, 88], camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), G = fit(o.glow, 4), R = new Rng(o.seed), floor = () => 0;
+    const ps = new Particles({ rng: R, ground: floor, sparks: [G[3], G[2], G[1], G[0]] });
+    const bits = new Bits({ ground: floor }), lights = new Lights(), BARK = [C[0], C[1], C[2], C[2], C[3], C[4], C[5]];
+    const roots = Array.from({ length: 5 }, (_, i) => ({
+      th0: (i / 5) * TAU + R.range(-0.3, 0.3), dir: i % 2 ? 1 : -1, turns: R.range(1.1, 1.6), r0: R.range(14, 19), leg: R.range(8, 10),
+      h: R.range(13, 21), at: 0.16 + i * 0.07 + R.range(0, 0.04), buds: [R.range(0.35, 0.55), R.range(0.6, 0.85)],
+    }));
+    // cracks out from his feet every way
+    const cracks = Array.from({ length: 7 }, (_, i) => {
+      const len = R.range(18, 28);
+      let a = (i / 7) * TAU + R.range(-0.25, 0.25), r = 3;
+      const pts = [[Math.cos(a) * r, Math.sin(a) * r]];
+      while (r < len) (r += R.range(2, 5)), (a += R.range(-0.16, 0.16)), pts.push([Math.cos(a) * r, Math.sin(a) * r]);
+      return pts;
+    });
+    const dir = (cone) => {
+      const e = R.range(0, cone), h = R.range(0, TAU);
+      return [Math.sin(e) * Math.cos(h), -Math.cos(e), Math.sin(e) * Math.sin(h)];
+    };
+    let t = 0, cinched = false, broken = false;
+    const chip = (x, y, z, vx, vz, s, life) => {
+      const d = dir(1.2);
+      bits.add({ kind: B.CHUNK, x, y, z, vx: vx + d[0] * 40, vy: d[1] * R.range(50, 150), vz: vz + d[2] * 40, a: R.range(0, TAU), va: R.range(-15, 15), s, g: 1, drag: 0.1, bounce: 0.3, life, ...rock3(R, 8) });
+    };
+    const grow = (r) => ease.outCubic(clamp((t - r.at) / 0.32));
+    const squeeze = () => smooth(CINCH - 0.03, CINCH + 0.05, t) * (1 - 0.4 * smooth(CINCH + 0.05, CINCH + 0.25, t));
+    return {
+      update(dt) {
+        t += dt;
+        const f = Math.min(1, dt * 120);
+        if (t < 0.4 && R.chance(0.3 * f)) {
+          const a = R.range(0, TAU), r = R.range(4, 22);
+          ps.spawn3(P.GRIT, Math.cos(a) * r, -1, Math.sin(a) * r, R.range(-20, 20), -R.range(30, 90), R.range(-20, 20), R.range(0.5, 0.9), R.pick([C[5], C[4]]), 1);
+        }
+        for (const r of roots)
+          if (!r.burst && t >= r.at) {
+            r.burst = true;
+            const x = Math.cos(r.th0) * r.r0, z = Math.sin(r.th0) * r.r0;
+            for (let i = 0; i < 4; i++) chip(x, -1, z, R.range(-30, 30), R.range(-30, 30), R.range(1.2, 2), R.range(0.6, 0.9));
+            for (let i = 0; i < 3; i++) ps.spawn3(P.DUST, x, -1, z, R.range(-25, 25), -R.range(4, 18), R.range(-25, 25), R.range(0.4, 0.8), C[5], R.range(2, 3.5));
+            lights.add(x, -4, 20, G[2], 0.35, 0.3, z);
+          }
+        if (!cinched && t >= CINCH) {
+          cinched = true;
+          lights.add(0, -10, 40, G[3], 0.5, 0.3, 0);
+          lights.add(0, -10, 16, WHITE, 0.4, 0.06, 0);
+          for (let i = 0; i < 8; i++) {
+            const a = R.range(0, TAU), v = R.range(20, 60);
+            ps.spawn3(P.DUST, R.range(-12, 12), -R.range(0, 4), R.range(-12, 12), Math.cos(a) * v, -R.range(4, 14), Math.sin(a) * v, R.range(0.5, 0.9), C[5], R.range(2, 3.5));
+          }
+          for (let i = 0; i < 6; i++) ps.spawn3(P.STAR, R.range(-9, 9), -R.range(4, 20), R.range(-9, 9), 0, -4, 0, R.range(0.25, 0.5), G[3], R.range(0.8, 1.8), R.range(0, 0.1));
+        }
+        // while it holds, motes of green rise off the roots
+        if (t > CINCH && t < BREAK && R.chance(0.06 * f)) ps.spawn3(P.MOTE, R.range(-9, 9), -R.range(3, 18), R.range(-9, 9), R.range(-6, 6), -R.range(14, 30), R.range(-6, 6), R.range(0.5, 0.9), G[3], 0.6);
+        if (!broken && t >= BREAK) {
+          broken = true;
+          lights.add(0, -10, 36, G[2], 0.4, 0.25, 0);
+          // every root crumbles into bark chunks and splinters along its length
+          for (const r of roots) {
+            const pts = path3(r, 1);
+            for (let i = 2; i < NP; i += 4) {
+              const q = pts[i], w = 1.4 + 3.6 * Math.pow(1 - q[3], 0.8), m = Math.hypot(q[0], q[2]) || 1;
+              chip(q[0], Math.min(q[1], -1), q[2], (q[0] / m) * R.range(25, 85), (q[2] / m) * R.range(25, 85), clamp(w * 0.75, 1.5, 3), Math.min(R.range(0.7, 0.95), meta.duration - 0.05 - t));
+              if (i % 10 === 2) ps.spawn3(P.GRIT, q[0], Math.min(q[1], -1), q[2], R.range(-40, 40), -R.range(20, 80), R.range(-40, 40), Math.min(R.range(0.6, 0.9), meta.duration - 0.05 - t), R.pick([C[4], C[3], C[2]]), R.chance(0.3) ? 2 : 1);
+            }
+          }
+          for (let i = 0; i < 10; i++) ps.spawn3(P.SMOKE, R.range(-12, 12), -R.range(2, 16), R.range(-12, 12), R.range(-25, 25), -R.range(5, 20), R.range(-25, 25), Math.min(R.range(0.6, 0.9), meta.duration - 0.05 - t), C[5], R.range(3, 5), 0, 0);
+        }
+        bits.update(dt);
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o);
+        // cracks run out from the feet, a mossy light seeping up from them
+        const open = ease.outCubic(clamp(t / 0.25)), hot = smooth(0, 0.3, t) * (1 - smooth(0.5, 1.4, t)), fade = 1 - smooth(meta.duration - 0.6, meta.duration - 0.15, t);
+        for (const c of cracks) {
+          const m = Math.max(2, Math.ceil(c.length * open));
+          for (let k = 1; k < m; k++) {
+            const [x0, z0] = c[k - 1], [x1, z1] = c[k];
+            q.line(x0, 0, z0 + 1, x1, 0, z1 + 1, C[0], fade);
+            q.line(x0, 0, z0, x1, 0, z1, hot > 0.5 ? G[3] : hot > 0.2 ? G[2] : C[1], fade);
+            if (k % 2 === 0) q.glow(x1, 0, z1, 6, G[2], 0.3 * hot);
+          }
+        }
+        const hold = smooth(0.3, CINCH, t) * (1 - smooth(BREAK, BREAK + 0.3, t)) * (0.8 + 0.2 * Math.sin(t * 8));
+        if (hold > 0) q.glow(0, -12, 0, 30, G[2], 0.3 * hold), q.glow(0, -1, 0, 22, G[3], 0.16 * hold);
+        if (t < BREAK) {
+          const white = BREAK - t < 0.05, sq = squeeze();
+          for (const r of roots) {
+            if (t <= r.at) continue;
+            const pts = path3(r, sq), g = grow(r), n = Math.floor(NP * g);
+            if (n < 1) continue;
+            // a stroke of bark, lit on its upper side, dark beneath, a ridge of grain
+            tube(q, pts.slice(0, n + 1), (u) => (1.2 + 3 * Math.pow(1 - pts[Math.min(NP, Math.round(u * n))][3], 0.8)) / 2 + 0.3, (nx, ny, nz, u) => {
+              if (white) return WHITE;
+              if (nz < 0.22) return C[1];
+              const c = shade3(C.slice(1, 7), nx, ny, nz, 0.75), grain = rand(Math.round(u * 40), 3) < 0.35;
+              return facing3(nx, ny, nz) > 0.93 ? C[7] : grain ? C[Math.max(1, C.indexOf(c) - 1)] : c;
+            }, 0);
+            // buds open into small leaves once it has hold of them
+            for (const b of r.buds) {
+              const q0 = pts[Math.floor(b * NP)], lk = clamp((t - CINCH - 0.1 - b * 0.2) / 0.25);
+              if (b > g || lk <= 0) continue;
+              const m = Math.hypot(q0[0], q0[2]) || 1, e = 0.5 + Math.sin(t * 5 + b * 9) * 0.15;
+              leaf3(q, q0[0], q0[1], q0[2], [(q0[0] / m) * Math.cos(e), -Math.sin(e), (q0[2] / m) * Math.cos(e)], 5.5 * lk, 1.6, 0.3, [G[0], G[1], G[2], G[3]]);
+            }
+          }
+          // the snap as they cinch
+          const e = t - CINCH;
+          if (e > 0 && e < 0.12) for (const [x, y, z] of [[-8, -6, 4], [8, -10, -4], [-7, -15, -5], [6, -4, 7]]) q.at(x, y, z, (pp) => sparkle(pp, 0, 0, 5 * (1 - e / 0.12), C[7], G[3], 0.4));
+        }
+        bits3(q, bits, BARK);
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

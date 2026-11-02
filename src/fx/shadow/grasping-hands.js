@@ -1,5 +1,5 @@
-import { Particles, P, Rng, fit, clamp, smooth, ease, TAU, WHITE, mix } from "../../core/index.js";
-import { VOID, Puffs, PK, Drops, floorPool, ringFast } from "./_lib.js";
+import { Particles, P, Rng, fit, clamp, smooth, ease, space, TAU, WHITE, mix } from "../../core/index.js";
+import { VOID, Puffs, PK, Drops, floorPool, ringFast, INK_LIGHT, InkDrops, inkPool, inkCollar, inkWalk, inkShade, inkBall } from "./_lib.js";
 
 export const meta = {
   name: "Grasping hands",
@@ -185,3 +185,205 @@ export function create(o) {
     },
   };
 }
+
+// ---- 3D: the pool is a true circle on the floor; four arms climb out of it from points round the disc on 3D curves,
+// leaning out and bent at the elbow toward the middle in a plane of their own, each ending in a hand built of small
+// balls: a palm, four fingers and a thumb, two bones each, curling into a claw. The floor cuts them, a collar rings each.
+const DS = 1.4;
+
+function arm3(A, t) {
+  const e = clamp((t - A.t0) / 0.22), d = clamp((t - A.td) / 0.34);
+  if (e <= 0 || d >= 1) return null;
+  const rise = ease.outBack(e, 1.6) * (1 - ease.inQuad(d)), hidden = Math.max(0, 1 - rise) * A.L, len = A.L * Math.max(1, rise);
+  const grip = gripOf(A, t), strain = t > A.t0 + 0.5 && t < A.td ? Math.sin(t * 47 + A.ph) * 0.03 : 0;
+  const elbow = A.bend * (0.3 + 0.7 * grip) * (1 - d) + strain;
+  // it leans out from the middle, swaying in both directions
+  const ta = A.lean + 0.06 * Math.sin(t * 2.2 + A.ph) + d * A.lean * 0.6, tb = 0.06 * Math.sin(t * 1.7 + A.ph * 1.3), ca = Math.cos(A.az), sa = Math.sin(A.az);
+  const hx = ca * ta - sa * tb, hz = sa * ta + ca * tb, tl = Math.hypot(hx, 1, hz), Tv = [hx / tl, -1 / tl, hz / tl];
+  let nx = Math.cos(A.caz), nz = Math.sin(A.caz);
+  const dn = nx * Tv[0] + nz * Tv[2];
+  nx -= dn * Tv[0];
+  const ny = -dn * Tv[1];
+  nz -= dn * Tv[2];
+  const nl = Math.hypot(nx, ny, nz);
+  const pts = inkWalk(A.x - Tv[0] * hidden, -Tv[1] * hidden, A.z - Tv[2] * hidden, Tv, [nx / nl, ny / nl, nz / nl], len, DS, (s) => {
+    const u = s / len;
+    return [(elbow * Math.exp(-(((u - 0.52) / 0.07) ** 2))) / (0.07 * Math.sqrt(Math.PI) * len) + A.curve / len, 0.05 * Math.sin(s * 0.12 + A.ph + t)];
+  });
+  for (const q of pts) {
+    q.u = q.s / len;
+    q.w = A.W * (1 - 0.5 * q.u) + 0.4;
+  }
+  return pts;
+}
+
+function arm3Body(q, shade, C, pts) {
+  for (const a of pts) inkBall(q, shade, a.x, a.y, a.z, a.w);
+  const first = pts.findIndex((a) => a.y <= 0);
+  if (first >= 0) {
+    const b = pts[first], a = first > 0 ? pts[first - 1] : b, f = a.y === b.y ? 0 : a.y / (a.y - b.y);
+    inkCollar(q, C, a.x + (b.x - a.x) * f, a.z + (b.z - a.z) * f, b.w * 1.05 + 1.5);
+  }
+}
+
+// a hand on the arm's end in the arm's own frame (T along it, N the way the elbow bent, B across): a palm ball, four
+// fingers lined up along B and a thumb opposite N, each two bones of small balls, the last tipped with a pale claw
+function hand3(q, shade, C, A, pts, t) {
+  const tip = pts[pts.length - 1];
+  if (tip.y > -2) return;
+  const g = gripOf(A, t), T = [tip.tx, tip.ty, tip.tz], N = [tip.nx, tip.ny, tip.nz], B = [tip.bx, tip.by, tip.bz];
+  const at = (p, d, s) => [p[0] + d[0] * s, p[1] + d[1] * s, p[2] + d[2] * s];
+  const dirOf = (ang, fan) => {
+    const c = Math.cos(ang), s = Math.sin(ang), v = [T[0] * c + N[0] * s + B[0] * fan, T[1] * c + N[1] * s + B[1] * fan, T[2] * c + N[2] * s + B[2] * fan], l = Math.hypot(...v);
+    return [v[0] / l, v[1] / l, v[2] / l];
+  };
+  const c = at([tip.x, tip.y, tip.z], T, 3.4);
+  inkBall(q, shade, c[0], c[1], c[2], 3.3);
+  // fingers are lit on the side toward the light on screen, whichever way the camera looks
+  const lv = q.view(...INK_LIGHT), lm = Math.hypot(lv[0], lv[1]) || 1, lx = lv[0] / lm, ly = lv[1] / lm;
+  const finger = (nx, ny) => (nx * lx + ny * ly > 0.15 ? C[5] : C[2]);
+  const bone = (p0, dir, len, last) => {
+    for (let s = 0; s <= len; s += 0.7) {
+      const p = at(p0, dir, s);
+      q.ball(p[0], p[1], p[2], 1.2, finger);
+    }
+    const e = at(p0, dir, len);
+    if (last) (q.px(e[0], e[1], e[2], WHITE), q.px(e[0] + dir[0], e[1] + dir[1], e[2] + dir[2], C[7]));
+    return e;
+  };
+  const spread = 1 - 0.65 * Math.max(0, g), curl = g * 1.2;
+  [-2.2, -0.75, 0.75, 2.2].forEach((o, i) => {
+    const base = at(at(c, T, 3), B, o * 1.35), len = i === 0 || i === 3 ? 3.8 : 4.6, fan = o * 0.2 * spread;
+    const j = bone(base, dirOf(curl * 0.6, fan), len, false);
+    bone(j, dirOf(curl * 1.5, fan * 0.6), len * 0.85, true);
+  });
+  const tb = at(at(c, N, -3.1), T, 0.8), j = bone(tb, dirOf(-(1 - 0.6 * g), 0.1), 3.4, false);
+  bone(j, dirOf(-(0.6 - 1.4 * g), 0.1), 2.8, true);
+}
+
+export const three = {
+  meta: { size: [176, 138], origin: [88, 106], camera: { pitch: 0.32 } },
+  create(o) {
+    const C = fit(o.palette, 8), R = new Rng(o.seed), floor = () => 0;
+    const ps = new Particles({ rng: R, ground: floor, sparks: [C[7], C[6], C[5], C[4]], haze: C[4] });
+    const puffs = new Puffs({ rng: R, flame: [C[7], C[6], C[5], C[4], C[3], C[2], C[1], C[1], C[0]], soot: [mix(C[3], C[2], 0.55), mix(C[2], C[1], 0.5)], cap: mix(C[4], C[2], 0.5), rim: [C[6], C[5], C[4]], floor });
+    const ripples = [], splats = [], lights = [];
+    let t = 0, acc = 0;
+    const rx = (tt) => RX * ease.outCubic(clamp(tt / OPEN)) * (1 - ease.inCubic(clamp((tt - SHUT) / 0.45)));
+    const drops = new InkDrops({
+      onLand: (x, z, v, s) => {
+        if (Math.hypot(x, z) < rx(t) * 0.95) ripples.push({ x, z, t0: t, life: 0.5, w: 0.6 });
+        else splats.push({ x, z, t0: t, s });
+      },
+    });
+    const onPool = (k) => {
+      const a = R.range(0, TAU), d = Math.sqrt(R.next()) * k * rx(t);
+      return [Math.cos(a) * d, Math.sin(a) * d];
+    };
+    // four arms round the disc, leaning out, elbows bending toward the middle (each in its own plane)
+    const arms = [0, 1, 2, 3].map((i) => {
+      const ra = (i / 4) * TAU + 0.55 + R.range(-0.3, 0.3), rr = R.range(19, 29);
+      return {
+        x: Math.cos(ra) * rr, z: Math.sin(ra) * rr, az: ra, caz: ra + Math.PI + R.range(-0.7, 0.7),
+        L: R.range(38, 52), W: R.range(3.6, 4.2), lean: R.range(0.16, 0.3), bend: R.range(0.35, 0.6), curve: R.range(0.05, 0.15),
+        t0: 0.3 + [1, 3, 0, 2][i] * 0.06 + R.range(0, 0.03), td: 1.45 + [2, 0, 3, 1][i] * 0.09 + R.range(0, 0.05), ph: R.range(0, TAU), up: false, shut: false, down: false,
+      };
+    });
+    function splash(x, z, n, k) {
+      for (let i = 0; i < n; i++) {
+        const a = R.range(0, TAU), sp = R.range(5, 70) * k;
+        drops.add(x + R.range(-2, 2), -1, z + R.range(-2, 2), Math.cos(a) * sp, -R.range(90, 220) * k, Math.sin(a) * sp, R.chance(0.4) ? 2 : 1);
+      }
+      ripples.push({ x, z, t0: t, life: 0.7, w: 1 });
+      lights.push({ x, y: -7, z, r: 30, k: 0.55 * k, life: 0.25, max: 0.25 });
+    }
+    return {
+      update(dt) {
+        t += dt;
+        for (const A of arms) {
+          if (!A.up && t >= A.t0) (A.up = true), splash(A.x, A.z, 12, 1);
+          if (!A.shut && t >= A.t0 + 0.36) {
+            // the clench: a snap of light at the fist, a puff of dark breath, a few sparks
+            A.shut = true;
+            const pts = arm3(A, t);
+            if (pts) {
+              const q = pts[pts.length - 1];
+              lights.push({ x: q.x, y: q.y, z: q.z, r: 22, k: 0.7, life: 0.2, max: 0.2 });
+              A.snap = { x: q.x + q.tx * 4, y: q.y + q.ty * 4, z: q.z + q.tz * 4, t0: t };
+              for (let i = 0; i < 6; i++) {
+                const a = R.range(0, TAU), el = R.range(-0.6, 0.9), sp = R.range(60, 130);
+                ps.spawn3(P.SPARK, A.snap.x, A.snap.y, A.snap.z, Math.cos(a) * Math.cos(el) * sp, Math.sin(el) * sp - 20, Math.sin(a) * Math.cos(el) * sp, R.range(0.12, 0.3));
+              }
+              puffs.spawn(PK.SOOT, A.snap.x, A.snap.y, 0, -12, 0.6, 3.5, 0, false, A.snap.z, 0);
+            }
+          }
+          if (!A.down && t >= A.td + 0.28) (A.down = true), splash(A.x, A.z, 8, 0.7);
+        }
+        const r = rx(t);
+        if (r > 8 && t < SHUT - 0.4) {
+          for (acc += dt * 8; acc > 1; acc--) {
+            const [x, z] = onPool(0.8);
+            puffs.spawn(PK.SOOT, x, -R.range(1, 4), R.range(-8, 8), -R.range(14, 28), R.range(0.6, 0.85), R.range(3, 6), 0, false, z, R.range(-8, 8));
+          }
+          if (R.chance(dt * 12)) {
+            const [x, z] = onPool(0.8);
+            ps.spawn3(P.MOTE, x, -2, z, R.range(-8, 8), -R.range(30, 70), R.range(-8, 8), R.range(0.5, 0.9), R.pick([C[7], C[6], C[5]]), R.range(0.6, 1));
+          }
+          if (R.chance(dt * 6)) {
+            const [x, z] = onPool(0.7);
+            ps.spawn3(P.VAPOUR, x, -R.range(2, 8), z, R.range(-6, 6), -R.range(10, 22), R.range(-6, 6), R.range(0.6, 0.9), R.chance(0.5) ? C[3] : C[4], R.range(3, 6));
+          }
+          if (R.chance(dt * 3)) {
+            const [x, z] = onPool(0.7);
+            ripples.push({ x, z, t0: t, life: 0.6, w: 0.5 });
+          }
+        }
+        for (const a of [ripples, splats]) for (let i = a.length - 1; i >= 0; i--) if (t - a[i].t0 > (a[i].life ?? 0.6)) a.splice(i, 1);
+        for (let i = lights.length - 1; i >= 0; i--) if ((lights[i].life -= dt) <= 0) lights.splice(i, 1);
+        drops.update(dt);
+        puffs.update(dt);
+        ps.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), shade = inkShade(q, C), r = rx(t), k = r / RX, spines = arms.map((A) => arm3(A, t));
+        // solid things first: the pool, the arms and hands, the drops
+        inkPool(q, C, r, t, ripples);
+        arms.forEach((A, i) => {
+          if (!spines[i]) return;
+          arm3Body(q, shade, C, spines[i]);
+          hand3(q, shade, C, A, spines[i], t);
+        });
+        drops.draw(q, C[1], C[5]);
+        for (const s of splats) {
+          const a = 1 - (t - s.t0) / 0.6;
+          q.dot(s.x, -0.4, s.z, C[1], a * 1.5);
+          q.dot(s.x + 1, -0.4, s.z, C[2], a);
+          q.dot(s.x, -1.4, s.z, C[5], a);
+        }
+        // light: the pool's glow, the glow at each hand, the flares
+        if (k > 0) {
+          q.glow(0, -16, 0, 80, C[4], 0.2 * k);
+          q.glow(0, -8, 0, r * 1.7 + 12, C[4], 0.3 * k);
+          q.glow(0, 0, 0, r * 1.15, C[5], 0.16 * k);
+        }
+        arms.forEach((A, i) => {
+          const pts = spines[i];
+          if (!pts) return;
+          const tip = pts[pts.length - 1];
+          if (tip.y < -2) q.glow(tip.x + tip.tx * 3, tip.y + tip.ty * 3, tip.z + tip.tz * 3, 8, C[5], 0.18 + 0.3 * Math.max(0, gripOf(A, t)));
+        });
+        for (const l of lights) {
+          const f = l.life / l.max;
+          q.glow(l.x, l.y, l.z ?? 0, l.r * (0.6 + 0.4 * f), C[5], l.k * f * f);
+        }
+        for (const A of arms) if (A.snap && t - A.snap.t0 < 0.22) {
+          const u = (t - A.snap.t0) / 0.22, s = A.snap;
+          q.at(s.x, s.y, s.z, (pp, kk) => ringFast(pp, 0, 0, (2 + 5 * ease.outCubic(u)) * kk, 1, u < 0.4 ? C[6] : u < 0.7 ? C[5] : C[3]));
+        }
+        // translucent last
+        puffs.draw(q, PK.SOOT, { x: 0, y: -2, z: 0, k: k * 0.5, reach: 70 });
+        ps.draw(q);
+      },
+    };
+  },
+};

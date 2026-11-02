@@ -1,5 +1,5 @@
-import { cycle, fit, clamp, ease, TAU } from "../../core/index.js";
-import { shape } from "./_lib.js";
+import { cycle, fit, clamp, ease, space, TAU } from "../../core/index.js";
+import { shape, lift } from "./_lib.js";
 
 export const meta = {
   name: "Slowed",
@@ -115,3 +115,49 @@ export function draw(p, t, o) {
     }
   });
 }
+
+// 3D: the glassy dial hangs behind the head as it did (an upright face, always turned to the eye, behind the body),
+// and its twin lies on the floor as a true circle the hand ticks round, ringing out on every tick. The drops sink
+// through the air round the body (real x, y, z) and where they reach the floor they spread true circles; the body's
+// lagging echo is dragged back a step behind it after every tick.
+export const three = {
+  meta: { size: [80, 92], origin: [40, 74], bg: "ground", camera: { pitch: 0.4 } },
+  draw(p, t, o) {
+    const q = space(p, o), C = fit(o.palette, 8), a = o.actor, S = shape(a), h = hand(t), fl = Math.max(h.flash, afterglow(t));
+    // a cold film of time over the body, thickening with each tick
+    for (const [mx, my] of S.body) p.blend(a.x + mx, a.y + my, C[5], 0.08 + 0.12 * fl);
+    // the body lags behind itself: an after-image of its outline, dragged a step back after every tick, just behind it
+    if (fl > 0.05) q.at(-1 - Math.round(2 * fl), 0, 0, (pp) => ((pp.z += 0.5), pp.outline(a.mask, a.x, a.y, C[5], 0.55 * fl)));
+    // the dial behind the head, and its twin on the floor (the body is an upright sprite at depth 0: the dial sits behind it)
+    q.at(0, lift(q, a.y + 3), 0, (pp) => ((pp.z = 2), dial(pp, C, 0, 0, t)));
+    q.decal(0, -0.5, 0, null, R + 14, (pp) => ((pp.fade = 0.6), dial(pp, C, 0, 0, t)));
+    // drops sinking in slow motion, ghosts trailing them, slow rings where they reach the floor
+    cycle(t, D, 6, o.seed + 3, (r) => r.range(1.6, 2.2), (age, life, r) => {
+      const an = r.range(0, TAU), rad = r.range(10, 17), x = Math.cos(an) * rad, z = Math.sin(an) * rad, v0 = r.range(18, 30), k = 1.1;
+      const y0 = lift(q, a.y + r.range(6, 22)), yAt = (g) => y0 + (v0 * (1 - Math.exp(-k * g))) / k + 4 * g;
+      const y = yAt(age), u = age / life;
+      if (y < -1) {
+        for (const [lag, al] of [[0.22, 0.35], [0.11, 0.6]]) if (age > lag) q.dot(x, yAt(age - lag), z, C[4], al);
+        q.at(x, y, z, (pp) => {
+          pp.px(0, -1, C[5]);
+          pp.px(0, 0, C[6]);
+          pp.px(0, 1, C[5]);
+          pp.px(-1, 1, C[4]);
+          pp.px(-1, 0, C[7]);
+        });
+        q.glow(x, y, z, 4, C[5], 0.3 * (1 - u));
+      } else {
+        // it reached the floor: a slow circle spreads and fades
+        let g = age;
+        while (g > 0 && yAt(g) >= -1) g -= 0.02;
+        const s = clamp((age - g) / 0.9);
+        if (s < 1) {
+          const rx = 1 + 7 * Math.sqrt(s);
+          q.ring(x, -0.5, z, rx, 1.2, s < 0.3 ? C[6] : C[5], (1 - s) * 1.2);
+          q.ring(x, -0.5, z, Math.max(0.5, rx - 2), 1, C[4], (1 - s) * 0.5);
+          q.glow(x, -1, z, 4 + rx, C[4], 0.12 * (1 - s));
+        }
+      }
+    });
+  },
+};

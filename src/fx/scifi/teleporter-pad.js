@@ -1,7 +1,7 @@
 // The rising band and the column of light it rides in follow Sprite Fusion's open-source heal
 // (https://www.spritefusion.com/pixel-art-vfx/heal), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { P, Rng, fit, band, sparkle, cycle, clamp, lerp, ease, rand, mix, TAU, WHITE } from "../../core/index.js";
-import { Ghosts, since } from "./_lib.js";
+import { P, Rng, fit, band, sparkle, cycle, space, clamp, lerp, ease, rand, mix, TAU, WHITE } from "../../core/index.js";
+import { Ghosts, since, cone } from "./_lib.js";
 
 export const meta = {
   name: "Teleporter pad",
@@ -113,4 +113,89 @@ export function draw(p, t, o) {
   const k = 0.85 + 0.15 * Math.sin(TAU * 2 * ph);
   for (const x of [-RX * 0.6, 0, RX * 0.6]) p.glow(x, PY, 20, C[4], 0.25 * k);
   p.glow(0, PY, 10, WHITE, 0.3 * k);
+}
+
+// 3D: the pad is a real steel drum on the floor with its well a true circle of light, the column a glass cylinder you
+// can see through from every side, the rings a true circle lifting off it, motes rising through the whole volume.
+export const three = {
+  meta: { size: [112, 116], origin: [56, 100], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const C = fit(o.palette, 8), H = fit(o.metal, 6), ph = t / D, q = space(p, o), W = RX * IN, S = o.seed;
+    // the drum's wall, then its top face: a steel rim lit from the far side, the well with rings rolling out of its middle
+    cone(q, 0, 0, PY, 0, RX, RX, (h, out) => {
+      if (!h.front) return;
+      const l = -h.nx * 0.5 + h.nz * 0.3, y = h.y - PY;
+      out.c = y < 0.6 || y > 2.4 ? H[0] : l > 0.4 ? H[3] : l < -0.4 ? H[1] : H[2];
+    });
+    q.plane(0, PY, 0, null, RX, (u, v, out) => {
+      const dpx = Math.hypot(u, v), d = dpx / RX;
+      if (d > 1) return;
+      if (d > 0.97) return (out.c = H[0]);
+      if (d > IN) {
+        const l = (-u * 0.45 - v * 0.9) / (dpx || 1);
+        out.c = Math.abs(d - (IN + 0.1)) < 0.03 ? H[1] : d < IN + 0.03 ? C[3] : l > 0.4 ? H[5] : l > -0.3 ? H[4] : H[3];
+        return;
+      }
+      const r = d / IN, ring = ((((r * 3 - ph * 3) % 1) + 1) % 1) < 0.16, heat = (1 - r) ** 1.5;
+      out.c = r > 0.94 ? C[3] : ring ? (heat > 0.3 ? WHITE : C[6]) : heat > 0.55 ? C[6] : heat > 0.25 ? C[5] : r > 0.8 ? C[3] : C[4];
+      out.l = C[4];
+      out.k = 0.18 * heat;
+    });
+    // emitters round the rim, chasing
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * TAU + 0.15, x = Math.cos(a) * RX * 0.885, z = Math.sin(a) * RX * 0.885, k = 0.5 + 0.5 * Math.cos(TAU * (2 * ph - i / 10));
+      q.ball(x, PY - 0.6, z, 1.3, k > 0.7 ? WHITE : k > 0.4 ? C[5] : C[2]);
+      if (k > 0.5) q.glow(x, PY - 1, z, 5, C[4], 0.35 * k);
+    }
+    // the rings of light lifting off it: true circles, crisp lines stepping down the ramp as they climb
+    for (let i = 0; i < 4; i++) {
+      const k = since(t, (i / 4) * D, D) / 1.25;
+      if (k >= 1) continue;
+      const y = lerp(PY, HIGH + 12, Math.pow(k, 0.85)), rx = W * (1 + 0.08 * k), c = k < 0.12 ? WHITE : k < 0.4 ? C[6] : k < 0.65 ? C[5] : k < 0.85 ? C[4] : C[3];
+      const glint = ((i * 0.37 + k * 1.5) % 1) * TAU;
+      q.decal(0, y, 0, null, rx + 2, (pp) => {
+        pp.ring(0, 0, rx, 1.3, (v, g) => (Math.abs(((g - glint + Math.PI * 3) % TAU) - Math.PI) < 0.25 && k < 0.8 ? WHITE : c), k > 0.85 ? 0.6 : 1);
+        if (k < 0.3) pp.ring(0, 0, rx - 1.3, 1, C[5], 0.7);
+      });
+      q.glow(0, y, 0, rx + 8, C[4], 0.22 * (1 - k));
+    }
+    // light: a pool on the floor, a hot heart to the well, pulsing; the column's own glow
+    const k = 0.85 + 0.15 * Math.sin(TAU * 2 * ph);
+    q.plane(0, 0, 0, null, RX + 14, (u, v, out) => {
+      const f = 1 - Math.hypot(u, v) / (RX + 14);
+      if (f <= 0) return;
+      out.l = C[4];
+      out.k = f * f * 0.22 * k;
+    });
+    q.glow(0, PY - 1, 0, 12, WHITE, 0.3 * k);
+    for (let y = PY - 6; y > HIGH + 20; y -= 12) q.glow(0, y, 0, W + 8, C[4], 0.16 * (1 - (y - PY) / (HIGH - PY)));
+    // sparkles and motes drifting up through the volume
+    const g = ghosts3(o, C);
+    // the column: a soft tube of light standing on the well, fading as it rises, seen through from every side
+    cone(q, 0, 0, HIGH, PY, W, W, (h, out) => {
+      const v = (h.y - PY) / (HIGH - PY), fade = (1 - v) ** 1.6, edge = Math.sqrt(1 - (1 - h.rim) ** 2);
+      out.blend = true;
+      out.c = edge > 0.9 ? C[6] : C[5];
+      out.a = fade * (0.07 + 0.3 * edge ** 4 + 0.12 * (1 - v) ** 4);
+    });
+    // light drawn up the column in streaks
+    cycle(t, D, 30, S + 3, (r) => r.range(0.6, 1.1), (age, life, r) => {
+      const k = age / life, a = r.range(0, TAU), rr = Math.sqrt(r.next()) * W * 0.95, y = lerp(PY - 2, HIGH + 10, k), L = 3 + 7 * k;
+      q.line(Math.cos(a) * rr, y, Math.sin(a) * rr, Math.cos(a) * rr, y + L, Math.sin(a) * rr, (u) => (u < 0.3 ? C[6] : C[4]), (1 - k) * 1.2);
+    });
+    g.at3(t).draw(q);
+  },
+};
+
+const ghost3 = new Map();
+function ghosts3(o, C) {
+  const key = `${o.seed}:${o.palette.join()}`;
+  if (ghost3.has(key)) return ghost3.get(key);
+  const rn = new Rng(o.seed), g = new Ghosts(D, { box: [-80, -90, 80, 10] });
+  for (let i = 0; i < 48; i++) {
+    const a = rn.range(0, TAU), r = Math.sqrt(rn.next()) * RX * IN * 0.9, star = i % 3 === 0;
+    g.add(rn.range(0, D), star ? P.STAR : P.MOTE, 0, PY, rn.range(-4, 4), -rn.range(30, 75), rn.range(0.7, 1.3), rn.pick([WHITE, C[6], C[5]]), star ? rn.range(1.8, 3.4) : rn.range(0.6, 1.2), 0, rn.range(0, TAU), Math.cos(a) * r, Math.sin(a) * r);
+  }
+  ghost3.set(key, g);
+  return g;
 }

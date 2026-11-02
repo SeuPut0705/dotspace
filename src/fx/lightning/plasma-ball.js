@@ -1,6 +1,7 @@
 // The re-struck filaments, the glass shell with its specular arc and the core follow Sprite Fusion's open-source
 // energy orb (https://www.spritefusion.com/pixel-art-vfx/energy), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { fit, clamp, rng, TAU, WHITE, hex, mix, loopNoise } from "../../core/index.js";
+import { fit, clamp, rng, space, TAU, WHITE, hex, mix, loopNoise } from "../../core/index.js";
+import { across } from "./_lib.js";
 
 export const meta = {
   name: "Plasma ball",
@@ -99,3 +100,86 @@ export function draw(p, t, o) {
   for (let a = 0.35; a < 1.15; a += 0.045) p.dot(GX + Math.cos(a) * (RG - 2.6), GY + Math.sin(a) * (RG - 2.6), C[4], 0.85);
   p.px(GX - RG * 0.42, GY - RG * 0.62, WHITE);
 }
+
+// The same globe in space: a round pedestal turned on a lathe, a glass sphere over it, plasma tendrils reaching from
+// the core to any point of the glass all the way round: the ones turned to us bright, the far ones dim behind it.
+export const three = {
+  meta: { size: [120, 112], origin: [60, 104], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const q = space(p, o), C = fit(o.palette, 8), f = Math.floor(t * FPS + 1e-6) % N, ph = f / N, n = o.tendrils, R = rng(o.seed, 3, f);
+    const pulse = 0.85 + 0.15 * Math.sin(ph * TAU * 6) + 0.1 * (R.next() - 0.5), CEN = [GX, GY, 0], RIM = RG * 0.93;
+    // the pedestal: stacked discs on a lathe, shaded from a light at the upper left whichever way we look
+    const wall = (u, v) => {
+      const [vx, vy, vz] = q.view(u, 0, v), l = (-0.45 * vx - 0.3 * vy + 0.66 * vz) / (Math.hypot(u, v) || 1);
+      return clamp((l + 0.35) / 1.1);
+    };
+    const hwAt = (y) => (y < -27 ? 7 : y < -2 ? 9 + ((y + 27) / 25) * 6 : 16);
+    for (let y = -1; y >= -32; y -= 1.5) {
+      const hw = hwAt(y), collar = y < -27, base = y >= -3;
+      q.plane(0, y, 0, null, hw, (u, v, out) => {
+        const d = Math.hypot(u, v), top = y < -31 || (y > -2.2 && y < -1.6 && d < hw - 1.2);
+        if (collar) return d > hw - 1.5 ? (wall(u, v) > 0.5 ? C[4] : BASE[5]) : y < -30 ? BASE[5] : wall(u, v) < 0.5 ? BASE[3] : BASE[4];
+        const l = wall(u, v), i = l > 0.88 ? 5 : l > 0.7 ? 4 : l > 0.5 ? 3 : l > 0.32 ? 2 : l > 0.15 ? 1 : 0;
+        out.c = y < -24 && l > 0.55 ? mix(BASE[i], C[4], 0.3 * pulse) : base ? BASE[Math.max(0, i - 1)] : BASE[i];
+        if (top) out.c = BASE[4];
+      });
+    }
+    // tendrils: wandering filaments from the core to the glass; where they meet it they fan into short fingers
+    const bright = [], ends = [];
+    for (let i = 0; i < n; i++) {
+      const az = ((i + 0.5) / n) * TAU + 1.3 * loopNoise(ph, 0.9, o.seed + i * 7), el = 1.25 * loopNoise(ph, 0.7, o.seed + i * 7 + 3);
+      const dir = [Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)], front = q.view(...dir)[2] > -0.15;
+      const w1 = loopNoise(ph, 1.1, o.seed + i * 7 + 5), w2 = loopNoise(ph, 1.3, o.seed + i * 7 + 6), w3 = loopNoise(ph, 1.2, o.seed + i * 7 + 8);
+      const s0 = [GX + dir[0] * 4.5, GY + dir[1] * 4.5, dir[2] * 4.5], e = [GX + dir[0] * RIM, GY + dir[1] * RIM, dir[2] * RIM], d = [e[0] - s0[0], e[1] - s0[1], e[2] - s0[2]], L = Math.hypot(...d);
+      const [, e1, e2] = across(d), r = rng(o.seed, 17, i, f), m = Math.max(4, Math.round(L / 2.2)), pts = [], hot = r.next() < 0.2;
+      for (let j = 0; j <= m; j++) {
+        const u = j / m, a = 3.2 * w1 * Math.sin(Math.PI * u) + 1.6 * w2 * Math.sin(TAU * u + i), b = 3.2 * w3 * Math.sin(Math.PI * u), jit = j && j < m ? r.range(-0.7, 0.7) : 0, jit2 = j && j < m ? r.range(-0.7, 0.7) : 0;
+        pts.push([s0[0] + d[0] * u + e1[0] * (a + jit) + e2[0] * (b + jit2), s0[1] + d[1] * u + e1[1] * (a + jit) + e2[1] * (b + jit2), s0[2] + d[2] * u + e1[2] * (a + jit) + e2[2] * (b + jit2)]);
+      }
+      const [, f1, f2] = across(dir), fingers = [];
+      for (let k = 0; k < 3; k++) {
+        const phi = (k / 3) * TAU + r.range(0, 1), a = r.range(1.1, 1.45), l = r.range(2.5, 5), tg = [f1[0] * Math.cos(phi) + f2[0] * Math.sin(phi), f1[1] * Math.cos(phi) + f2[1] * Math.sin(phi), f1[2] * Math.cos(phi) + f2[2] * Math.sin(phi)];
+        const dd = [dir[0] * Math.cos(a) + tg[0] * Math.sin(a), dir[1] * Math.cos(a) + tg[1] * Math.sin(a), dir[2] * Math.cos(a) + tg[2] * Math.sin(a)], b = pts[m - 1];
+        fingers.push([b, [b[0] + dd[0] * l * 0.5 + r.range(-0.6, 0.6), b[1] + dd[1] * l * 0.5 + r.range(-0.6, 0.6), b[2] + dd[2] * l * 0.5 + r.range(-0.6, 0.6)], [b[0] + dd[0] * l, b[1] + dd[1] * l, b[2] + dd[2] * l]]);
+      }
+      (front ? bright : ends).push({ pts, fingers, hot, e, i, front });
+    }
+    // the far ones first, dim: a single 1 px thread behind the glass
+    for (const T of ends) {
+      for (let j = 0; j < T.pts.length - 1; j++) q.beam(...T.pts[j], ...T.pts[j + 1], 1.2, C[3]);
+      for (const g of T.fingers) for (let j = 0; j < 2; j++) q.beam(...g[j], ...g[j + 1], 1, C[2]);
+    }
+    // the core: an electrode ball, pulsing
+    const cr = 3.6 + 0.5 * pulse;
+    q.ball(GX, GY, 0, cr, (nx, ny, nz) => (nz > 0.94 ? WHITE : nz > 0.82 ? C[6] : nz > 0.55 ? C[5] : C[3]));
+    for (const T of bright) {
+      for (let j = 0; j < T.pts.length - 1; j++) {
+        const u = j / (T.pts.length - 1);
+        q.beam(...T.pts[j], ...T.pts[j + 1], 2.4, (uu, v) => (v < 0.5 ? (T.hot || u > 0.75 || u < 0.2 ? C[6] : C[5]) : C[3]));
+      }
+      for (const g of T.fingers) for (let j = 0; j < 2; j++) q.beam(...g[j], ...g[j + 1], 1.1, C[6]);
+      q.ball(...T.e, 1.5, C[6]);
+      q.at(...T.e, (pp) => ((pp.z -= 1.6), pp.px(0, 0, WHITE)));
+    }
+    // light: along the filaments, at their feet, in the core, through the glass and out over the stand and floor
+    for (const T of [...ends, ...bright]) {
+      for (let j = 0; j < T.pts.length - 1; j += 3) q.glow(...T.pts[j], T.front ? 6 : 4, C[4], T.front ? (T.hot ? 0.4 : 0.24) : 0.12);
+      q.glow(...T.e, T.front ? 9 : 6, T.front ? C[5] : C[4], T.front ? 0.55 : 0.25);
+    }
+    q.glow(...CEN, 16, C[5], 0.65 * pulse);
+    q.glow(GX, GY, 0, RG + 14, C[3], 0.32 * pulse);
+    q.glow(0, -6, 0, 52, C[3], 0.22 * pulse);
+    // the glass shell: a faint tint over what's behind, a thin rim, a bright specular arc upper left
+    q.disc(GX, GY, 0, RG - 0.5, (d) => (d > (RG - 4) / (RG - 0.5) ? C[1] : C[0]), (d) => 0.22 + 0.4 * d ** 4);
+    q.at(GX, GY, 0, (pp, k) => {
+      const R2 = RG * k;
+      pp.glowRing(0, 0, R2 - 1, 5, C[3], 0.22 * pulse);
+      pp.z -= RG;
+      pp.ring(0, 0, R2 + 1.6, 1, C[1]);
+      pp.ring(0, 0, R2 + 0.6, 1.1, (v, a) => (a > 2.2 && a < 3.3 ? C[5] : a > 0.3 && a < 1.3 ? C[4] : C[3]));
+      pp.arc(0, 0, R2 - 1.6, 1.3, 3.55, 4.55, (u) => (u > 0.25 && u < 0.7 ? WHITE : C[6]));
+      for (let a = 0.35; a < 1.15; a += 0.045) pp.dot(Math.cos(a) * (R2 - 2.6), Math.sin(a) * (R2 - 2.6), C[4], 0.85);
+      pp.px(-R2 * 0.42, -R2 * 0.62, WHITE);
+    });
+  },
+};

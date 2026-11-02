@@ -1,7 +1,7 @@
 // The twinkles (spinning glints at the tips, motes shed as it turns) follow Sprite Fusion's open-source sparkle
 // (https://www.spritefusion.com/pixel-art-vfx/sparkle), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, PAL, fit, hex, clamp, ease, TAU, WHITE } from "../../core/index.js";
-import { W, H, screenMeta, clipTo, glint, rect } from "./_lib.js";
+import { Particles, Lights, P, Rng, PAL, fit, hex, clamp, ease, space, TAU, WHITE } from "../../core/index.js";
+import { W, H, screenMeta, clipTo, glint, glint3, rect } from "./_lib.js";
 
 export const meta = screenMeta({
   name: "Star iris",
@@ -114,3 +114,126 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the star iris as a twisting shaft. A floor plate and a canopy plate of ink each have a five-point star for a hole
+// and spin it opposite ways, so the gold lines from tip to tip wind into a twisted star tunnel of light; it spins shut
+// onto a glint, then spins open from a flash that throws stars every way.
+const K3 = 175 / RMAX, HI3 = 62, MID3 = -HI3 / 2, PR = 74, RW3 = 3;
+const SEC = (2 * Math.PI) / 5, VA = Math.PI / 5, LX = -0.6, LZ = 0.8;
+// where, for a point (u, v), a star of tip radius r turned by a has its edge: the distance out from it (negative
+// inside the star) and how much the edge faces the light
+const edgeAt = (() => {
+  const out = { out: 0, lit: 0 };
+  return (u, v, r, a) => {
+    const ri = r * INNER, ex = ri * Math.cos(VA) - r, ey = ri * Math.sin(VA), L = Math.hypot(ex, ey);
+    let g = Math.atan2(v, u) - a;
+    g -= Math.floor(g / SEC) * SEC;
+    const mirror = g > VA;
+    if (mirror) g = SEC - g;
+    const k = Math.round((Math.atan2(v, u) - a - (mirror ? -g : g)) / SEC), d = Math.hypot(u, v);
+    const x = d * Math.cos(g), y = d * Math.sin(g);
+    out.out = -(ex * y - ey * (x - r)) / L;
+    const bf = Math.atan2(-ex, ey), nw = a + k * SEC + (mirror ? -bf : bf);
+    out.lit = Math.cos(nw) * LX + Math.sin(nw) * LZ;
+    return out;
+  };
+})();
+
+export const three = {
+  meta: { size: [184, 152], origin: [92, 118], bg: "ground", camera: { pitch: 0.34 } },
+  create(o) {
+    const C = fit(o.palette, 8), ink = hex(o.color), R = new Rng(o.seed);
+    const ps = new Particles({ rng: R, ground: () => 0, sparks: [WHITE, C[6], C[5], C[4]] }), lights = new Lights();
+    // the star: its tip radius here, and the turn of the floor's hole (the canopy's turns the other way)
+    const at = (t) => {
+      const s = starAt(t);
+      return { r: s.r * K3, a: s.a };
+    };
+    const tip = (i, r, a, y) => [Math.cos(a + (i * Math.PI) / 5) * r * (i % 2 ? INNER : 1), y, Math.sin(a + (i * Math.PI) / 5) * r * (i % 2 ? INNER : 1)];
+    let t = 0, shut = false, opened = false, prev = at(0);
+    const end = meta.duration - 0.05;
+    return {
+      update(dt) {
+        t += dt;
+        const s = at(t), spin = (s.a - prev.a) / dt;
+        // the tips shed gold motes as the star turns, flung off along their path
+        if (s.r > 2 && s.r < PR)
+          for (let i = 0; i < 10; i += 2) {
+            if (!R.chance(0.35)) continue;
+            const y = R.chance(0.5) ? -1 : -HI3 + 1, sg = y < -2 ? -1 : 1, [x, , z] = tip(i, s.r, sg * s.a, y), an = sg * s.a + (i * Math.PI) / 5, v = sg * spin * s.r * 0.06;
+            ps.spawn3(R.chance(0.6) ? P.STAR : P.MOTE, x, y, z, -Math.sin(an) * v + Math.cos(an) * 8, 0, Math.cos(an) * v + Math.sin(an) * 8, Math.min(R.range(0.25, 0.55), end - t), R.chance(0.5) ? C[6] : C[5], R.range(0.6, 1.6));
+          }
+        if (!shut && t >= CLOSE) {
+          shut = true;
+          lights.add(0, MID3, 36, C[5], 0.7, 0.3, 0);
+        }
+        if (!opened && t >= OPEN0) {
+          opened = true;
+          lights.add(0, MID3, 70, C[5], 0.7, 0.4, 0);
+          lights.add(0, MID3, 28, WHITE, 0.8, 0.12, 0);
+          for (let i = 0; i < 26; i++) {
+            const a = R.range(0, TAU), el = Math.asin(R.range(-0.8, 0.8)), v = R.range(25, 75);
+            ps.spawn3(P.STAR, 0, MID3, 0, Math.cos(a) * Math.cos(el) * v, Math.sin(el) * v, Math.sin(a) * Math.cos(el) * v, R.range(0.3, 0.6), R.chance(0.5) ? WHITE : C[6], R.range(0.6, 1.8));
+          }
+        }
+        prev = s;
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), s = at(t);
+        const closed = t >= CLOSE && t < OPEN0, live = !closed && s.r < RMAX * K3 - 2;
+        if (closed || live) {
+          // the plates: ink with a star cut out; round its edge a gold rim, white where the edge faces the light
+          for (const y of [-3, -HI3]) {
+            const a = y === -3 ? s.a : -s.a + 0.6;
+            q.plane(0, y, 0, null, PR + RW3 + 2, (u, v, out) => {
+              const d = Math.hypot(u, v);
+              if (d > PR) return;
+              let e = RW3 + 1, lit = 0;
+              if (!closed) {
+                const g = edgeAt(u, v, s.r, a);
+                (e = g.out), (lit = g.lit);
+              }
+              if (e < 0) return;
+              if (e >= RW3) return d > PR ? 0 : d > PR - 1 ? C[2] : ink;
+              out.l = C[5];
+              out.k = 0.5 * (1 - e / RW3) * 0.6;
+              return e < 0.8 ? (lit > 0.1 ? WHITE : C[6]) : e < 1.6 ? C[5] : e < 2.4 ? C[4] : C[3];
+            });
+          }
+          // the plates' outer wall
+          if (s.r * INNER < PR + 2)
+            for (const y of [-3, -HI3]) for (let j = 1; j <= 3; j++) q.ring(0, y + j, 0, PR, 1, j === 1 ? C[1] : C[0]);
+          // the shaft: gold lines run from each tip and valley of the floor's star to the canopy's, a twisted star tunnel
+          if (live && s.r < PR) {
+            for (let i = 0; i < 10; i++) {
+              const A = tip(i, s.r, s.a, -1), B = tip(i, s.r, -s.a + 0.6, -HI3 + 1);
+              q.line(A[0], A[1], A[2], B[0], B[1], B[2], i % 2 ? C[4] : C[6], i % 2 ? 0.35 : 0.6);
+            }
+            q.glowLine(0, -1, 0, 0, -HI3 + 1, 0, s.r * INNER + 4, C[5], 0.1 + 0.2 * (1 - s.r / PR));
+          }
+          // twinkles on the tips, and light pooling in the star as it closes
+          if (live && s.r > 4 && s.r < PR)
+            for (let i = 0; i < 10; i += 2) {
+              const A = tip(i, s.r, s.a, -1), B = tip(i, s.r, -s.a + 0.6, -HI3 + 1);
+              glint3(q, A[0], A[1], A[2], 3 + 1.6 * Math.sin(t * 13 + i), t * 2 + i, C[6], C[5]);
+              glint3(q, B[0], B[1], B[2], 3 + 1.6 * Math.sin(t * 13 + i + 3), t * 2 + i, C[6], C[5]);
+            }
+          if (s.r < 56) q.glow(0, -2, 0, s.r * 0.7 + 4, C[5], 0.35 * (1 - s.r / 56));
+        }
+        // shutting: a glint where it closed; opening: a flash
+        const u = t - CLOSE;
+        if (u > -0.05 && u < 0.2) glint3(q, 0, MID3, 0, 7 * (1 - Math.abs(u) / 0.2), u * 4, C[6], C[5]);
+        const v = t - OPEN0;
+        if (v >= 0 && v < 0.16) {
+          q.ball(0, MID3, 0, 5 * (1 - v / 0.16), WHITE);
+          glint3(q, 0, MID3, 0, 9 * (1 - v / 0.16), 0.3 - v * 5, C[6], C[5]);
+          q.glow(0, MID3, 0, 36, WHITE, 0.5 * (1 - v / 0.16));
+        }
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

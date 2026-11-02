@@ -1,5 +1,5 @@
-import { fit, hex, mix, clamp, wrap, lerp, smooth, ease, TAU } from "../../core/index.js";
-import { Grid, shift } from "./_lib.js";
+import { fit, hex, mix, clamp, wrap, lerp, smooth, ease, space, TAU } from "../../core/index.js";
+import { Grid, shift, mirrored, floorShadow, floorPool } from "./_lib.js";
 
 export const meta = {
   name: "Bird",
@@ -123,3 +123,55 @@ export function draw(p, time, o) {
   // a little moonlight on its back
   p.glow(2, y - 6, 16, C[5], 0.12);
 }
+
+// ---- 3D: the bird circles in depth, a lap every loop, its shadow wheeling over the floor and the loose feather falling to it
+const LAP = { r: 34, h: 54 };
+function at3(t) {
+  const a = (t / D) * TAU, w = TAU / D;
+  return { x: LAP.r * Math.sin(a), z: LAP.r * Math.cos(a), y: -LAP.h + 5 * Math.sin(2 * a + 1), vx: LAP.r * w * Math.cos(a), vz: -LAP.r * w * Math.sin(a) };
+}
+
+export const three = {
+  meta: { size: [144, 112], origin: [72, 92], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, time, o) {
+    const t = shift(time, D, o.seed), C = fit(o.palette, 7), Br = fit(o.breast, 4), w = wing(t), g = GRID, q = space(p, o);
+    const S = at3(t), Y = S.y + lift(t), flip = mirrored(q, S.vx, S.vz);
+    // its shadow wheels over the floor, smaller and darker the higher it flies
+    const hgt = clamp(-S.y / 60);
+    floorShadow(q, S.x, S.z, 8 + 4 * (1 - hgt), "#000000", 0.9);
+    // on the downstroke, a see-through echo of the wing a moment before, where the bird was then
+    if (w.down && w.u > 0.1) {
+      const s = t - 0.05, ws = wing(s), B = at3(s);
+      g.clear();
+      g.poly(wingPts(ws, false), C[6]);
+      g.a.fill(0.42);
+      q.at(B.x, B.y, B.z, (pp) => g.draw(pp, 1, 0, Math.round(lift(s)), flip));
+    }
+    // the bird itself: its pixel sprite, upright, turned to face the way it flies
+    bird(g, C, Br, t, w);
+    q.at(S.x, Y, S.z, (pp) => g.draw(pp, 1, 0, 0, flip));
+    // a soft streak of air-light curls along the circle behind it
+    for (let k = 7; k <= 24; k++) {
+      const A = at3(t - (k - 1) * 0.03), B = at3(t - k * 0.03);
+      q.glowLine(A.x, A.y + 1.5, A.z, B.x, B.y + 1.5, B.z, 2.4, C[5], 0.22 * (1 - (k - 7) / 18));
+    }
+    // a loose feather is shed, keeps a little of the bird's run, rocks and swings down to the floor, and lies there
+    const fa = wrap(t - 0.45, D), END = 2.3;
+    if (fa < END) {
+      const B = at3(t - fa), sp = Math.hypot(B.vx, B.vz) || 1, hx = B.vx / sp, hz = B.vz / sp;
+      const run = ((1 - Math.exp(-1.8 * fa)) / 1.8) * 0.35 * sp, yf = B.y + 4 + 24 * fa, air = clamp(-yf / 8);
+      const sway = 3 * Math.sin(fa * 5) * air, fx = B.x + hx * run - hz * sway, fz = B.z + hz * run + hx * sway;
+      const fy = Math.min(-0.6, yf + 1.2 * fa * Math.cos(fa * 5) * air);
+      const rock = Math.sin(fa * 5) * 0.8 * air, ph = fa * 1.4 + 0.5, cr = Math.cos(rock);
+      const dx = Math.cos(ph) * cr, dy = Math.sin(rock) * 0.8, dz = Math.sin(ph) * cr, a = Math.min(1, (END - fa) * 2);
+      floorShadow(q, fx, fz, 3.5, "#000000", 0.7 * a * (0.5 + 0.5 * (1 - air)));
+      const px = a > 0.95 ? (x, y, z, c) => q.px(x, y, z, c) : (x, y, z, c) => q.dot(x, y, z, c, a);
+      for (let i = -2; i <= 2; i++) px(fx + i * dx, fy + i * dy, fz + i * dz, i < 0 ? C[5] : C[4]);
+      px(fx + 2.6 * dx, fy + 2.6 * dy, fz + 2.6 * dz, C[3]);
+      q.glow(fx, fy, fz, 5, C[5], 0.25 * a);
+    }
+    // a little moonlight on its back, and a faint pool of it on the floor below
+    q.glow(S.x, Y - 6, S.z, 16, C[5], 0.12);
+    floorPool(q, S.x, S.z, 24, C[4], 0.1 * (1 - hgt * 0.5));
+  },
+};

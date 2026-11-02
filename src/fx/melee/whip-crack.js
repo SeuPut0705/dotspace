@@ -1,7 +1,7 @@
 // The pop's star and slivers follow Sprite Fusion's open-source impact, and the sparks his slash
 // (https://www.spritefusion.com/pixel-art-vfx), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, clamp, smooth, ease, TAU, WHITE, READY } from "../../core/index.js";
-import { star, sliver } from "./_lib.js";
+import { Particles, Lights, P, Rng, fit, space, clamp, smooth, ease, TAU, WHITE, READY } from "../../core/index.js";
+import { star, sliver, spray } from "./_lib.js";
 
 export const meta = {
   name: "Whip crack",
@@ -143,3 +143,113 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the whip is a real curve in space. It sways sideways as it rolls out, the running loop is tipped over out of the
+// vertical plane so from the side you see it curl round, and after the crack it is flicked aside as it is drawn back.
+// The crack is the same white pop, as a billboard at the tip, with its ring of air as a bubble of three rings (one
+// facing every way, so it reads from each side), slivers flying off on tilted planes, and the sparks and smoke
+// leaving in a wide cone ahead of the tip.
+export const three = {
+  meta: { size: [272, 128], origin: [136, 72], camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 7), Rg = new Rng(o.seed), ps = new Particles({ rng: Rg, ground: () => 0, sparks: o.sparks }), lights = new Lights();
+    const L = o.length, HX = 11, HY = -21, TIP = [HX + L, HY - 1, 0], TILT = 0.75, cb = Math.cos(TILT), sb = Math.sin(TILT);
+    const lam = (t) => L * (0.34 + 0.66 * ease.inQuad(clamp((t - ROLL0) / ROLL)));
+    // the whip as points [x, y, z], handle to tip: straight out to the loop, round the loop (tipped out of the plane),
+    // folded back under it
+    const shape = (t) => {
+      const l = lam(t), r = 6.5 - 3.5 * (l / L), pts = [];
+      const recoil = smooth(CRACK + 0.04, CRACK + 0.04 + RECOIL, t), len = L * (1 - recoil * 0.85);
+      for (let s = 0; s <= len; s += 1) {
+        let x, dy, z = 0;
+        if (s <= l) (x = HX + s), (dy = -Math.sin((Math.PI * s) / Math.max(l, 1)) * 2.5 * (1 - l / L)), (z = Math.sin((TAU * s) / L) * 5 * (1 - l / L));
+        else if (s <= l + Math.PI * r) {
+          const th = (s - l) / r;
+          (x = HX + l + Math.sin(th) * r), (dy = r - Math.cos(th) * r);
+        } else (x = HX + l - (s - l - Math.PI * r)), (dy = 2 * r);
+        const sag = Math.sin((Math.PI * s) / L) * recoil;
+        pts.push([x, HY + dy * cb + sag * 6, dy * sb + z + sag * 9]);
+      }
+      return pts;
+    };
+    const spikes = [0, 0.8, 1.6, 2.4, 3.14, 3.9, 4.7, 5.5].map((a, i) => ({ a: a + Rg.range(-0.15, 0.15), len: (i === 0 ? 13 : i % 2 ? 6 : 9) + Rg.range(0, 3), w: 1.4 + Rg.range(0, 0.5) }));
+    // slivers fly off round the tip, each on a plane through the whip's axis turned its own way
+    const slivers = [-1.2, -0.3, 0.5, 1.3].map((a, i) => ({ a: a + Rg.range(-0.2, 0.2), r: Rg.range(4, 6), v: Rg.range(80, 120), arc: Rg.range(0.4, 0.7), ph: (i * Math.PI) / 4 + Rg.range(-0.15, 0.15) }));
+    let t = 0, cracked = false;
+    const tipTrail = [];
+    return {
+      update(dt) {
+        t += dt;
+        if (t > CRACK - 0.05 && t < CRACK + 0.01) {
+          const pts = shape(t);
+          tipTrail.push({ p: pts[pts.length - 1], t });
+        }
+        for (let i = tipTrail.length - 1; i >= 0; i--) if (t - tipTrail[i].t > 0.06) tipTrail.splice(i, 1);
+        if (!cracked && t >= CRACK) {
+          cracked = true;
+          lights.add(TIP[0], TIP[1], 46, C[4], 0.6, 0.3, 0);
+          lights.add(TIP[0], TIP[1], 14, WHITE, 0.8, 0.07, 0);
+          for (let i = 0; i < 16; i++) {
+            const [vx, vy, vz] = spray(Rg, [1, 0, 0], 1.25, Rg.range(100, 210));
+            ps.spawn3(P.SPARK, TIP[0], TIP[1], 0, vx, vy - 40, vz, Rg.range(0.12, 0.36));
+          }
+          for (let i = 0; i < 3; i++) ps.spawn3(P.SMOKE, TIP[0] + Rg.range(-2, 3), TIP[1] + Rg.range(-2, 2), Rg.range(-3, 3), Rg.range(10, 40), -Rg.range(6, 18), Rg.range(-12, 12), Rg.range(0.4, 0.55), C[2], Rg.range(2.5, 4), Rg.range(0.02, 0.06));
+          for (let i = 0; i < 4; i++) ps.spawn3(P.STAR, TIP[0] + Rg.range(-8, 10), TIP[1] + Rg.range(-8, 8), Rg.range(-9, 9), 0, -3, 0, Rg.range(0.2, 0.4), Rg.chance(0.5) ? C[5] : WHITE, Rg.range(0.8, 1.8), Rg.range(0.05, 0.2));
+        }
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), end = CRACK + 0.04 + RECOIL;
+        if (t < end) {
+          const fade = 1 - smooth(end - 0.06, end, t);
+          // afterimages of the whip a beat and two beats back: the loop's motion
+          if (t < CRACK)
+            for (const [lag, c, a] of [[0.03, C[1], 0.5], [0.015, C[2], 0.7]]) {
+              const old = shape(Math.max(0, t - lag));
+              for (let i = 1; i < old.length; i += 2) q.dot(old[i][0], old[i][1], old[i][2], c, a);
+            }
+          // the whip: thicker and lit near the handle, a single line to the tip
+          const pts = shape(t), n = pts.length, l = lam(t), r = 6.5 - 3.5 * (l / L);
+          for (let i = 1; i < n; i++) {
+            const u = i / n, inLoop = t < CRACK && i > l && i < l + Math.PI * r, lead = inLoop && Math.abs(i - l - (Math.PI * r) / 2) < r * 0.9;
+            if (u < 0.3 && fade > 0.5) q.beam(...pts[i - 1], ...pts[i], 1.3, u < 0.15 ? C[3] : C[2], 1);
+            q.line(...pts[i - 1], ...pts[i], lead ? WHITE : inLoop ? C[5] : u < 0.5 ? C[4] : C[3], fade);
+            if (u < 0.4) q.line(pts[i - 1][0], pts[i - 1][1] + 1, pts[i - 1][2], pts[i][0], pts[i][1] + 1, pts[i][2], C[2], fade);
+          }
+          // the running loop is the fastest part: it shines
+          if (t < CRACK) {
+            const c = shape(t)[Math.min(n - 1, Math.round(l + (Math.PI * r) / 2))] ?? pts[n - 1];
+            q.glow(c[0], c[1], c[2], 12, C[4], 0.4);
+          }
+        }
+        // the tip's path just before the crack: a white-hot streak
+        for (let i = 1; i < tipTrail.length; i++) {
+          const k = 1 - (t - tipTrail[i].t) / 0.06;
+          q.line(...tipTrail[i - 1].p, ...tipTrail[i].p, k > 0.6 ? WHITE : C[5], k);
+        }
+        // the crack: a white pop, a bubble of air, slivers
+        const w = t - CRACK;
+        if (w >= 0 && w < 0.035) q.at(TIP[0], TIP[1], 0, (pp) => star(pp, 0, 0, spikes, 1, 1, WHITE, C[5], C[6], C[4]));
+        else if (w >= 0.035 && w < 0.07) q.at(TIP[0], TIP[1], 0, (pp) => star(pp, 0, 0, spikes, 1.3, 0.5, C[6], C[5], C[5], C[3]));
+        if (w >= 0.02 && w < 0.2) {
+          const k = (w - 0.02) / 0.18, r = 4 + 16 * ease.outCubic(k), th = Math.max(1, 2.2 * (1 - k)), col = k < 0.25 ? WHITE : k < 0.5 ? C[5] : k < 0.75 ? C[4] : C[3];
+          q.ring(TIP[0], TIP[1], 0, r, th, col, 1.15 - k, [0, 0, 1]);
+          q.ring(TIP[0], TIP[1], 0, r, th, col, (1.15 - k) * 0.8, [0, -1, 0]);
+          q.ring(TIP[0], TIP[1], 0, r, th, col, (1.15 - k) * 0.8, [1, 0, 0]);
+          q.glow(TIP[0], TIP[1], 0, r + 6, C[4], 0.25 * (1 - k));
+        }
+        if (w >= 0.04 && w < 0.16) {
+          const k = (w - 0.04) / 0.12;
+          for (const s of slivers) {
+            const rr = s.r + s.v * (w - 0.04), arc = s.arc * (1 - 0.4 * k), a0 = s.a - arc / 2;
+            q.arc(TIP[0], TIP[1], 0, rr + 0.7, 1.4, a0, a0 + arc, k < 0.4 ? C[6] : C[5], 1 - k, [0, -Math.sin(s.ph), Math.cos(s.ph)]);
+          }
+        }
+        if (w >= 0 && w < 0.15) q.glow(TIP[0], TIP[1], 0, 26, C[5], 0.7 * Math.exp(-w / 0.04));
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

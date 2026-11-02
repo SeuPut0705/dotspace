@@ -1,4 +1,5 @@
-import { Particles, Lights, P, Rng, fit, sparkle, clamp, seg, ease, TAU, WHITE, READY } from "../../core/index.js";
+import { Particles, Lights, P, Rng, fit, space, sparkle, clamp, seg, ease, TAU, WHITE, READY } from "../../core/index.js";
+import { shell } from "./_lib.js";
 
 export const meta = {
   name: "Exclamation",
@@ -118,3 +119,86 @@ export function create(o) {
     },
   };
 }
+
+// ---- 3D: the mark is a billboard that springs up above his head; round it the surprise is real: ticks in a crown
+// all the way round it, a halo ring flat in the air that flicks out on each beat, stars thrown from the head in
+// every direction, and a ring running out along the floor from his feet as he flinches.
+export const three = {
+  meta: { size: [124, 128], origin: [62, 104], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), R = new Rng(o.seed);
+    const ps = new Particles({ rng: R, sparks: [C[7], C[6], C[5], C[3]] }), lights = new Lights();
+    const m = { y: HEAD, vy: -420, sq: 0, landed: false };
+    // the ticks: a crown of short strokes round the mark, tilted away from its axis
+    const crown = Array.from({ length: 12 }, (_, i) => ({ az: (i / 12) * TAU + (i % 2) * 0.13, th: 0.62 + (i % 3) * 0.3, long: i % 3 === 1 ? 1 : 0.75 }));
+    let t = 0, popped = false, sprung = false;
+    const end = meta.duration - 0.05, MID = REST - 13;
+    return {
+      update(dt) {
+        t += dt;
+        if (t < POP) {
+          m.vy += (-(m.y - REST) * 900 - m.vy * 14) * dt;
+          m.y += m.vy * dt;
+          if (!m.landed && m.vy > 0) (m.landed = true), (m.sq = 1);
+        }
+        m.sq = Math.max(0, m.sq - dt / 0.12);
+        if (!sprung && t >= 0.04) {
+          sprung = true;
+          lights.add(0, HEAD - 4, 26, C[5], 0.6, 0.25, 0);
+          for (let i = 0; i < 10; i++) {
+            const a = R.range(0, TAU), up = R.range(0.2, 1.4), sp = R.range(40, 90);
+            ps.spawn3(P.STAR, R.range(-4, 4), HEAD - 2, R.range(-4, 4), Math.cos(a) * Math.cos(up) * sp, -Math.sin(up) * sp, Math.sin(a) * Math.cos(up) * sp, R.range(0.2, 0.4), R.pick([C[7], C[6], C[5]]), i % 3 ? 0.6 : 1.3);
+          }
+        }
+        if (!popped && t >= POP + 0.05) {
+          popped = true;
+          lights.add(0, MID, 28, C[5], 0.5, 0.2, 0);
+          for (let i = 0; i < 9; i++) {
+            const a = (i / 9) * TAU + R.range(-0.2, 0.2), c = R.range(-0.6, 0.6), s = Math.sqrt(1 - c * c), sp = R.range(30, 60);
+            ps.spawn3(P.STAR, Math.cos(a) * 5, MID + c * 9, Math.sin(a) * 5, Math.cos(a) * s * sp, c * sp, Math.sin(a) * s * sp, Math.min(R.range(0.2, 0.35), end - t), R.pick([C[7], C[6], C[5]]), i % 3 ? 0.6 : 1.4);
+          }
+        }
+        ps.update(dt);
+        lights.update(dt);
+      },
+
+      draw(p) {
+        const q = space(p, o), k = t;
+        // a ring runs out along the floor from his feet as he flinches, and a warm pool lights it
+        const fk = (k - 0.02) / 0.32;
+        if (fk > 0 && fk < 1) {
+          q.ring(0, 0, 0, 8 + 36 * ease.outCubic(fk), Math.max(1, 2.4 * (1 - fk)), fk < 0.3 ? WHITE : C[5], 1.3 - fk);
+          q.ring(0, 0, 0, 5 + 20 * ease.outCubic(fk), 1, C[4], 1.1 - fk);
+        }
+        // surprise ticks: a crown flicks out round the mark on the spring, and again on a second beat
+        for (const [t0, len] of [[0.04, 6], [0.48, 4.5]]) {
+          const u = (k - t0) / 0.24;
+          if (u <= 0 || u >= 1) continue;
+          const r0 = 14 + 7 * ease.outCubic(u);
+          // the halo: a ring flat in the air that spreads from the mark
+          q.ring(0, MID, 0, r0 + 6 + len * ease.outCubic(u), 1, C[5], 1.3 * (1 - u));
+          for (const c of crown) {
+            const L = len * Math.sin(u * Math.PI) * c.long;
+            if (L < 0.8) continue;
+            const dx = Math.sin(c.th) * Math.cos(c.az), dy = -Math.cos(c.th), dz = Math.sin(c.th) * Math.sin(c.az);
+            q.line(dx * r0, MID + dy * r0, dz * r0, dx * (r0 + L), MID + dy * (r0 + L), dz * (r0 + L), (v) => (v < 0.5 ? WHITE : C[5]));
+          }
+        }
+        // the mark: stretched while it shoots up, squashed as it lands, wobbling, white on the pop
+        const pu = (k - POP) / 0.06;
+        if (pu < 1) {
+          const speed = Math.min(1, Math.abs(m.vy) / 420), up = m.vy < 0 ? speed : 0;
+          let sx = 1 - 0.3 * up + 0.3 * m.sq, sy = 1 + 0.45 * up - 0.28 * m.sq;
+          if (k < 0.05) (sx *= k / 0.05), (sy *= k / 0.05);
+          if (pu > 0) (sx = sy = 1 + 0.3 * pu);
+          const wob = 0.28 * Math.exp(-k * 4) * Math.sin(k * 26), white = k < 0.06 || pu > 0;
+          if (sx > 0.1) q.at(0, m.y, 0, (pp) => bang(pp, C, 0, 0, sx, sy, wob, white));
+          q.glow(0, m.y - 13, 0, 20, C[5], 0.35 + (white ? 0.3 : 0));
+          if (k > 0.6 && k < 0.85) q.at(0, m.y - 22, 0, (pp) => sparkle(pp, -3, 0, 3.5 * Math.sin(((k - 0.6) / 0.25) * Math.PI), C[7], C[6], 0.4));
+        } else if (pu < 4) shell(q, 0, MID, 0, 8 + 22 * ease.outCubic((pu - 1) / 3), 1.2, C[6], 1.1 - (pu - 1) / 3);
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

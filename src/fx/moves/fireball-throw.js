@@ -1,4 +1,5 @@
-import { chain, READY, PAL } from "../../core/index.js";
+import { chain, in3d, READY, PAL } from "../../core/index.js";
+import { recenter } from "./_lib.js";
 import * as charge from "../arcane/spell-charge.js";
 import * as fireball from "../fire/fireball.js";
 import * as blast from "../explosions/small-explosion.js";
@@ -49,3 +50,14 @@ export const create = chain([
   { fx: fireball, t: THROW, until: HIT, x: (t) => 28 + (t - THROW) * SPEED, y: -22 },
   { fx: blast, t: HIT, x: TX },
 ]);
+
+const MID = 95;
+export const three = {
+  meta: { actor: 0, size: [436, 266], origin: [218, 198], camera: { pitch: 0.3 } },
+  act: recenter(act, MID),
+  create: chain([
+    { fx: in3d(charge), t: 0.08, until: THROW, x: -MID, palette: PAL.fire },
+    { fx: in3d(fireball), t: THROW, until: HIT, x: (t) => 28 + (t - THROW) * SPEED - MID, y: -22 },
+    { fx: in3d(blast), t: HIT, x: TX - MID },
+  ]),
+};

@@ -86,6 +86,17 @@ export class Drops {
       p.glow(x, y, 2.5 + d.s, C[5], 0.1 + 0.05 * d.s);
     }
   }
+  /** Through a Space: beads at their place in space; y0 is the world y of the surface they fall to. */
+  draw3(q, C, y0 = 0) {
+    for (const d of this.list) {
+      if (d.delay > 0) continue;
+      const [vx, vy] = q.view(d.vx, -d.vh, d.vz);
+      q.at(d.x, y0 - d.h, d.z, (p) => {
+        bead(p, 0, 0, vx, vy, d.s, C, Math.min(1, d.life / 0.2));
+        p.glow(0, 0, 2.5 + d.s, C[5], 0.1 + 0.05 * d.s);
+      });
+    }
+  }
 }
 
 /**
@@ -146,6 +157,14 @@ export class Ripples {
       ring(p, q.x, q.z * this.sy, r, this.sy, k, C, { n: q.n, gap: q.gap * (0.55 + 0.6 * u), half, hot: q.age < q.hot, glint: q.glint * k, seed: q.seed });
     }
   }
+  /** Through a Space: true circles on the surface at height y (a world y; 0 is the floor). */
+  draw3(q, C, y = 0) {
+    for (const r of this.list) {
+      if (r.age < 0) continue;
+      const u = r.age / r.life, R = r.r0 + (r.r1 - r.r0) * (1 - Math.pow(1 - u, 2.6)), k = r.k * Math.pow(1 - u, 1.7);
+      ring3(q, r.x, r.z, R, k, C, { n: r.n, gap: r.gap * (0.55 + 0.6 * u), hot: r.age < r.hot, glint: r.glint * k, seed: r.seed, y });
+    }
+  }
 }
 
 /**
@@ -174,8 +193,8 @@ export class Mist {
   constructor() {
     this.list = [];
   }
-  add(x, y, vx, vy, r0, r1, life, c, a = 0.25, delay = 0) {
-    this.list.push({ x, y, vx, vy, r0, r1, life, max: life, c: hex(c), a, delay });
+  add(x, y, vx, vy, r0, r1, life, c, a = 0.25, delay = 0, z = 0, vz = 0) {
+    this.list.push({ x, y, z, vx, vy, vz, r0, r1, life, max: life, c: hex(c), a, delay });
   }
   get count() {
     return this.list.length;
@@ -195,6 +214,8 @@ export class Mist {
       m.vy -= m.vy * 2.4 * dt + 7 * dt;
       m.x += m.vx * dt;
       m.y += m.vy * dt;
+      m.vz -= m.vz * 2.4 * dt;
+      m.z += m.vz * dt;
     }
   }
   draw(p, haze) {
@@ -206,6 +227,22 @@ export class Mist {
       p.disc(m.x, m.y, r, m.c, (d) => a * (1 - d * d) * (1 - d * 0.5));
       p.disc(m.x - r * 0.2, m.y - r * 0.32, r * 0.55, WHITE, (d) => a * 0.25 * (1 - d) * (1 - d));
       if (haze) p.glow(m.x, m.y, r * 1.5, haze, (0.16 * a) / m.a * Math.min(1, m.a * 3));
+    }
+  }
+  /**
+   * Through a Space: each puff is a billboard at its place in space, far to near, as soft as in 2D.
+   * add() takes z and vz at its end.
+   */
+  draw3(q, haze) {
+    for (const m of q.sort(this.list.filter((v) => v.delay <= 0), (v) => [v.x, v.y, v.z])) {
+      const age = 1 - m.life / m.max, r = m.r0 + (m.r1 - m.r0) * (1 - Math.pow(1 - age, 2.2));
+      const a = m.a * Math.min(1, age / 0.12) * Math.pow(1 - age, 1.4);
+      if (a < 0.01) continue;
+      q.at(m.x, m.y, m.z, (p, k) => {
+        p.disc(0, 0, r * k, m.c, (d) => a * (1 - d * d) * (1 - d * 0.5));
+        p.disc(-r * k * 0.2, -r * k * 0.32, r * k * 0.55, WHITE, (d) => a * 0.25 * (1 - d) * (1 - d));
+        if (haze) p.glow(0, 0, r * k * 1.5, haze, (0.16 * a) / m.a * Math.min(1, m.a * 3));
+      });
     }
   }
 }
@@ -229,3 +266,49 @@ export function pebble(p, x, y, r, ST) {
 }
 
 export const rock = () => ROCK.map(hex);
+
+/**
+ * 3D ring(): the same crisp crest train as ring(), a true circle on the surface at world height y, round (cx, cz).
+ * No halves: depth sorts the far side behind things. The near side and the side toward the light read brighter
+ * as seen from the camera.
+ */
+export function ring3(q, cx, cz, r, k, C, { n = 2, gap = 3, hot = false, glint = 0, seed = 0, wob = 0, y = 0 } = {}) {
+  if (k <= 0.02 || r < 0.5) return;
+  const yaw = q.camera.yaw;
+  for (let j = 0; j < n; j++) {
+    const rr = r - j * gap;
+    if (rr < 0.6) break;
+    const kj = k * (1 - j * 0.42), m = Math.max(6, Math.ceil(rr * TAU * 1.3)), need = 1.15 - 2.3 * Math.min(1, kj * 1.25);
+    for (let i = 0; i < m; i++) {
+      const a = (i / m) * TAU;
+      if (noise(a * 4.7 + seed * 13.1 + j * 5.3, seed) * 0.65 + noise(a * 11.3 + seed * 7.7, seed + 3) * 0.35 < need) continue;
+      // angle as the camera sees it: sin > 0 is the side toward the camera
+      const sa = Math.sin(a + yaw), near = sa > 0, lit = kj * (near ? 1 : 0.7) * (0.88 - 0.12 * Math.cos(a + yaw));
+      const c = hot && near && j === 0 ? WHITE : C[lit > 0.7 ? 6 : lit > 0.38 ? 5 : 4], ra = wob ? rr + wob * noise(a * 2.6 + seed * 1.9 + j, seed + 11) : rr;
+      const x = cx + Math.cos(a) * ra, z = cz + Math.sin(a) * ra;
+      q.dot(x, y, z, c);
+      if (j === 0) q.light(x, y, z, C[4], 0.3 * lit);
+    }
+  }
+  if (glint > 0) {
+    const a = 2.05 - yaw, x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
+    q.px(x, y, z, WHITE);
+    q.glow(x, y, z, 3 + glint * 2, C[5], 0.35 * glint);
+  }
+}
+
+/**
+ * The side of a cylinder standing on y0 (round (cx, cz), radius r, h tall, going up): a splat of 1 px samples with
+ * depth, shade(a, v, u) for the angle a round it, v 0 at the top to 1 at the foot, u 0..1 across the angle range.
+ * a0..a1: the part of the circle (default all). Both faces show: whichever is nearer wins by depth.
+ */
+export function tube(q, cx, y0, cz, r, h, shade, a0 = 0, a1 = TAU) {
+  const n = Math.max(8, Math.ceil(r * (a1 - a0) * 1.5)), rows = Math.max(2, Math.ceil(h * 1.25));
+  for (let i = 0; i <= n; i++) {
+    const u = i / n, a = a0 + (a1 - a0) * u, x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
+    for (let j = 0; j <= rows; j++) {
+      const v = j / rows, c = shade(a, v, u);
+      if (c) q.px(x, y0 - h * (1 - v), z, c);
+    }
+  }
+}

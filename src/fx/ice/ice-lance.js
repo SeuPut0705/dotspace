@@ -1,8 +1,8 @@
 // The projectile recipe (a hot head, a trail that thins behind it, motes shed along the way, light riding the
 // head) is adapted from Sprite Fusion's open-source energy bolt (https://www.spritefusion.com/pixel-art-vfx/energy),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { fit, cycle, fly, clamp, TAU, WHITE } from "../../core/index.js";
-import { blade } from "./_lib.js";
+import { fit, cycle, fly, clamp, space, TAU, WHITE } from "../../core/index.js";
+import { blade, cone3 } from "./_lib.js";
 
 export const meta = {
   name: "Ice lance",
@@ -96,3 +96,87 @@ export function draw(p, t, o) {
   p.glow(0, 0, 8, WHITE, 0.4);
   p.glow(-L * 0.4, 0, 30, C[3], 0.16);
 }
+
+// 3D: a real hexagonal spear flying +x: a faceted shaft and long point (the facets turn to the light as the camera
+// goes round), four ice blades splayed round the tail, rings of cold air that are true circles round the axis, a wake
+// that spirals back, frost and shed crystals thrown out all the way round it, speed lines parallel to the flight.
+export const three = {
+  meta: { size: [184, 100], origin: [92, 70], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const q = space(p, o), C = fit(o.palette, 8), D = meta.duration, S = o.seed, L = o.length, ph = t / D;
+    const Y = -22, WAKE = 84, TX = (L + WAKE) / 2, R = 4.6, T = 18, spin = (ph * TAU) / 2;
+    const radial = (a, r) => [Y - Math.cos(a) * r, -Math.sin(a) * r]; // about the x axis, as cone3's phase turns
+    const wy = (u) => Math.sin(u * 9 - ph * TAU * 2) * 1.6 * u, wz = (u) => Math.cos(u * 9 - ph * TAU * 2) * 1.6 * u;
+    // its shadow slides along the floor under it
+    q.plane(TX - L * 0.5 - 4, 0, 0, null, L / 2 + 16, (u, v, out) => {
+      const d = (u / (L / 2 + 10)) ** 2 + (v / 4.5) ** 2;
+      if (d > 1) return;
+      out.c = C[0];
+      out.a = 0.4 * (1 - d);
+      out.blend = true;
+    });
+    // the spear: shaft and point share six facets; a highlight slides back along the shaft
+    const gpos = TX - ((ph * 2 + 0.5) % 1) * L * 1.2, gu = (gpos - (TX - L)) / (L - T);
+    cone3(q, [TX - L, Y, 0], [TX - T, Y, 0], R, R, C, { sides: 6, phase: 0.4 + spin, glint: gu >= 0 && gu <= 1 ? gu : -1 });
+    cone3(q, [TX - T, Y, 0], [TX, Y, 0], R, 0, C, { sides: 6, phase: 0.4 + spin, cap: false });
+    // the ice fletching: four blades splayed round the tail
+    [13, 11, 13, 11].forEach((l, i) => {
+      const a = 0.4 + spin + (i * TAU) / 4, [y0, z0] = radial(a, 1.5), [y1, z1] = radial(a, 2.5 + l * 0.55);
+      cone3(q, [TX - L + 3, y0, z0], [TX - L + 3 - l, y1, z1], 2.2, 0, C, { sides: 4, phase: a, dim: i % 2 });
+    });
+    // crystals shed along the way: small tumbling bipyramids thrown out all round, falling back
+    cycle(t, D, 9, S + 1, (g) => g.range(0.4, 0.6), (age, life, r) => {
+      const x0 = TX + r.range(-L, -6), an = r.range(0, TAU), sp = r.range(0, 35), vx = -r.range(170, 260);
+      const [x, y] = fly(x0, Y + r.range(-3, 3), vx, -Math.cos(an) * sp, age, 60, 1.2), z = fly(0, 0, 0, -Math.sin(an) * sp, age, 0, 1.2)[1];
+      const k = age / life, a = r.range(0, TAU) + age * r.range(10, 18) * r.sign(), l = r.range(1.4, 2.4), cb = r.range(0, TAU);
+      if (k > 0.85 && (age * 30) % 2 < 1) return;
+      const dx = Math.cos(a) * Math.cos(cb) * l, dy = Math.sin(a) * l, dz = Math.cos(a) * Math.sin(cb) * l;
+      cone3(q, [x, y, z], [x + dx, y + dy, z + dz], 0.9, 0, C, { sides: 4, phase: a, dim: 0 });
+      cone3(q, [x, y, z], [x - dx, y - dy, z - dz], 0.9, 0, C, { sides: 4, phase: a, dim: 1 });
+      if (Math.cos(a * 2) > 0.9) {
+        q.at(x, y, z, (pp) => {
+          pp.z -= 3;
+          for (const [ax, ay] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) pp.px(ax * 2, ay * 2, C[6]);
+        });
+        q.glow(x, y, z, 6, C[5], 0.45);
+      }
+    });
+    // rings of cold air shearing off the point and sliding back: true circles in planes across the flight
+    const V1 = q.view(0, 0, -1), V2 = q.view(0, 1, 0);
+    for (let i = 0; i < 3; i++) {
+      const g = (ph * 3 + i / 3) % 1;
+      if (g > 0.8) continue;
+      const x = TX - 4 - g * (L + 20), rr = 7 + g * 9;
+      q.ring(x, Y, 0, rr, 2, (v, an) => (Math.cos(an) * V1[2] + Math.sin(an) * V2[2] > 0 ? (g < 0.35 ? WHITE : C[6]) : g < 0.4 ? C[5] : C[4]), (v, an) => (Math.cos(an) * V1[2] + Math.sin(an) * V2[2] > 0 ? 1.2 - g : 0.9 - g * 0.6), [1, 0, 0]);
+    }
+    // the light pulse running through the shaft to the tip: a bright band round it
+    const pulse = TX - L + ((ph * 2) % 1) * (L + 6);
+    if (pulse < TX - 2) q.ring(pulse, Y, 0, pulse < TX - T ? R + 1.2 : (R * (TX - pulse)) / T + 1.2, 1.5, WHITE, 0.9, [1, 0, 0]);
+    // speed lines: the air streaming past all round the shaft
+    cycle(t, D, 12, S + 2, (g) => g.range(0.16, 0.26), (age, life, r) => {
+      const [y, z] = radial(r.range(0, TAU), r.range(5, 14)), x = TX + r.range(-20, 0) - age * r.range(280, 380), l = r.range(6, 16), k = age / life;
+      q.line(x, y, z, x + l, y, z, (u) => (u > 0.7 ? C[6] : C[4]), (u) => u * (1 - k) * 1.4);
+    });
+    // light
+    q.glowLine(TX - L - 60, Y, 0, TX, Y, 0, 14, C[4], 0.14);
+    q.glowLine(TX - L, Y, 0, TX, Y, 0, 10, C[4], 0.04);
+    q.glow(pulse, Y, 0, 8, C[6], 0.18);
+    q.glow(TX, Y, 0, 7, WHITE, 0.25);
+    q.glow(TX - L * 0.4, Y, 0, 30, C[3], 0.1);
+    // translucent last, far to near: the wake spiralling back and frost peeling off the shaft in every direction
+    const puffs = [];
+    for (let i = 0; i < 18; i++) {
+      const u = i / 18, w = 4.5 * (1 - u) ** 0.7 + 0.5 + 1.5 * Math.sin(u * 9 - ph * TAU * 2) * u;
+      puffs.push({ x: TX - L + 4 - u * WAKE, y: Y + wy(u), z: wz(u), r: w * 1.1 + 1, a: 0.34 * (1 - u) ** 1.2, u });
+    }
+    cycle(t, D, 14, S, (g) => g.range(0.35, 0.55), (age, life, r) => {
+      const x0 = TX + r.range(-L + 2, -8), an = r.range(0, TAU), sp = r.range(8, 30), vx = -r.range(150, 230), f = (1 - Math.exp(-2.2 * age)) / 2.2;
+      const k = age / life;
+      puffs.push({ x: x0 + vx * f, y: Y - Math.cos(an) * sp * f, z: -Math.sin(an) * sp * f, r: 1.2 + 5.5 * k, a: 0.5 * (1 - k) ** 1.3, k, glow: 0.1 * (1 - k) });
+    });
+    for (const s of q.sort(puffs, (s) => [s.x, s.y, s.z])) {
+      q.disc(s.x, s.y, s.z, s.r, (d) => (d < 0.35 && (s.u ?? s.k) < 0.4 ? C[6] : d < 0.7 ? C[5] : C[4]), (d) => s.a * (1 - d * d));
+      if (s.glow) q.glow(s.x, s.y, s.z, s.r * 1.6, C[4], s.glow);
+    }
+  },
+};

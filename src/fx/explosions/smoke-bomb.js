@@ -1,5 +1,5 @@
-import { Particles, Lights, P, Rng, fit, flare, clamp, smooth, TAU, WHITE, hex } from "../../core/index.js";
-import { lobe, cull, fadeEdges, pool, OUTLINE } from "./_lib.js";
+import { Particles, Lights, P, Rng, fit, flare, clamp, smooth, TAU, WHITE, hex, space } from "../../core/index.js";
+import { lobe, cull, fadeEdges, pool, pool3, OUTLINE } from "./_lib.js";
 
 export const meta = {
   name: "Smoke bomb",
@@ -187,3 +187,182 @@ function drawCanister(p, K, c, live, a) {
   if (live) p.line(cx, cy, cx + sa * 2.5, cy - ca * 2.5, hex("#8a6a48"), a);
   else p.dot(cx, cy, K[0], a);
 }
+
+// 3D: the canister rolls along +x and pops; the smoke gushes out round the full circle in x and z: rollers slide out
+// low across the floor in every direction, a fat core stands over the bomb, a plume climbs. Every lobe is a cel-shaded
+// ball billboard at its real place, drawn far to near, lit a step darker the further back it sits; a shadow of the cloud
+// and a ring of dust lie on the floor.
+export const three = {
+  meta: { size: [260, 190], origin: [130, 150], camera: { pitch: 0.36 } },
+  create(o) {
+    const C = fit(o.palette, 7), K = fit(o.canister, 5), R = new Rng(o.seed), floor = () => 0;
+    const SM = [C[5], C[4], C[3], C[2], C[1]];
+    const [W, H] = three.meta.size, [OX, OY] = three.meta.origin, RX = OX - 4, Y0 = -OY + 3, Y1 = H - OY - 3;
+    const ps = new Particles({ rng: R, ground: floor, sparks: o.sparks }), lights = new Lights();
+    // a shorter throw than the 2D one, so that it comes in from the side without leaving the canvas from any bearing
+    const start = { x: -70, y: -60, vx: 80, vy: -80, va: 7, a: 0, rest: false };
+    const sim = { ...start };
+    for (let i = 0; i < 2400 && !sim.rest; i++) step(sim, 1 / 240);
+    const can = { ...start, x: start.x - sim.x };
+    // the same four kinds of lobe, each sent out at a random bearing instead of left or right
+    const N = 96, lobes = Array.from({ length: N }, (_, i) => {
+      const kind = [0, 0, 1, 1, 2, 3][i % 6], az = R.range(0, TAU);
+      const lift = kind === 0 || kind === 3 ? R.range(0, 0.25) : -Math.PI / 2 + R.range(-0.6, 0.6);
+      const sp = [R.range(80, 200), R.range(0, 25), R.range(45, 95), R.range(25, 70)][kind];
+      // rollers leave nearly flat; the others climb at an angle off the vertical
+      const flat = kind === 0 || kind === 3, hs = Math.cos(lift) * sp, up = flat ? Math.sin(lift) * sp : -Math.sin(lift) * sp;
+      const r1 = [R.range(12, 17), R.range(16, 22), R.range(13, 18), R.range(14, 19)][kind];
+      const t0 = kind === 3 ? POP + R.range(0.45, 1.5) : POP + 0.6 * Math.pow(i / (N - 1), 1.6) + R.range(0, 0.03);
+      return { kind, t0, hx: Math.cos(az), hz: Math.sin(az), sp: Math.abs(hs), vh: up, r0: R.range(5, 8), r1, f: R.range(-0.45, 0.4), wob: R.range(0, TAU), on: false, x: 0, z: 0, vx: 0, vz: 0, h: 0, age: 0 };
+    });
+    let t = 0, popped = false;
+    const fuseTip = () => [can.x + Math.sin(can.a) * (R0 + 2.5), can.y - Math.cos(can.a) * (R0 + 2.5)];
+    const thin = (b) => smooth(2.5 + b.f, 3.9 + b.f * 0.6, t);
+    const radius = (b) => (b.r0 + (b.r1 - b.r0) * (1 - Math.exp(-b.age / 0.28))) * (1 + 0.05 * Math.sin(t * 3 + b.wob)) * (1 + 0.35 * thin(b));
+    // soft particles leave before they reach the box, in x and z alike
+    const keep = (ps) => {
+      const L = ps.list;
+      for (let i = L.length - 1; i >= 0; i--) {
+        const q = L[i], soft = q.k === P.VAPOUR || q.k === P.DUST, r = soft ? q.size * 1.65 : 0, d = Math.hypot(q.x, q.z);
+        if (q.y < Y0 || d > RX || q.y > Y1 - 14) L.splice(i, 1);
+        else if (soft) {
+          const e = (RX - 8 - d - r) / 20;
+          if (e <= 0) L.splice(i, 1);
+          else if (e < 1) q.life = Math.min(q.life, q.max * 0.42 * e);
+        }
+      }
+    };
+    return {
+      update(dt) {
+        t += dt;
+        step(can, dt, (x) => {
+          for (let i = 0; i < 3; i++) {
+            const a = R.range(0, TAU), s = R.range(0, 70);
+            ps.spawn3(P.SPARK, x, -1, 0, Math.cos(a) * s, -R.range(40, 110), Math.sin(a) * s, R.range(0.06, 0.14));
+          }
+          for (let i = 0; i < 3; i++) {
+            const a = R.range(0, TAU), s = R.range(10, 40);
+            ps.spawn3(P.DUST, x + R.range(-2, 2), -0.5, R.range(-2, 2), Math.cos(a) * s, -R.range(4, 14), Math.sin(a) * s, R.range(0.3, 0.55), GRIT[2], R.range(1.4, 2.4));
+          }
+        });
+        if (t < POP) {
+          const [fx, fy] = fuseTip(), hurry = smooth(POP - 0.4, POP, t);
+          if (R.chance((26 + 50 * hurry) * dt)) {
+            const a = R.range(0, TAU), s = R.range(0, 50);
+            ps.spawn3(P.SPARK, fx, fy, 0, Math.cos(a) * s, -R.range(30, 100), Math.sin(a) * s, R.range(0.08, 0.18));
+          }
+          if (R.chance(8 * dt)) ps.spawn3(P.VAPOUR, fx, fy - 1, 0, R.range(-4, 4), -R.range(10, 18), R.range(-4, 4), R.range(0.5, 0.8), C[5], R.range(1, 1.8));
+        } else if (!popped) {
+          popped = true;
+          // the pop: a flash, a soft light that dies fast, sparks flung round the full circle, grit thrown up in a cone
+          lights.add(can.x, -9, 64, C[6], 0.75, 0.22, 0);
+          lights.add(can.x, -5, 22, WHITE, 0.7, 0.06, 0);
+          for (let i = 0; i < 40; i++) {
+            const az = R.range(0, TAU), el = R.range(-0.35, 1.2), sp = R.range(120, 300);
+            ps.spawn3(P.SPARK, can.x, -5, 0, Math.cos(az) * Math.cos(el) * sp, -Math.sin(el) * sp - 40, Math.sin(az) * Math.cos(el) * sp, R.range(0.15, 0.4));
+          }
+          for (let i = 0; i < 34; i++) {
+            const az = R.range(0, TAU), u = R.range(0, 1), dev = u * 0.9, sp = R.range(80, 220) * (1 - 0.35 * u);
+            ps.spawn3(P.GRIT, can.x + Math.cos(az) * u * 4, -1, Math.sin(az) * u * 4, Math.cos(az) * Math.sin(dev) * sp, -Math.cos(dev) * sp, Math.sin(az) * Math.sin(dev) * sp, R.range(0.9, 1.6), R.pick(GRIT), R.chance(0.35) ? 2 : 1);
+          }
+          Object.assign(can, { vy: -95, vx: R.range(-25, 25), va: R.sign() * 9, rest: false });
+        }
+        const wind = 6 * smooth(1.8, 3.2, t);
+        for (const b of lobes) {
+          if (!b.on) {
+            if (t < b.t0) continue;
+            b.on = true;
+            b.x = can.x + R.range(-2, 2);
+            b.z = R.range(-2, 2);
+            b.vx = b.hx * b.sp;
+            b.vz = b.hz * b.sp;
+            b.h = 1;
+          }
+          b.age += dt;
+          b.vx -= b.vx * 2.4 * dt;
+          b.vz -= b.vz * 2.4 * dt;
+          b.vh += [14 * smooth(0.7, 1.6, b.age), 3 + 9 * smooth(0.8, 1.8, b.age), 6 + 12 * smooth(0.3, 1.4, b.age), 10 * smooth(0.8, 1.6, b.age)][b.kind] * dt;
+          b.vh -= b.vh * 1.6 * dt;
+          b.x += (b.vx + wind) * dt;
+          b.z += b.vz * dt;
+          b.h = Math.max(0, b.h + b.vh * dt);
+          const k = thin(b);
+          if (k > 0.12 && k < 0.85 && R.chance(1.8 * dt)) {
+            const r = radius(b), life = Math.min(R.range(1, 1.6), meta.duration - 0.15 - t);
+            if (life > 0.3) ps.spawn3(P.VAPOUR, b.x + R.range(-r, r) * 0.5, -(b.h + r * 1.4), b.z + R.range(-r, r) * 0.5, wind + R.range(-6, 10), -R.range(8, 20), R.range(-8, 8), life, C[4], r * R.range(0.3, 0.45));
+          }
+        }
+        if (t > POP + 0.5 && t < 4.1 && R.chance(4 * dt)) ps.spawn3(P.VAPOUR, can.x, can.y - 3, 0, R.range(-3, 3), -R.range(8, 16), R.range(-3, 3), R.range(0.6, 0.9), C[4], R.range(1.5, 2.5));
+        ps.update(dt);
+        keep(ps);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), u = t - POP;
+        // solids first: the canister (a rolling ball seen from any side) and the fuse's spark, the pop's flash
+        const fade = 1 - smooth(4.3, 4.8, t);
+        if (fade > 0)
+          q.at(can.x, can.y, 0, (pp) => {
+            pp.z -= R0;
+            drawCanister(pp, K, { x: 0, y: 0, a: can.a }, t < POP, fade);
+          });
+        if (t < POP) {
+          const [fx, fy] = fuseTip();
+          q.px(fx, fy, 0, Math.sin(t * 50) > 0 ? WHITE : hex(o.sparks[1]));
+        }
+        if (u >= 0 && u < 0.067) q.ball(can.x, -5, 0, 6.5, (nx, ny, nz) => (nz > 0.6 ? WHITE : C[5]));
+        // the cloud's shadow on the floor, and the ring of dust the pop throws out
+        let reach = 0;
+        for (const b of lobes) if (b.on) reach = Math.max(reach, Math.hypot(b.x - can.x, b.z) + radius(b) * 0.7);
+        const sa = smooth(POP, POP + 0.5, t) * (1 - smooth(3.0, 4.4, t));
+        if (reach > 4 && sa > 0.01) {
+          const Rs = Math.min(RX - 20, reach + 6);
+          q.plane(can.x, 0, 0, null, Rs, (pu, pv, out) => {
+            const f = 1 - Math.hypot(pu, pv) / Rs;
+            if (f <= 0) return;
+            out.c = C[0];
+            out.a = Math.min(1, f * 2.2) * 0.4 * sa;
+            out.blend = true;
+          });
+        }
+        if (u >= 0 && u < 0.5) {
+          const e = u / 0.5, r = 6 + 52 * (1 - Math.pow(1 - e, 3));
+          const w = 4 * (1 - e) + 2, a = 0.7 * (1 - e);
+          q.plane(can.x, 0, 0, null, r, (pu, pv, out) => {
+            const b = (r - Math.hypot(pu, pv)) / w;
+            if (b < 0 || b > 1) return;
+            out.c = b < 0.4 ? C[5] : C[4];
+            out.a = a * (1 - b * 0.5);
+            out.blend = true;
+          });
+        }
+        // the cloud: lobes far to near; a lobe's shade steps down with the depth it sits at
+        const on = lobes.filter((b) => b.on), pos = (b) => [b.x, -(b.h + radius(b) * 0.92), b.z];
+        if (on.length) {
+          let top = 0;
+          for (const b of on) top = Math.min(top, -(b.h + radius(b) * 1.92));
+          for (const b of q.sort(on, pos)) {
+            const r = radius(b), [bx, by, bz] = pos(b), k = thin(b);
+            const a = Math.min(1, b.age / 0.05) * Math.pow(1 - k, 1.4) * 0.97 * (1 - smooth(Y0 + 34, Y0 + 6, by - r));
+            if (a <= 0.01) continue;
+            const shade = (by - top) / Math.max(20, -top) > 0.55 ? 1 : 0, zz = clamp(-q.depth(bx, by, bz) / 50, -1, 1);
+            q.at(bx, by, bz, (pp, kk) => lobe(pp, 0, 0, r * kk, SM, SM, 0, 0, a, zz, Math.min(2, shade + (k > 0.6 ? 1 : 0)), 1));
+          }
+        }
+        ps.draw(q);
+        // the flash: a cross flare at the pop, a pool of light on the floor
+        if (u >= 0 && u < 0.16)
+          q.at(can.x, -5, 0, (pp, kk) => {
+            pp.z -= 6;
+            flare(pp, 0, 0, 22 * (1 - u / 0.16) * kk, 1 - u / 0.16, [C[3], C[4], C[5], C[6]]);
+          });
+        if (u >= 0 && u < 0.35) pool3(q, 50, C[6], 0.5 * (1 - u / 0.35), can.x, 0);
+        if (t < POP) {
+          const [fx, fy] = fuseTip();
+          q.glow(fx, fy, 0, 6, hex(o.sparks[2]), 0.45 + 0.2 * Math.sin(t * 37));
+        }
+        lights.draw(q);
+      },
+    };
+  },
+};

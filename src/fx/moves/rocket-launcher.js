@@ -1,4 +1,5 @@
-import { chain, READY } from "../../core/index.js";
+import { chain, in3d, READY } from "../../core/index.js";
+import { recenter } from "./_lib.js";
 import * as muzzle from "../projectiles/muzzle-shotgun.js";
 import * as rocket from "../projectiles/rocket.js";
 import * as blast from "../explosions/small-explosion.js";
@@ -48,3 +49,14 @@ export const create = chain([
   { fx: rocket, t: FIRE, until: HIT, x: (t) => MX + 10 + (t - FIRE) ** 1.5 * ((TX - MX - 16) / FLY ** 1.5), y: MY },
   { fx: blast, t: HIT, x: TX },
 ]);
+
+const MID = 100;
+export const three = {
+  meta: { actor: 0, size: [446, 269], origin: [223, 199], camera: { pitch: 0.3 } },
+  act: recenter(act, MID),
+  create: chain([
+    { fx: in3d(muzzle), t: FIRE, x: MX - MID, height: -MY },
+    { fx: in3d(rocket), t: FIRE, until: HIT, x: (t) => MX + 10 + (t - FIRE) ** 1.5 * ((TX - MX - 16) / FLY ** 1.5) - MID, y: MY },
+    { fx: in3d(blast), t: HIT, x: TX - MID },
+  ]),
+};

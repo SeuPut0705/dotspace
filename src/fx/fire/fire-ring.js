@@ -1,8 +1,8 @@
 // The flame-puff, smoke and spark recipe and the floor ring are adapted from Sprite Fusion's open-source explosion
 // (https://www.spritefusion.com/pixel-art-vfx/explosion), and the tongue from its fire
 // (https://www.spritefusion.com/pixel-art-vfx/fire), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, PF, Rng, fit, band, clamp, smooth, ease, noise, rand, TAU, WHITE, hex, mix, rgb, READY } from "../../core/index.js";
-import { hotFirst, flameTongue, simDraw, LAYERS, BACK_LAYERS } from "./_lib.js";
+import { Particles, Lights, P, PF, Rng, fit, band, clamp, smooth, ease, noise, rand, space, TAU, WHITE, hex, mix, rgb, READY } from "../../core/index.js";
+import { hotFirst, flameTongue, simDraw, simDraw3, LAYERS, BACK_LAYERS } from "./_lib.js";
 
 export const meta = {
   name: "Fire ring",
@@ -162,3 +162,129 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the ring is a true circle on the floor. The sites use the same generator with a real angle (x = cos, z = sin,
+// no squash), each a flame billboard standing on its spot; the front is a ring plane with its light, the scorch a
+// soot plane, the charge streaks fly in from all round, and the burst throws sparks out in a full circle. The ring
+// sorts round the character by depth: near half in front of him, far half behind.
+export const three = {
+  meta: { size: [232, 150], origin: [116, 106], camera: { pitch: 0.4 } },
+  create(o) {
+    const F = fit(o.palette, 9), H = hotFirst(F), REACH = o.reach, R = new Rng(o.seed), floor = () => 0, S = o.seed * 7;
+    const ps = new Particles({ rng: R, ground: floor, sparks: [H[1], H[2], H[4], H[5]] }), lights = new Lights();
+    const GLOW = mix(mix(H[3], H[4], 0.5), WHITE, 0.25);
+    const front = (t) => REACH * ease.outCubic(clamp((t - CHARGE) / SPREAD));
+    const reachedAt = (d) => CHARGE + SPREAD * (1 - Math.cbrt(1 - Math.min(1, d / REACH)));
+    const sites = [];
+    for (let r = 10; r <= REACH; r += 9) {
+      const n = Math.max(5, Math.round((TAU * r) / 9.5));
+      for (let k = 0; k < n; k++) {
+        const a = ((k + R.range(0.15, 0.85)) / n) * TAU, rr = r + R.range(-3, 3), q = Math.min(1, rr / REACH);
+        sites.push({ x: Math.cos(a) * rr, z: Math.sin(a) * rr, t0: reachedAt(rr) + R.range(0, 0.04), life: (0.3 + 1.0 * q * q) * R.range(0.85, 1.2), h: R.range(9, 15) * (0.6 + 0.55 * q), w: R.range(1.8, 2.7) * (0.75 + 0.3 * q), n: R.int(0, 1e5) });
+      }
+    }
+    let t = 0, burst = false;
+
+    const flames = (q) => {
+      const NZ = (rate, seed = 0, off = 0) => noise(t * rate + off, seed);
+      for (const s of sites) {
+        const age = t - s.t0;
+        if (age < 0 || age > s.life) continue;
+        const u = age / s.life, rise = ease.outBack(clamp(age / 0.08), 2), fade = 1 - Math.pow(Math.max(0, (u - 0.1) / 0.9), 1.3);
+        const h = s.h * rise * fade * (0.85 + 0.15 * noise(t * 3.3, s.n)) * (1 + 0.5 * Math.max(0, noise(t * 2.6, s.n + 70) - 0.55));
+        if (h < 1) continue;
+        // fresh flames white-hot, then cooling as they burn down; the far ones a step dimmer
+        const behind = q.toward(s.x, 0, s.z) < 0, L = u < 0.3 ? (behind ? BACK_LAYERS : LAYERS) : u < 0.65 ? BACK_LAYERS : EMBER_LAYERS;
+        const sw = NZ(2.2, s.n + 40) * 1.5 - q.view(s.x, 0, s.z)[0] * 0.02, w = s.w * (0.6 + 0.4 * fade);
+        q.at(s.x, 0, s.z, (pp) => flameTongue(pp, 0, 0, h, w, sw, NZ, s.n, H, L));
+      }
+    };
+    // the scorch: a translucent stain of soot where the fire has crossed, sparse embers cooling in it
+    const scorch = (q) => {
+      const fr = front(t), end = 1 - smooth(meta.duration - 1.2, meta.duration - 0.15, t);
+      if (fr < 1 || end <= 0) return;
+      q.plane(0, 0, 0, null, fr, (u, v, out) => {
+        const d = Math.hypot(u, v);
+        if (d > fr) return;
+        const since = Math.max(0, t - reachedAt(d)), h = rand(Math.floor(u), Math.floor(v), S), hot = 1 - since / (1.2 + h * 0.9);
+        if (hot > 0 && h < 0.03 + 0.06 * hot) {
+          out.c = hot > 0.7 ? H[3] : hot > 0.45 ? H[4] : hot > 0.2 ? H[5] : H[6];
+          out.l = H[4];
+          out.k = 0.3 * hot;
+          return;
+        }
+        out.c = h < 0.5 ? SOOT : SOOT2;
+        out.a = Math.min(1, since * 3) * (0.55 - (d / REACH) * 0.25) * end;
+        out.blend = true;
+      });
+    };
+    // the front: a hot band on the floor, a true circle, lighting the floor under it
+    const band3 = (q) => {
+      const k = (t - CHARGE) / (SPREAD + 0.1);
+      if (k < 0 || k >= 1) return;
+      const r = front(t) + 1.5, w = Math.max(1.5, 6 * (1 - k)), kk = k < 0.75 ? 1 : (1 - k) / 0.25;
+      q.plane(0, 0, 0, null, r, (u, v, out) => {
+        const d = Math.hypot(u, v), b = (d - (r - w)) / w;
+        if (b < 0 || b > 1) return;
+        out.c = b > 0.85 ? (k < 0.12 ? WHITE : H[1]) : b > 0.6 ? H[2] : b > 0.3 ? H[4] : H[6];
+        out.a = kk * (b > 0.6 ? 1.2 : 0.15 + b);
+        out.l = H[4];
+        out.k = 0.3 * kk * b;
+      });
+    };
+
+    return {
+      update(dt) {
+        t += dt;
+        // the charge: streaks of fire spiral in to the feet from every side, heat building there
+        if (t < CHARGE - 0.05 && R.chance(0.9 * dt * 60)) {
+          const a = R.range(0, TAU), d = R.range(26, 54), T = R.range(0.18, 0.26);
+          const x = Math.cos(a) * d, y = -R.range(3, 6 + d * 0.3), z = Math.sin(a) * d;
+          // aimed a little to one side of the feet, all the same way, so they wheel in
+          const tx = -Math.sin(a) * 9, tz = Math.cos(a) * 9, dx = tx - x, dy = -4 - y, dz = tz - z, l = Math.hypot(dx, dy, dz) || 1, v = (l * 3) / (Math.exp(3 * T) - 1);
+          ps.spawn3(P.STREAK, x, y, z, (dx / l) * v, (dy / l) * v, (dz / l) * v, T, R.chance(0.5) ? H[2] : H[3]);
+        }
+        if (t < CHARGE && R.chance(0.5 * dt * 60 * (t / CHARGE))) ps.spawn3(P.FIRE, R.range(-4, 4), -1, R.range(-4, 4), R.range(-8, 8), -R.range(20, 40), R.range(-8, 8), R.range(0.12, 0.24), 0, R.range(1, 2.2));
+        if (!burst && t >= CHARGE) {
+          burst = true;
+          lights.add(0, -18, 64, WARM, 0.85, 0.5);
+          lights.add(0, -6, 30, WHITE, 0.8, 0.08);
+          for (let i = 0; i < 48; i++) {
+            const a = R.range(0, TAU), sp = R.range(80, 220);
+            ps.spawn3(P.SPARK, Math.cos(a) * 3, -2, Math.sin(a) * 3, Math.cos(a) * sp, -R.range(40, 130), Math.sin(a) * sp, R.range(0.2, 0.5));
+          }
+        }
+        // fire shed off the burning ring: puffs that rise and some cool into smoke, and embers
+        if (t > CHARGE && t < CHARGE + SPREAD + 1.2)
+          for (let i = 0; i < 3; i++) {
+            if (!R.chance(0.75 * dt * 60)) continue;
+            const s = R.pick(sites), age = t - s.t0;
+            if (age < 0 || age > s.life * 0.7) continue;
+            ps.spawn3(P.FIRE, s.x + R.range(-1, 1), -s.h * 0.6, s.z + R.range(-1, 1), R.range(-5, 5), -R.range(20, 40), R.range(-5, 5), R.range(0.2, 0.4), 0, R.range(1.2, 2.4), 0, R.chance(0.5) ? PF.SMOKES : 0);
+            if (R.chance(0.12)) ps.spawn3(P.EMBER, s.x, -s.h * 0.5, s.z, R.range(-15, 15), -R.range(30, 70), R.range(-15, 15), R.range(0.6, 1.3), H[3], 1);
+          }
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o);
+        scorch(q);
+        band3(q);
+        flames(q);
+        // the white flash at the feet as it goes
+        if (t >= CHARGE && t < CHARGE + 0.1) {
+          const k = 1 - (t - CHARGE) / 0.1, r1 = 14 * (0.6 + 0.4 * k), r2 = 9 * (0.6 + 0.4 * k);
+          q.plane(0, -1, 0, null, r1, (u, v) => (Math.hypot(u, v) < r2 ? (k > 0.5 ? WHITE : H[1]) : H[2]));
+        }
+        simDraw3(q, ps, H);
+        // the charge glowing at the feet; light on the floor running with the front; the wash round it all
+        if (t < CHARGE) q.glow(0, -3, 0, 8 + 22 * (t / CHARGE), GLOW, 0.6 * (t / CHARGE));
+        const fr = front(t), lk = t < CHARGE ? 0 : 1 - smooth(CHARGE + SPREAD, CHARGE + SPREAD + 1.4, t);
+        if (lk > 0) for (let i = 0; i < 24; i++) q.glow(Math.cos((i / 24) * TAU) * fr, -3, Math.sin((i / 24) * TAU) * fr, 16, GLOW, 0.2 * lk);
+        const k = smooth(CHARGE - 0.05, CHARGE, t) * (1 - smooth(CHARGE + SPREAD * 0.5, CHARGE + SPREAD + 1.2, t));
+        if (k > 0) q.glow(0, -6, 0, 92, GLOW, 0.3 * k);
+        lights.draw(q);
+      },
+    };
+  },
+};

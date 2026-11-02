@@ -1,7 +1,7 @@
 // The clods and the dust they kick up are adapted from Sprite Fusion's open-source explosion
 // (https://www.spritefusion.com/pixel-art-vfx/explosion), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Bits, Lights, B, Rng, fit, clamp, ease, TAU, WHITE, mix, hex } from "../../core/index.js";
-import { stone, rock, rockShape } from "./_lib.js";
+import { Bits, Lights, B, Rng, fit, clamp, ease, space, TAU, WHITE, mix, hex } from "../../core/index.js";
+import { stone, rock, rockShape, rock3 } from "./_lib.js";
 
 export const meta = {
   name: "Blunt hit",
@@ -112,3 +112,109 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the blob is a ball, the wedges jab out in every direction, the ring of dust is a true ring of puffs flung out
+// level with the blow, a few billow up, and the clods drop on the floor all round.
+export const three = {
+  meta: { size: [128, 104], origin: [64, 80], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 7), R = new Rng(o.seed), Y = -o.height, PH = R.range(0, TAU), floor = () => -1.5;
+    const WARM = hex(o.warm), DUST = hex(o.dust), st = stone(o.clod);
+    const lights = new Lights(), bits = new Bits({ ground: floor });
+    lights.add(0, Y, 48, WARM, 0.6, 0.4);
+    lights.add(0, Y, 16, WHITE, 0.6, 0.07);
+    lights.add(0, -2, 36, WARM, 0.25, 0.4);
+    // inked wedges: each jabs out at its own length and pace, then snaps back; spread over a sphere
+    const wedges = Array.from({ length: 10 }, (_, i) => {
+      const y = 1 - (2 * (i + 0.5)) / 10, r = Math.sqrt(1 - y * y), g = i * 2.39996 + R.range(-0.25, 0.25);
+      return { d: [Math.cos(g) * r, y, Math.sin(g) * r], len: R.range(6, 15), w: R.range(3.2, 5), r0: R.range(13, 16), t0: R.range(0.015, 0.04), out: R.range(0.04, 0.06), back: R.range(0.09, 0.14) };
+    });
+    // the ring: soft puffs flung out level, all round, each its own size, pace and life
+    const puffs = Array.from({ length: 30 }, (_, i) => {
+      const a = (i / 30) * TAU + R.range(-0.12, 0.12), v = R.range(40, 140) * (0.6 + 0.5 * R.next());
+      return { x: Math.cos(a) * 9, y: Y + R.range(-4, 4), z: Math.sin(a) * 9, vx: Math.cos(a) * v, vy: R.range(-0.25, 0.25) * v, vz: Math.sin(a) * v, r: R.range(2.4, 6.2), life: R.range(0.35, 0.85), max: 0, t0: R.range(0.03, 0.1), lift: R.range(4, 16) };
+    });
+    for (let i = 0; i < 5; i++) {
+      const a = R.range(0, TAU), v = R.range(0, 30);
+      puffs.push({ x: R.range(-6, 6), y: Y - R.range(3, 6), z: R.range(-6, 6), vx: Math.cos(a) * v, vy: -R.range(20, 45), vz: Math.sin(a) * v, r: R.range(3.5, 5.5), life: R.range(0.6, 0.85), max: 0, t0: R.range(0.05, 0.1), lift: R.range(14, 24) });
+    }
+    for (const p of puffs) p.max = p.life;
+    // heavier clods knocked loose: they arc out, drop to the floor, bounce once and settle
+    for (let i = 0; i < 6; i++) {
+      const tilt = R.range(0.5, 1.3), g = R.range(0, TAU), v = R.range(70, 140), rr = R.range(4, 8);
+      bits.add({ kind: B.CHUNK, x: Math.cos(g) * rr, y: Y + R.range(-3, 3), z: Math.sin(g) * rr, vx: Math.cos(g) * Math.sin(tilt) * v, vy: -Math.cos(tilt) * v, vz: Math.sin(g) * Math.sin(tilt) * v, g: 1, drag: 0.6, bounce: 0.28, life: R.range(0.65, 0.85), a: R.range(0, TAU), va: R.sign() * R.range(8, 16), s: R.chance(0.4) ? 2 : 1, pts: rockShape(R), pvy: 0 });
+    }
+    const kicks = [];
+    let t = 0;
+    return {
+      update(dt) {
+        t += dt;
+        for (const p of puffs) {
+          if (t < p.t0) continue;
+          p.life -= dt;
+          p.vx -= p.vx * 4.5 * dt;
+          p.vy -= p.vy * 4.5 * dt + (p.lift ?? 6) * dt;
+          p.vz -= p.vz * 4.5 * dt;
+          p.x += p.vx * dt;
+          p.y += p.vy * dt;
+          p.z += p.vz * dt;
+        }
+        for (const b of bits.list) b.pvy = b.vy;
+        bits.update(dt);
+        for (const b of bits.list)
+          if (b.pvy > 60 && b.vy <= 0) {
+            for (let i = 0; i < 2; i++) {
+              const a = R.range(0, TAU), v = R.range(8, 22);
+              kicks.push({ x: b.x, y: -1, z: b.z, vx: Math.cos(a) * v, vy: -R.range(3, 10), vz: Math.sin(a) * v, r: R.range(1.2, 2), life: 0.4, max: 0.4, t0: 0 });
+            }
+            b.pvy = 0;
+          }
+        for (const p of kicks) {
+          p.life -= dt;
+          p.vx -= p.vx * 4 * dt;
+          p.vy -= p.vy * 4 * dt;
+          p.vz -= p.vz * 4 * dt;
+          p.x += p.vx * dt;
+          p.y += p.vy * dt;
+          p.z += p.vz * dt;
+        }
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o);
+        // the clods
+        for (const b of bits.list) rock3(q, b, st);
+        // the blob: white-hot for a frame, then cream and a little bigger, then gone into the dust
+        if (t < 0.058) {
+          const f = t < 0.025 ? 0 : 1, R0 = f ? 13.5 : 11.5;
+          q.ball(0, Y, 0, R0, (nx, ny) => {
+            const a = Math.atan2(ny, nx), s = Math.hypot(nx, ny) / (1 + 0.15 * Math.sin(5 * a + PH + f * 0.6) + 0.08 * Math.sin(9 * a + PH * 2.3 + f * 1.4));
+            return f === 0 ? (s < 0.55 ? WHITE : s < 0.86 ? C[5] : C[4]) : s < 0.3 ? WHITE : s < 0.72 ? C[5] : s < 0.9 ? C[4] : C[3];
+          });
+        }
+        // inked wedges jab out from the blob and snap back
+        for (const w of wedges) {
+          const u = t - w.t0;
+          if (u < 0 || u > w.out + w.back) continue;
+          const s = u < w.out ? ease.outCubic(u / w.out) : 1 - ease.inQuad((u - w.out) / w.back), L = w.len * s;
+          if (L < 1.5) continue;
+          const r0 = w.r0 + 2 * s, W = w.w * (0.6 + 0.4 * s), fill = u < w.out + 0.02 ? WHITE : C[5], n = 4;
+          for (let j = 0; j < n; j++) {
+            const f0 = j / n, f1 = (j + 1) / n, wd = Math.max(1.6, W * (f0 + f1) * 0.5 + 1.8), vr = 1 - 0.9 / (wd / 2);
+            q.beam(w.d[0] * (r0 + L * f0), Y + w.d[1] * (r0 + L * f0), w.d[2] * (r0 + L * f0), w.d[0] * (r0 + L * f1), Y + w.d[1] * (r0 + L * f1), w.d[2] * (r0 + L * f1), wd, (uu, v) => (v > vr ? C[1] : fill));
+          }
+        }
+        // dust: each puff swells and thins, warm-lit at first, its top catching the light
+        const dust = [...puffs, ...kicks].filter((d) => t >= d.t0 && d.life > 0);
+        for (const d of q.sort(dust, (e) => [e.x, e.y, e.z])) {
+          const k = d.life / d.max, r = d.r * (0.7 + (1 - k) * 0.85), a = Math.pow(k, 1.25) * Math.min(1, (t - d.t0) / 0.03) * clamp((0.9 - t) / 0.15), c = mix(DUST, WARM, clamp(1 - (t - 0.03) / 0.25) * 0.55);
+          q.disc(d.x, d.y, d.z, r, c, (dd) => 0.58 * a * (1 - dd * dd * 0.75));
+          q.disc(d.x, d.y - r * 0.32, d.z, r * 0.58, mix(c, WHITE, 0.55), (dd) => 0.48 * a * (1 - dd * dd));
+        }
+        const pop = Math.exp(-t / 0.06);
+        if (pop > 0.02) q.glow(0, Y, 0, 28, WARM, 0.5 * pop);
+        lights.draw(q);
+      },
+    };
+  },
+};

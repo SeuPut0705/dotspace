@@ -1,8 +1,8 @@
 // The crescent and its cooling ramp are adapted from Sprite Fusion's open-source slash
 // (https://www.spritefusion.com/pixel-art-vfx/slash), and the impact star, dust, grit and embers from his
 // impact and explosion (https://www.spritefusion.com/pixel-art-vfx), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Bits, Lights, P, PF, B, Rng, fit, sparkle, band, clamp, smooth, ease, rand, TAU, WHITE, READY } from "../../core/index.js";
-import { swing, onSwing, smear, trace, glowAlong, stone, rock, cracks, star, sliver, along } from "./_lib.js";
+import { Particles, Bits, Lights, P, PF, B, Rng, fit, sparkle, band, clamp, smooth, ease, rand, space, TAU, WHITE, READY } from "../../core/index.js";
+import { swing, onSwing, smear, trace, glowAlong, stone, rock, cracks, star, sliver, along, lay, onSwing3, smear3, trace3, glowAlong3, spray } from "./_lib.js";
 
 export const meta = {
   name: "Heavy cleave",
@@ -207,3 +207,217 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the cleave is a ring in space on the plane the 2D crescent is the front view of (a hair turned, its thin echo
+// turned the other way), so it comes over the head and down in front, and from the side it is a sheet of fire with
+// an ember line along it. What it hits is the floor: the white star, the pool, the shock ring, the dust and the
+// cracks all lie on it as true circles round the point of impact, and grit, sparks and stones fly out in a cone
+// round it, not only left and right.
+export const three = {
+  meta: { size: [264, 148], origin: [132, 110], camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), n = C.length, R = new Rng(o.seed), st = stone(o.stone), floor = () => 0;
+    const ps = new Particles({ rng: R, ground: floor, sparks: [C[6], C[5], C[4], C[3]] }), bits = new Bits({ ground: floor }), lights = new Lights();
+    const base = swing({ cx: 3, cy: -22, R: 37, sy: 0.88, rot: 0.32, a0: -2.45, dir: 1 });
+    let U1 = 0;
+    while (onSwing(base, base.R, U1)[1] < -0.5 && U1 < 4) U1 += 0.005;
+    const A = lay(base, { yaw: 0.16 }), E = lay({ ...base, R: base.R * 0.76 }, { yaw: -0.12, lean: -0.08 });
+    const W = 16, WE = 5;
+    const [X, , Z] = onSwing3(A, A.R - 2, U1), GLINT = onSwing3(A, A.R - 3, 0);
+    // cracks run out from the cut in every direction, most of them forward, with short forks
+    const lines = [];
+    for (let i = 0; i < 9; i++) {
+      const fwd = i < 6, side = fwd ? -1.3 + (2.6 * i) / 5 : Math.PI + (i - 7) * 0.8;
+      let a = side + R.range(-0.2, 0.2), r = R.range(2, 5);
+      const L = 40 * R.range(0.5, 1) * (fwd ? 1 : 0.7), pts = [[Math.cos(a) * r, Math.sin(a) * r]];
+      while (r < L) {
+        r += R.range(3, 6);
+        a += R.range(-0.3, 0.3);
+        const x = Math.cos(a) * r, z = Math.sin(a) * r;
+        pts.push([x, z]);
+        if (R.chance(0.18) && pts.length > 3) {
+          const f = [[x, z]];
+          let fa = a + R.sign() * R.range(0.5, 1), fr = r;
+          for (let j = R.int(1, 3); j > 0; j--) (fr += R.range(2, 4)), f.push([Math.cos(fa) * fr, Math.sin(fa) * fr]);
+          lines.push({ pts: f, at: r / 40, fork: true });
+        }
+      }
+      lines.push({ pts, at: 0, fork: false });
+    }
+    // the impact star on the floor: spikes all round, longest forward and back; the upright half-star stands over it
+    const spikes = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => ({ a: (i / 8) * TAU + R.range(-0.1, 0.1), len: (i % 4 === 0 ? 20 : 11) + R.range(0, 4), w: 1.6 + R.range(0, 0.6) }));
+    const upright = [-2.7, -2.15, -1.62, -1.05, -0.45].map((a, i) => ({ a: a + R.range(-0.08, 0.08), len: (i === 2 ? 15 : 9) + R.range(0, 4), w: 1.6 + R.range(0, 0.6) }));
+    const shards = [0, 1, 2, 3, 4, 5].map((i) => ({ a: (i / 6) * TAU + R.range(-0.2, 0.2), r: 8 + R.range(0, 3), v: R.range(80, 130), arc: R.range(0.35, 0.6) }));
+    const dir = (a, h) => [Math.cos(a) * h, Math.sin(a) * h];
+    let t = 0, hit = false;
+    const rk = { x: 0, y: 0, s: 1, life: 1, a: 0 };
+
+    const arc = (q, S, w0, lag, rim) => {
+      const tt = t - lag, U = U1 * head(tt), T = U1 * smooth(HIT + HOLD, HIT + HOLD + TRAIL, tt);
+      if (U < 0.02 || T >= U - 0.02) return;
+      const gone = smooth(HIT + HOLD, HIT + HOLD + TRAIL, tt), shrink = 1 - 0.75 * gone;
+      smear3(q, S, T, U, w0, (u, r, out) => {
+        const age = Math.max(0, tt - passedAt(u / U1)), v = (u - T) / (U - T);
+        const w = w0 * shrink * Math.pow(Math.sin(Math.PI * Math.pow(v, 2.2)), 0.6);
+        if (w < 0.4) return;
+        const f = (S.R - r) / w;
+        if (f < 0 || f > 1) return;
+        const ci = rim && f < 0.22 && age < 0.12 ? 0 : Math.round(f * (n - 1) * 0.62 + age * 7 + Math.max(0, tt - HIT) * 10 - v * 0.8 + (rim ? 0.7 : 1.7));
+        out.c = C[n - 1 - clamp(ci, 0, n - 1)];
+        out.a = Math.min(1, v / 0.35) * (1.2 - gone);
+      });
+      if (rim) {
+        // a line of fire along the edge: it reads when the plane is edge on
+        const pts = [], steps = Math.max(2, Math.ceil((U - T) / 0.06));
+        for (let i = 0; i <= steps; i++) pts.push(onSwing3(S, S.R - w0 * 0.4, T + ((U - T) * i) / steps));
+        q.polyline(pts, (u) => (u > 0.75 ? C[6] : u > 0.4 ? C[5] : C[4]), Math.min(1, 1.2 - gone) * 0.9);
+        glowAlong3(q, S, S.R - w0 * 0.4, T, U, 7 + w0 * 0.5, C[4], (u) => 0.26 * Math.exp(-Math.max(0, tt - passedAt(u / U1)) / 0.2) * ((u - T) / (U - T)));
+      }
+    };
+
+    return {
+      update(dt) {
+        t += dt;
+        // heat gathers to the raised blade from every side
+        if (t < RAISE - 0.04 && R.chance(0.35)) {
+          const [ux, uy, uz] = spray(R, [1, 0, 0], Math.PI, 1), D = R.range(14, 26), T = R.range(0.14, 0.2), v = (D * 3) / (Math.exp(3 * T) - 1);
+          ps.spawn3(P.STREAK, GLINT[0] + ux * D, GLINT[1] + uy * D, GLINT[2] + uz * D, -ux * v, -uy * v, -uz * v, T, R.chance(0.5) ? C[5] : C[4]);
+        }
+        // embers shed off the edge as it comes over
+        if (t > RAISE && t < HIT && R.chance(0.7)) {
+          const u = U1 * head(t) * R.range(0.6, 1), [x, y, z] = onSwing3(A, A.R - R.range(0, 6), u);
+          ps.spawn3(P.EMBER, x, y, z, R.range(-20, 20), R.range(-40, -10), R.range(-20, 20), R.range(0.5, 1.1), C[4], R.range(1, 2));
+        }
+        if (!hit && t >= HIT) {
+          hit = true;
+          lights.add(X, -6, 26, WHITE, 0.9, 0.1, Z);
+          lights.add(X, -12, 64, C[4], 0.5, 0.8, Z);
+          // sparks fountain up off the floor and fall every way
+          for (let i = 0; i < 26; i++) {
+            const th = Math.abs(R.range(-1.2, 1.35)), sp = R.range(140, 360), [hx, hz] = dir(R.range(0, TAU), Math.sin(th) * sp);
+            ps.spawn3(P.SPARK, X, -1, Z, hx, -Math.cos(th) * sp - 40, hz, R.range(0.15, 0.5));
+          }
+          // dust rolls out in a ring along the floor
+          for (let i = 0; i < 28; i++) {
+            const a = R.range(0, TAU), [vx, vz] = dir(a, R.range(45, 135)), r0 = R.range(0, 8);
+            ps.spawn3(P.SMOKE, X + Math.cos(a) * r0, -R.range(2, 6), Z + Math.sin(a) * r0, vx, -R.range(2, 12), vz, R.range(1.0, 1.45), st.dust, R.range(5, 8.5), R.range(0, 0.07), PF.BIG);
+          }
+          for (let i = 0; i < 4; i++) ps.spawn3(P.SMOKE, X + R.range(-4, 4), -R.range(3, 8), Z + R.range(-4, 4), R.range(-15, 15), -R.range(40, 90), R.range(-15, 15), R.range(1.0, 1.45), st.dust, R.range(4, 6.5), R.range(0.02, 0.1), PF.BIG);
+          for (let i = 0; i < 10; i++) {
+            const [vx, vz] = dir(R.range(0, TAU), R.range(10, 60));
+            ps.spawn3(P.DUST, X + R.range(-4, 4), -R.range(1, 4), Z + R.range(-4, 4), vx, -R.range(8, 30), vz, R.range(0.35, 0.7), st.dust, R.range(2, 3.5));
+          }
+          // grit and a few stones thrown up and out, most of them forward
+          for (let i = 0; i < 44; i++) {
+            const th = Math.abs(R.range(-0.7, 1.0)), sp = R.range(60, 230), [hx, hz] = dir(R.range(-2.6, 2.6), Math.sin(th) * sp);
+            ps.spawn3(P.GRIT, X + R.range(-3, 3), -1, Z + R.range(-3, 3), hx, -Math.cos(th) * sp, hz, R.range(1.0, 1.5), R.pick([st.light, st.body, st.body, st.shade]), R.chance(0.35) ? 2 : 1);
+          }
+          for (let i = 0; i < 8; i++) {
+            const [vx, vz] = dir(R.range(-2.6, 2.6), R.range(20, 110));
+            bits.add({ kind: B.CHUNK, x: X + R.range(-3, 3), y: -2, z: Z + R.range(-3, 3), vx, vy: -R.range(120, 260), vz, g: 1, drag: 0.4, bounce: 0.3, life: R.range(1.15, 1.5), a: R.range(0, TAU), va: R.range(-14, 14), s: R.int(1, 2) });
+          }
+          // embers lift off the cut
+          for (let i = 0; i < 16; i++) ps.spawn3(P.EMBER, X + R.range(-8, 8), -R.range(1, 6), Z + R.range(-8, 8), R.range(-50, 60), -R.range(30, 110), R.range(-50, 50), R.range(0.7, 1.5), C[4], R.range(1, 2));
+        }
+        // the cracks breathe embers while they're hot
+        if (hit && t < HIT + 0.6 && R.chance(0.12)) {
+          const c = R.pick(lines), pt = R.pick(c.pts);
+          ps.spawn3(P.EMBER, X + pt[0], -1, Z + pt[1], R.range(-12, 12), -R.range(20, 50), R.range(-12, 12), R.range(0.5, 0.9), C[4], 1);
+        }
+        bits.update(dt);
+        for (const b of bits.list)
+          if (b.rest && !b.dusted) {
+            b.dusted = true;
+            for (let i = 0; i < 2; i++) ps.spawn3(P.DUST, b.x + R.range(-1.5, 1.5), -0.5, b.z + R.range(-1.5, 1.5), R.sign() * R.range(8, 30), -R.range(2, 12), R.sign() * R.range(8, 30), R.range(0.3, 0.6), st.dust, R.range(1.3, 2.4));
+          }
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), Q = t - HIT;
+        if (Q >= 0) {
+          // the floor under the blade: a white hot pool, cooling through the ramp to soot
+          const fade = 1 - smooth(1.0, 1.5, Q);
+          q.decal(X, 0, Z, null, 12, (pp) => {
+            for (let y = -9; y <= 9; y++)
+              for (let x = -9; x <= 9; x++) {
+                const d = Math.hypot((x + 0.5) / 9, (y + 0.5) / 9);
+                if (d > 1) continue;
+                const T = Math.pow(clamp(1 - Q / 0.8), 1.4) * (1.2 - d) - rand(x, y, 3) * 0.3;
+                if (T > 0.08) pp.dot(x, y, C[clamp(Math.round(T * 9), 1, 7)], fade);
+                else pp.dot(x, y, d < 0.5 ? st.dark : st.shade, (d < 0.9 - rand(x, y, 9) * 0.3 ? 1 : 1 - d) * fade);
+              }
+          });
+          // cracks race out from the cut and split down into the floor: white hot, cooling down the ramp to dark
+          const heat = Math.pow(clamp(1 - Q / 1.2), 1.2);
+          for (const c of lines) {
+            const reach = 40 * ease.outCubic(clamp((Q - c.at * 0.1) / 0.13)) * (c.fork ? 0.3 : 1);
+            if (reach <= 0) continue;
+            along(c.pts, reach, (x0, z0, x1, z1, d) => {
+              const h = heat * (1 - d / 46) - (c.fork ? 0.12 : 0), col = h > 0.72 ? WHITE : h > 0.08 ? C[clamp(Math.round(h * 8), 1, 6)] : st.dark;
+              q.line(X + x0 + 0.7, 0, Z + z0 + 0.7, X + x1 + 0.7, 0, Z + z1 + 0.7, st.dark, fade);
+              q.line(X + x0, -0.3, Z + z0, X + x1, -0.3, Z + z1, col, fade);
+              if (h > 0.25 && (d | 0) % 6 < 2) q.glow(X + x1, -1, Z + z1, 6, C[4], 0.2 * h * fade);
+            });
+          }
+          if (heat > 0) q.glow(X, -2, Z, 34, C[4], 0.32 * heat * fade);
+          // the shock runs out round the cut as a true circle
+          const k = Q / 0.45;
+          if (k < 1) {
+            const r = 6 + 46 * ease.outCubic(k), w = Math.max(1.5, 4 * (1 - k));
+            q.plane(X, 0, Z, null, r + 1, (u, v, out) => {
+              const b = (r - Math.hypot(u, v)) / w;
+              if (b < 0 || b > 1) return;
+              out.c = b < 0.25 ? C[6] : b < 0.5 ? C[4] : b < 0.75 ? st.light : st.body;
+              out.a = Math.min(1, 1.5 - k);
+              out.l = C[4];
+              out.k = 0.3 * (1 - k) * (1 - b);
+            });
+          }
+        }
+        // the white slam: the star lies flat on the floor with its half-star stood over it, then slivers fly off
+        if (Q >= 0 && Q < 0.07) {
+          const first = Q < 0.035, sc = first ? 1 : 1.25, th = first ? 1 : 0.55;
+          const cs = first ? [WHITE, C[6], C[7], C[5]] : [C[7], C[6], C[6], C[4]];
+          q.decal(X, 0, Z, null, 30, (pp) => star(pp, 0, 0, spikes, sc, th, cs[0], cs[1], cs[2], cs[3]));
+          q.at(X, -1, Z, (pp) => star(pp, 0, 0, upright, sc, th, cs[0], cs[1], cs[2], cs[3]));
+        }
+        if (Q >= 0.05 && Q < 0.16) {
+          const k = (Q - 0.05) / 0.11;
+          q.decal(X, 0, Z, null, 40, (pp) => {
+            for (const s of shards) sliver(pp, 0, 0, s.a, s.r + s.v * (Q - 0.05), s.arc * (1 - 0.4 * k), k < 0.4 ? C[6] : k < 0.7 ? C[5] : C[4], 1 - k);
+          });
+        }
+        // the glint over the head: the raised blade catching the light
+        if (t < RAISE + 0.03) {
+          const g = ease.outBack(clamp(t / 0.1)) * (1 + 0.15 * Math.sin(t * 60)) * (t > RAISE ? 1 - (t - RAISE) / 0.03 : 1);
+          q.at(GLINT[0], GLINT[1], GLINT[2], (pp) => sparkle(pp, 0, 0, 1 + 7 * g, C[6], C[4], 0.5));
+          q.glow(GLINT[0], GLINT[1], GLINT[2], 22, C[4], 0.3 * g);
+        }
+        // the arc and its echo, then a dotted trace of embers where it has been
+        arc(q, E, WE, 0.02, false);
+        arc(q, A, W, 0, true);
+        const tail = U1 * smooth(HIT + HOLD, HIT + HOLD + TRAIL, t), th = 0.8 * (1 - clamp((t - HIT - HOLD) / (TRAIL + 0.25)));
+        if (tail > 0.02 && th > 0) trace3(q, A, A.R - 0.5, 0, tail, C[3], (u) => th * (0.4 + 0.6 * u / U1));
+        if (t > RAISE && t < HIT + 0.05) {
+          const [x, y, z] = onSwing3(A, A.R - 5, U1 * head(t));
+          q.glow(x, y, z, 40, C[4], 0.5);
+        }
+        if (Q >= 0 && Q < 0.2) {
+          const pop = Math.exp(-Q / 0.05);
+          q.glow(X, -6, Z, 30, C[5], 0.8 * pop);
+          q.glow(X, -2, Z, 10, WHITE, 0.7 * pop);
+        }
+        // stones, nearest first, then the particles and the light
+        for (const b of q.sort(bits.list, (b) => [b.x, b.y, b.z]).reverse())
+          q.at(b.x, b.y, b.z, (pp, k) => {
+            pp.z -= b.s;
+            rk.s = b.s * k; rk.life = b.life; rk.a = b.a;
+            rock(pp, rk, st);
+          });
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

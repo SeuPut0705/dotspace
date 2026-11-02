@@ -1,8 +1,8 @@
 // The snow recipe (depth layers falling at their own speeds with a sway, a gusty wind, flakes that settle on a
 // drift for a while) is adapted from Sprite Fusion's open-source snow (https://www.spritefusion.com/pixel-art-vfx/snow),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { fit, clamp, smooth, rand, wrap, mix, TAU, WHITE } from "../../core/index.js";
-import { clip, pass, trips } from "./_lib.js";
+import { fit, clamp, smooth, rand, wrap, mix, space, fbm, noise2, TAU, WHITE } from "../../core/index.js";
+import { clip, pass, trips, bakeFloor3, layFloor3 } from "./_lib.js";
 
 export const meta = {
   name: "Snow",
@@ -126,3 +126,114 @@ function drift(q, t, S, C) {
     q.glow(x + 0.5, y + 0.5, 6, C[6], 0.35 * k);
   }
 }
+
+// ---- 3D: snow falling through a cylinder of air onto a lumpy snow floor, seen from any side. Specks, flakes and
+// crystals are real points in x, y and z, drifting with the wind and swirling as they sway; near crystals are
+// billboards of the 2D crystal; flakes that land lie on the floor, crystals lie down flat on it and melt.
+const R3 = 96, H3 = 104;
+const NEAR = [340, 200, 20];
+const edgeFade = (x, z) => 1 - smooth(R3 * 0.85, R3 * 1.1, Math.hypot(x, z));
+
+// a bank under it all, baked once: small lumps (10-18 px) lit from the upper left and the front: lit slopes a step
+// brighter, shaded sides a step deeper, a thin pale crest only on the lit lip of a lump. Its edge is ragged: past
+// 3/4 of the radius noise decides where it thins out, so the rim dissolves into the dark floor.
+function snowFloor(S, C) {
+  return bakeFloor3("snow" + S + C.join(), R3, (set) => {
+    const h = (x, z) => 2.6 * noise2(x / 16, z / 16, S + 40) + 1.5 * noise2(x / 9, z / 9, S + 49) + 2 * fbm(x / 38, z / 38, S + 53, 2);
+    for (let z = -R3; z <= R3; z++)
+      for (let x = -R3; x <= R3; x++) {
+        const r = Math.hypot(x, z) / R3;
+        if (r > 1) continue;
+        // the rim: more of it missing the further out, in lumps
+        if (r > 0.74 && 0.9 * fbm(x / 15, z / 15, S + 61, 2) + 0.3 * noise2(x / 5, z / 5, S + 67) < -0.5 + ((r - 0.74) / 0.26) * 1.5) continue;
+        const hx = (h(x + 1, z) - h(x - 1, z)) / 2, hz = (h(x, z + 1) - h(x, z - 1)) / 2;
+        const d = 0.8 * hx - 0.7 * hz;
+        set(x, z, d > 0.4 ? C[6] : d > 0.12 ? C[5] : d > -0.16 ? C[4] : C[3]);
+      }
+  });
+}
+
+function flakes3(q, t, S, C, L) {
+  const Ly = LAYERS[L], sd = S * 13 + L;
+  trips(t, D, NEAR[L], sd, Ly.m[0], Ly.m[1], (u, k, m, i) => {
+    const j = wrap(k, m), dur = D / m, R = (n) => rand(sd, i, j, n);
+    const tf = dur * Ly.air, age = Math.min(u * dur, tf), rest = u * dur - tf, born = t - u * dur;
+    const sw = Ly.sway[0] + R(3) * (Ly.sway[1] - Ly.sway[0]), f = 0.25 + R(4) * 0.35, ph = R(5) * TAU;
+    // where it started, anywhere in the disc, and where the wind and its sway have taken it
+    const r0 = R3 * (L === 2 ? 0.74 : 1.02) * Math.sqrt(R(2)), g0 = R(12) * TAU, x0 = Math.cos(g0) * r0, z0 = Math.sin(g0) * r0;
+    const at = (a) => {
+      const dx = Ly.wind * (a - tf / 2) + (gust(born + a) - gust(born + tf / 2)) * Ly.gust + sw * Math.sin(TAU * f * a + ph);
+      const dz = 0.45 * (gust(born + a + D / 4) - gust(born + tf / 2 + D / 4)) * Ly.gust + sw * 0.8 * Math.sin(TAU * f * a + ph + 1.6);
+      return [x0 + dx, z0 + dz];
+    };
+    const [x, z] = at(age), [xl, zl] = at(tf), y1 = L ? -0.6 : -H3 + (0.55 + R(1) * 0.45) * H3;
+    const y = -H3 + (y1 + H3) * (age / tf), top = smooth(0, 0.07, age / tf);
+    if (L === 0) {
+      // far: a speck, thinning out before it's gone; the nearer to the viewer, the brighter
+      const a = Math.min(1, (1 - u) * 6) * top * edgeFade(x, z);
+      if (a < 0.08) return;
+      q.project(x, y, z);
+      const n = clamp(0.5 - q.d / (2 * R3));
+      q.dot(x, y, z, n > 0.62 ? C[5] : n > 0.3 ? C[4] : C[3], a);
+      return;
+    }
+    const fade = rest > 0 ? 1 - rest / (dur - tf) : 1;
+    if (L === 1) {
+      // a drifting flake: a point with a smaller one beside it, a plus when it's big
+      const big = R(6) < 0.3;
+      if (rest > 0) {
+        const a = fade * 0.9 * edgeFade(xl, zl);
+        return void (a > 0.08 && q.dot(xl, y1, zl, C[7], a));
+      }
+      const a = top * edgeFade(x, z);
+      if (a < 0.08) return;
+      q.at(x, y, z, (pp) => {
+        const put = (dx, dy, c) => (a > 0.95 ? pp.px(dx, dy, c) : pp.dot(dx, dy, c, a));
+        put(0, 0, big ? WHITE : C[7]);
+        if (big) for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) put(dx, dy, C[5]);
+        else (put(1, 0, C[6]), put(0, 1, C[6]), put(1, 1, C[5]));
+      });
+      return;
+    }
+    // a near crystal: spinning, a white heart, a cold glow; it lies down flat on the drift and melts
+    const r = R(6) < 0.4 ? 3 : R(6) < 0.8 ? 4 : 5, spin = 1.5 + R(7) * 2.5, turn = Math.floor(age * spin + R(8) * 2) % 2;
+    if (rest > 0) {
+      const a = fade * edgeFade(xl, zl), rr = Math.max(2, Math.round(r * (1 - 0.55 * (rest / (dur - tf)))));
+      if (a < 0.15) return;
+      q.decal(xl, -0.6, zl, null, 8, (pp) => crystal(pp, 0, 0, rr, turn, C));
+      q.glow(xl, -1, zl, 6, C[5], 0.25 * fade * a);
+      return;
+    }
+    const a = top * edgeFade(x, z);
+    if (a < 0.1) return;
+    q.at(x, y, z, (pp) => {
+      if (a > 0.95) return void crystal(pp, 0, 0, r, turn, C);
+      // faint at the edge of the volume: the same crystal, dithered
+      const soft = { px: (x, y, c) => pp.dot(x, y, c, a), glow: (x, y, r, c, k) => pp.glow(x, y, r, c, k * a), light: (x, y, c, k) => pp.light(x, y, c, k * a) };
+      crystal(soft, 0, 0, r, turn, C);
+    });
+  });
+}
+
+export const three = {
+  meta: { size: [248, 184], origin: [124, 142], bg: "ground", camera: { pitch: 0.4 } },
+  draw(p, t, o) {
+    const q = space(p, o), S = o.seed, C = fit(o.palette, 8);
+    layFloor3(q, snowFloor(S, C));
+    // glints on the drift that twinkle
+    for (let i = 0; i < 24; i++) {
+      const r = R3 * 0.9 * Math.sqrt(rand(S, i, 85)), g = rand(S, i, 86) * TAU, x = Math.cos(g) * r, z = Math.sin(g) * r;
+      const c = 1 + Math.floor(rand(S, i, 82) * 3), tw = Math.sin((TAU * c * t) / D + rand(S, i, 83) * TAU);
+      if (tw < 0.55) continue;
+      const k = (tw - 0.55) / 0.45;
+      q.at(x, -1, z, (pp) => {
+        pp.px(0, 0, WHITE);
+        if (k > 0.5) for (const [dx, dy] of [[1, 0], [-1, 0], [0, -1]]) pp.px(dx, dy, C[6]);
+      });
+      q.glow(x, -2, z, 6, C[6], 0.35 * k);
+    }
+    flakes3(q, t, S, C, 1);
+    flakes3(q, t, S, C, 2);
+    flakes3(q, t, S, C, 0);
+  },
+};

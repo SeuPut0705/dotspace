@@ -1,7 +1,7 @@
 // The crescent, trace, glint and spark recipe is adapted from Sprite Fusion's open-source slash
 // (https://www.spritefusion.com/pixel-art-vfx/slash), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, sparkle, clamp, ease, WHITE, READY } from "../../core/index.js";
-import { swing, slash, slashEnd, shavings, sliver } from "./_lib.js";
+import { Particles, Lights, P, Rng, fit, space, sparkle, clamp, ease, WHITE, READY } from "../../core/index.js";
+import { swing, slash, slashEnd, shavings, sliver, lay, slash3, slashEnd3, shavings3, spray, travel3 } from "./_lib.js";
 
 export const meta = {
   name: "Dagger flurry",
@@ -111,3 +111,64 @@ export function create(o) {
     },
   };
 }
+
+// ---- 3D: every small cut on a plane of its own (turned and tipped differently, stepped through the depth in front of
+// the fighter) so the flurry fans through space; the finisher is one wide cut lying nearly flat at waist height.
+const YAW = [-0.7, 0.65, -0.3, 0.85, -0.85, 0.4];
+const LEAN = [0.3, -0.25, 0.45, -0.3, 0.2, -0.15];
+const DEEP = [6, -15, 14, -8, 18, -18];
+
+export const three = {
+  meta: { size: [184, 112], origin: [92, 88], camera: { pitch: 0.34 } },
+  create(o) {
+    const C = fit(o.palette, 7), Rg = new Rng(o.seed), ps = new Particles({ rng: Rg, ground: () => 0, sparks: o.sparks }), lights = new Lights();
+    const small = CUTS.map(([x, y, rot, dir], i) => lay(swing({ cx: x, cy: y, R: Rg.range(14, 17), sy: Rg.range(0.55, 0.75), rot, a0: Rg.range(-2.8, -2.2), dir, span: Rg.range(2.3, 2.8), W: Rg.range(5.8, 7), t0: i * EVERY, sweep: 0.035, hold: 0.03, trail: 0.13, ramp: C }), { yaw: YAW[i], lean: LEAN[i], z: DEEP[i] }));
+    // the finisher: a wide cut across the front, left to right, on a near-floor plane (the cone is ignored)
+    const big = lay(swing({ cx: 24, cy: -26, R: 30, sy: 0.36, rot: 0.12, a0: 3.0, dir: -1, span: 2.85, W: 11, t0: small.length * EVERY + 0.04, sweep: 0.055, hold: 0.06, trail: 0.24, ramp: C }), { lean: 0.1 });
+    const all = [...small, big], ends = all.map(slashEnd3), done = all.map(() => false);
+    // slivers fly off the finisher's end as short arcs on planes of every tilt
+    const slivers = [-2.6, -1.5, -0.4, 0.7].map((a) => ({ a: a + Rg.range(-0.2, 0.2), r: Rg.range(4, 7), v: Rg.range(70, 110), arc: Rg.range(0.4, 0.7), n: [Rg.range(-1, 1), Rg.range(-0.6, 0.6), Rg.range(-1, 1)] }));
+    let t = 0;
+    return {
+      update(dt) {
+        t += dt;
+        all.forEach((S, i) => {
+          if (done[i] || t < S.t0 + S.sweep) return;
+          done[i] = true;
+          const e = ends[i], last = S === big, d = [e.dx, e.dy, e.dz];
+          lights.add(e.x, e.y, last ? 56 : 26, C[3], last ? 0.6 : 0.4, last ? 0.4 : 0.14, e.z);
+          if (last) lights.add(e.x, e.y, 16, WHITE, 0.7, 0.08, e.z);
+          for (let k = 0; k < (last ? 12 : 3); k++) {
+            const [vx, vy, vz] = spray(Rg, d, last ? 1.2 : 1.3, Rg.range(100, last ? 340 : 220));
+            ps.spawn3(P.SPARK, e.x, e.y, e.z, vx, vy, vz, Rg.range(0.1, last ? 0.35 : 0.22));
+          }
+          shavings3(ps, Rg, S, last ? 14 : 4, [C[4], C[5]]);
+          if (last) for (let k = 0; k < 5; k++) ps.spawn3(P.STAR, S.c[0] + Rg.range(-22, 22), S.c[1] + Rg.range(-14, 14), S.c[2] + Rg.range(-22, 22), 0, -4, 0, Rg.range(0.2, 0.45), Rg.chance(0.5) ? C[5] : WHITE, Rg.range(1, 2.2), Rg.range(0.05, 0.25));
+        });
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o);
+        for (const S of all) slash3(q, S, t);
+        all.forEach((S, i) => {
+          const e = ends[i], g = t - S.t0 - S.sweep * 0.6, last = S === big, life = last ? 0.24 : 0.12;
+          if (g > 0 && g < life) q.at(e.x, e.y, e.z, (pp) => sparkle(pp, 0, 0, (last ? 10 : 5) * ease.outBack(Math.min(1, g / 0.04)) * (1 - g / life), C[5], C[3], last ? 0.6 : 0.4));
+          // light rides each edge while it's moving
+          const u = t - S.t0;
+          if (u > 0 && u < S.sweep + 0.1) {
+            const h = travel3(S, S.span * ease.outExpo(clamp(u / S.sweep)), S.R - S.W * 0.3);
+            q.glow(h.x, h.y, h.z, last ? 40 : 22, C[3], (last ? 0.5 : 0.35) * (1 - u / (S.sweep + 0.1)));
+          }
+        });
+        const w = t - big.t0 - big.sweep;
+        if (w > 0.02 && w < 0.14) {
+          const k = (w - 0.02) / 0.12, e = ends[ends.length - 1], c = k < 0.4 ? C[6] : k < 0.7 ? C[5] : C[4];
+          for (const s of slivers) q.arc(e.x, e.y, e.z, s.r + s.v * (w - 0.02), 1.4, s.a - (s.arc * (1 - 0.4 * k)) / 2, s.a + (s.arc * (1 - 0.4 * k)) / 2, c, 1 - k, s.n);
+        }
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

@@ -1,8 +1,8 @@
 // The plasma ball (a lit rim, filaments from a white-hot heart, motes riding round it, zaps that spark where
 // they land) follows Sprite Fusion's open-source energy orb (https://www.spritefusion.com/pixel-art-vfx/energy),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { P, Rng, fit, bolt, forks, tileFbm, clamp, smooth, lerp, ease, rand, rng, mix, TAU, WHITE } from "../../core/index.js";
-import { Ghosts, since, strokeArc } from "./_lib.js";
+import { P, Rng, fit, bolt, forks, tileFbm, space, clamp, smooth, lerp, ease, rand, rng, mix, TAU, WHITE } from "../../core/index.js";
+import { Ghosts, since, strokeArc, strokeArc3, upright, cone, sphere, coreLine } from "./_lib.js";
 
 export const meta = {
   name: "Energy core",
@@ -204,3 +204,145 @@ export function draw(p, t, o) {
   p.glow(0, CY, 46, C[4], 0.2 + 0.3 * pulse);
   p.glow(0, CY, 9, WHITE, 0.35 + 0.4 * pulse);
 }
+
+// 3D: the cage is six real bars round the core between two true hoops, the plinth a drum with its lights all the way
+// round, the two rings orbit in space, the arcs jump from the core to the bars on every side, each thump throws a
+// shock ring out across the plane of the core and a shell of light round it.
+const cache3 = new Map();
+function setup3(o) {
+  const key = `${o.seed}:${o.palette.join()}`;
+  if (cache3.has(key)) return cache3.get(key);
+  const C = fit(o.palette, 8), rn = new Rng(o.seed + 11);
+  const g = new Ghosts(D, { ground: () => 0, sparks: [WHITE, C[6], C[5], C[4]], haze: C[5], box: [-80, -98, 80, 11] });
+  const az = (i) => (i / 6) * TAU + Math.PI / 6, arcs = [];
+  for (let s = 0; s < NS; s++) {
+    const ts = s * SLOT, hot = BEATS.some(([b, , strong]) => strong && since(ts, b, D) < 0.16);
+    for (let n = 0; n < (hot ? 2 : 1); n++) {
+      if (!hot && !rn.chance(0.4)) continue;
+      const bi = rn.int(0, 5), a = az(bi), ty = rn.range(TOPY + 8, BOTY - 6), ang = Math.atan2(ty - CY, RC);
+      const sx = Math.cos(ang) * R0, sy = CY + Math.sin(ang) * R0, path = bolt(rn, sx, sy, RC - 1.5, ty, { jag: 0.3, depth: 4 });
+      const fk = forks(rn, path, { count: rn.int(0, 1), len: 7, jag: 0.35 });
+      arcs.push({ s, path: upright(path, a), fk: fk.map((f) => upright(f, a)) });
+      for (let i = 0; i < 5; i++) {
+        const sp = rn.range(60, 170), b = Math.atan2(ty - sy, RC - sx) + Math.PI + rn.range(-1.2, 1.2);
+        g.add(ts, P.SPARK, 0, ty, Math.abs(Math.cos(b)) * sp, Math.sin(b) * sp - 40, rn.range(0.2, 0.5), WHITE, 1, 0, a + Math.PI + rn.range(-0.9, 0.9), Math.cos(a) * RC, Math.sin(a) * RC);
+      }
+    }
+  }
+  for (const [b, , strong] of BEATS) {
+    if (!strong) continue;
+    for (let i = 0; i < 16; i++) {
+      const a = rn.range(0, TAU), sp = rn.range(40, 110), phi = rn.range(0, TAU);
+      g.add(b + 0.02, P.MOTE, Math.cos(a) * R0, CY + Math.sin(a) * R0, Math.cos(a) * sp, Math.sin(a) * sp, rn.range(0.25, 0.5), rn.pick([WHITE, C[6], C[5]]), 0.7, 0, phi);
+    }
+  }
+  const v = { C, arcs, g, az };
+  cache3.set(key, v);
+  return v;
+}
+
+export const three = {
+  meta: { size: [120, 108], origin: [60, 94], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const { C, arcs, g, az } = setup3(o), H = fit(o.metal, 6), pulse = pulseAt(t), R = R0 * (1 + 0.14 * pulse), ph = t / D, q = space(p, o);
+    // the plinth: a steel drum with a lit top and a ring of status lights round it
+    cone(q, 0, 0, -7, 0, 29, 29, (h, out) => {
+      if (!h.front) return;
+      const l = -h.nx * 0.5 + h.nz * 0.45;
+      out.c = h.y > -0.8 || h.y < -6.2 ? H[0] : l > 0.55 ? H[4] : l > 0.1 ? H[3] : l > -0.4 ? H[2] : H[1];
+    });
+    q.plane(0, -7, 0, null, 29, (u, v, out) => {
+      const d = Math.hypot(u, v) / 29;
+      out.c = d > 0.94 ? H[0] : d > 0.68 ? ((-u * 0.5 - v * 0.8) / 29 > 0.3 ? H[5] : H[4]) : H[3];
+    });
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * TAU, k = 0.5 + 0.5 * Math.cos(TAU * (2 * ph - i / 12)), x = Math.cos(a) * 29.2, z = Math.sin(a) * 29.2;
+      q.ball(x, -3.2, z, 1, k > 0.75 ? WHITE : k > 0.4 ? C[5] : C[2]);
+      if (k > 0.6) q.glow(x, -3.2, z, 4, C[4], 0.3 * k);
+    }
+    // the cage: six steel bars lit on the face toward the core, between two hoops
+    for (let i = 0; i < 6; i++) {
+      const a = az(i), x = Math.cos(a) * RC, z = Math.sin(a) * RC;
+      q.beam(x, TOPY + 2, z, x, BOTY, z, 3, (u, v) => (v > 0.7 ? H[1] : H[3]));
+      q.beam(x * (RC - 1.6) / RC, TOPY + 3, z * (RC - 1.6) / RC, x * (RC - 1.6) / RC, BOTY - 1, z * (RC - 1.6) / RC, 1.2, pulse > 0.5 ? C[6] : C[5]);
+    }
+    for (const y of [BOTY, TOPY])
+      q.decal(0, y, 0, null, RC + 3, (pp) => {
+        pp.ring(0, 0, RC + 1.2, 1.2, H[4]);
+        pp.ring(0, 0, RC, 1.2, H[2]);
+        pp.ring(0, 0, RC - 1.2, 1, pulse > 0.5 ? C[5] : C[3], 0.9);
+      });
+    // the cap: a steel dome with an emitter on top
+    cone(q, 0, 0, TOPY - 6.5, TOPY, 9, 14.5, (h, out) => {
+      if (!h.front) return;
+      const l = -h.nx * 0.6 - h.ny * 0.5 + h.nz * 0.3;
+      out.c = h.y > TOPY - 0.6 ? H[0] : l > 0.55 ? H[5] : l > 0.3 ? H[4] : H[3];
+    });
+    q.plane(0, TOPY - 6.5, 0, null, 9.2, (u, v, out) => (out.c = (-u * 0.4 - v * 0.5) / 9 > 0.2 ? H[5] : H[4]));
+    q.ball(0, TOPY - 7.6, 0, 1.6, pulse > 0.4 ? WHITE : C[5]);
+    q.glow(0, TOPY - 8, 0, 5, C[4], 0.4 + 0.4 * pulse);
+    // the core: dark plasma held in a hard rim, thin bright bands churning round a white-hot heart, filaments
+    // flickering over it; a thump floods it with light
+    sphere(q, 0, CY, 0, R, (h, out) => {
+      if (!h.front) return;
+      const d = Math.sqrt(1 - h.vz * h.vz);
+      if (d > 0.9) return (out.c = h.vy < -0.3 && h.vx < 0.3 ? C[6] : C[4]);
+      const az2 = Math.atan2(h.z, h.x) / TAU, n = 0.5 + 0.5 * tileFbm(az2 * 6 + ph * 6, (h.y / R) * 2.2 - ph * 4, 6, 4, o.seed, 2);
+      const band = Math.abs(n - 0.5) < 0.05 + 0.05 * pulse, heat = (1 - d) ** 2 + pulse * 0.45;
+      if (band) out.c = heat > 0.5 ? WHITE : heat > 0.2 ? C[6] : C[5];
+      else out.c = heat > 0.7 ? C[6] : heat > 0.42 ? C[5] : heat > 0.2 ? C[3] : n > 0.5 ? C[2] : C[1];
+    });
+    {
+      const f = Math.floor(t * 15), r = rng(o.seed, f, 5);
+      for (let i = 0; i < 4; i++) {
+        // a filament crawls over the surface from a point on it
+        let az0 = r.range(0, TAU), el = r.range(-1.2, 1.2);
+        const pts = [];
+        for (let j = 0; j < 7; j++) {
+          pts.push([Math.cos(el) * Math.cos(az0) * R * 1.03, CY - Math.sin(el) * R * 1.03, Math.cos(el) * Math.sin(az0) * R * 1.03]);
+          az0 += r.range(-0.25, 0.25) + 0.12;
+          el += r.range(-0.3, 0.3);
+        }
+        for (let j = 1; j < pts.length; j++) coreLine(q, pts[j - 1], pts[j], j < 3 ? WHITE : C[6], 0.6);
+        q.glow(...pts[pts.length - 1], 4, C[5], 0.4);
+      }
+    }
+    // the two rings: beads on tilted rings, spinning, the far half dim
+    for (const rg of RINGS) {
+      const spin = rg.spin(t), bead = ph * TAU * 3, pts = [];
+      for (let i = 0, n = Math.ceil(rg.r * 9); i < n; i++) {
+        const a = (i / n) * TAU, pt = ringPt(rg.r, rg.tilt, spin, a), u = ((((a - bead) / TAU) % 1) + 1) % 1;
+        const front = q.depth(...pt) < q.depth(0, CY, 0);
+        q.px(...pt, u > 0.9 ? WHITE : !front ? C[3] : q.depth(...pt) < q.depth(0, CY, 0) - 0.5 * rg.r || pulse > 0.6 ? C[6] : C[5]);
+      }
+      const b = ringPt(rg.r, rg.tilt, spin, bead);
+      q.glow(...b, 6, C[5], 0.5);
+    }
+    // the arcs firing now
+    const s = Math.floor(t / SLOT) % NS, k = 1 - (t - Math.floor(t / SLOT) * SLOT) / SLOT;
+    for (const a of arcs) {
+      if (a.s !== s) continue;
+      strokeArc3(q, a.path, [C[2], C[5], C[4]], k);
+      for (const f of a.fk) strokeArc3(q, f, [C[2], C[5], C[4]], k, 0.6);
+      q.glow(...a.path[a.path.length - 1], 8, C[5], 0.6 * k);
+    }
+    // each thump: a shock ring rolls out from the core across its plane, and a shell of light swells round it
+    for (const [b, , strong] of BEATS) {
+      const a = since(t, b, D);
+      if (!strong || a > 0.45) continue;
+      const u = a / 0.45, r = R0 + 34 * ease.outCubic(u), w = Math.max(1, 3 * (1 - u));
+      q.decal(0, CY, 0, null, r + 2, (pp) => pp.ring(0, 0, r, w, u < 0.25 ? WHITE : u < 0.5 ? C[6] : C[5], 1.1 - u));
+      q.glow(0, CY, 0, r + 6, C[4], 0.28 * (1 - u));
+      sphere(q, 0, CY, 0, r * 0.9, (h, out) => {
+        out.blend = true;
+        out.c = u < 0.3 ? C[6] : C[5];
+        out.a = (0.55 * (1 - u)) * Math.max(0, h.rim - 0.55) ** 2;
+      });
+    }
+    g.at3(t).draw(q);
+    // light: the core's heat, its white heart, the steel lit round it
+    q.glow(0, CY, 0, 46, C[4], 0.2 + 0.3 * pulse);
+    q.glow(0, CY, 0, 9, WHITE, 0.35 + 0.4 * pulse);
+    q.glow(0, -8, 0, 26, C[4], 0.25 + 0.3 * pulse);
+  },
+};

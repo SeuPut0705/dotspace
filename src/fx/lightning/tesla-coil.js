@@ -1,8 +1,8 @@
 // The arcs (forking bolts re-struck every frame, inked with halo, body, core and light), their flicker and the
 // zaps that strike the floor in a spray of sparks follow Sprite Fusion's open-source lightning and energy orb
 // (https://www.spritefusion.com/pixel-art-vfx/lightning), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { fit, clamp, rng, rand, TAU, WHITE, hex, mix, ease } from "../../core/index.js";
-import { VOLT, PLASMA, zigzag, stroke, crackle, flight, spark, puff, scorch } from "./_lib.js";
+import { fit, clamp, rng, rand, space, TAU, WHITE, hex, mix, ease } from "../../core/index.js";
+import { VOLT, PLASMA, zigzag, stroke, crackle, flight, spark, puff, scorch, zigzag3, stroke3, crackle3, flight3, spark3, puff3, scorchDisc, pool } from "./_lib.js";
 
 export const meta = {
   name: "Tesla coil",
@@ -203,3 +203,149 @@ export function draw(p, t, o) {
     }
   }
 }
+
+// ---- 3D: the coil on a round plinth, a real torus of steel, arcs lashing out in every direction from it and two
+// bolts that stab the floor away from the base, scorching it. The round parts (plinth, winding) are the same from
+// every side and stand as billboards; the primary turns, the torus and everything electric are in space.
+const KEY3 = norm(-0.55, 0.75, 0.45), HALF3 = norm(-0.55, 0.75, 1.45);
+
+// the plinth and the secondary winding seen from the side, for a camera tipped by pitch: ev are the arcs' directions
+// in view space, so the wire catches their light on the side facing them
+function coil3(pp, s, Cu, C, ev, yaw) {
+  const n = Cu.length;
+  const tint = (nx, nz) => {
+    for (const e of ev) if (e.w > 0.25 && nx * e.v[0] + nz * e.v[2] > 0.94) return e.w > 0.6 ? C[6] : C[4];
+    return 0;
+  };
+  // the plinth: iron, a lit left flank, a flat top
+  for (let x = -14; x < 14; x++) {
+    const nx = (x + 0.5) / 14, e = Math.sqrt(1 - nx * nx), yb = Math.ceil(e * 14 * s);
+    for (let y = -8; y < yb; y++) pp.px(x, y, y > yb - 2 ? IRON[0] : IRON[clamp(Math.round((0.66 - 0.62 * nx) * 3 - (y > yb - 4 ? 0.6 : 0)), 0, 3)]);
+  }
+  pp.ellipse(0, -8, 14, Math.max(0.6, 14 * s), IRON[3]);
+  pp.ellipse(0, -8, 12.6, Math.max(0.4, 12.6 * s), IRON[4]);
+  // the secondary: copper wire on every other row, lit from the left, a bright band down the front
+  for (let x = -5; x < 5; x++) {
+    const u = (x + 5.5) / 11, nx = u * 2 - 1, nz = Math.sqrt(Math.max(0, 1 - nx * nx)), yb = Math.ceil(nz * 5.5 * s) - 8;
+    for (let y = CTOP; y < yb; y++) {
+      const wire = (Math.floor(y) & 1) === 0;
+      let l = 0.62 - 0.55 * nx - 0.35 * nx * nx + (Math.abs(nx + 0.35) < 0.12 ? 0.3 : 0);
+      if (!wire) l -= 0.32;
+      const w = wire ? tint(nx, nz) : 0;
+      pp.px(x, y, w || Cu[clamp(Math.round(l * (n - 1)), 0, n - 1)]);
+    }
+  }
+  pp.ellipse(0, CTOP, 5.5, Math.max(0.5, 5.5 * s), IRON[3]);
+  pp.ellipse(0, CTOP, 4.5, Math.max(0.4, 4.5 * s), IRON[4]);
+}
+
+export const three = {
+  meta: { size: [216, 172], origin: [108, 142], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const q = space(p, o), C = fit(o.palette, 8), Cu = fit(o.copper, 6), St = fit(o.steel, 7), S = o.sparks.map(hex), f = Math.floor(t * FPS + 1e-6) % N;
+    const { arcs: A2, strikes: S2 } = plan(o.seed), sp = Math.sin(q.camera.pitch);
+    const arcs = A2.map((a, i) => ({ ...a, phi: rng(o.seed, 77, i).range(0, TAU) }));
+    const strikes = S2.map((st, i) => {
+      const z = rng(o.seed, 78, i).range(-30, 30);
+      return { ...st, sx: st.x, sz: z, phi: Math.atan2(z, st.x) };
+    });
+    const live = arcs.filter((a) => ageOf(f, a.f0) < a.len), ev = [];
+    for (const a of live) ev.push({ phi: a.phi, w: FL[ageOf(f, a.f0)] * 0.6 });
+    for (const st of strikes) if (ageOf(f, st.f0) < 6) ev.push({ phi: st.phi, w: 1 });
+    for (const e of ev) {
+      const [vx, vy, vz] = q.view(Math.cos(e.phi), 0, Math.sin(e.phi)), l = Math.hypot(vx, vz) || 1;
+      e.v = [vx / l, vy, vz / l];
+    }
+    const act = Math.min(1, ev.reduce((a, e) => a + e.w, 0) * 0.5);
+    const rootP = (phi, up = 0) => [Math.cos(phi) * (RR + TR * 0.6), TY - up, Math.sin(phi) * (RR + TR * 0.6)];
+
+    // the coil: plinth and winding (billboards), the primary turns round it (true circles), the torus on top
+    q.at(0, 0, 0, (pp) => coil3(pp, sp, Cu, C, ev));
+    for (const y of [-10.5, -13.5])
+      q.ring(0, y, 0, 10.5, 2, (v, g) => {
+        const [vx, , vz] = q.view(Math.cos(g), 0, Math.sin(g));
+        return Cu[clamp(Math.round((0.5 - 0.4 * vx + 0.22 * vz) * (Cu.length - 1)), 0, Cu.length - 1)];
+      });
+    const m = St.length, RT = 44;
+    for (let i = 0; i < RT; i++) {
+      const phi = (i / RT) * TAU;
+      q.ball(Math.cos(phi) * RR, TY, Math.sin(phi) * RR, TR, (nx, ny, nz) => {
+        const dif = Math.max(0, nx * KEY3[0] - ny * KEY3[1] + nz * KEY3[2]), spec = Math.pow(Math.max(0, nx * HALF3[0] - ny * HALF3[1] + nz * HALF3[2]), 28);
+        let c = spec > 0.55 ? St[m - 1] : St[clamp(Math.floor((0.12 + 0.8 * dif + spec) * (m - 1.01)), 0, m - 2)];
+        for (const e of ev) {
+          const r = Math.max(0, nx * e.v[0] + nz * e.v[2]) * 0.85 * Math.max(0, Math.cos(phi - e.phi)) * Math.min(1, e.w) + 0.15 * Math.max(0, -ny) * Math.min(1, e.w) * Math.max(0, Math.cos(phi - e.phi));
+          if (r > 0.6) c = C[6];
+          else if (r > 0.42) c = mix(c, C[5], 0.6);
+          else if (r > 0.25) c = mix(c, C[4], 0.3);
+        }
+        return c;
+      });
+    }
+    // corona: a faint violet fuzz crawling over the torus; brush discharge, short streamers hissing off the rim
+    const rc = rng(o.seed, 9, f);
+    for (let i = 0; i < 6; i++) {
+      const phi = rc.range(0, TAU), psi = rc.range(0, TAU), d = rc.range(1, 3), rr = RR + (TR + d) * Math.cos(psi);
+      const x = Math.cos(phi) * rr, y = TY - (TR + d) * Math.sin(psi), z = Math.sin(phi) * rr;
+      q.px(x, y, z, rc.chance(0.3) ? C[5] : C[3]);
+      q.glow(x, y, z, 4, C[3], 0.3);
+    }
+    for (let i = 0; i < 2; i++) {
+      const phi = rc.range(0, TAU), psi = rc.range(-1.2, 1.2), x0 = Math.cos(phi) * (RR + TR * 0.8), z0 = Math.sin(phi) * (RR + TR * 0.8), l = rc.range(4, 10), el = rc.range(-1.1, 0.2);
+      crackle3(q, zigzag3(rc, [x0, TY + psi, z0], [x0 + Math.cos(phi) * Math.cos(el) * l, TY + psi + Math.sin(el) * l, z0 + Math.sin(phi) * Math.cos(el) * l], 0.4, 0.4), rc.range(0.35, 0.65), C, 0.3);
+    }
+    // arcs: forking bolts re-struck every frame, lashing out of the torus in every direction
+    for (const a of live) {
+      const age = ageOf(f, a.f0), u = age / Math.max(1, a.len - 1), th = a.th0 + (a.th1 - a.th0) * ease.outQuad(u), L = a.L * (age === 0 ? 0.75 : 1), r = rng(o.seed, 21, a.f0, f), x0 = rootP(a.phi);
+      const dir = [Math.cos(a.phi) * Math.cos(th), Math.sin(th), Math.sin(a.phi) * Math.cos(th)];
+      stroke3(q, zigzag3(r, x0, [x0[0] + dir[0] * L, x0[1] + dir[1] * L, x0[2] + dir[2] * L], 0.32, 0.75), FL[age], C, 0.6, { light: 0.4 });
+      q.glow(...x0, 10, C[5], 0.5 * FL[age]);
+    }
+    // zaps to the floor: a full bolt, a flash where it lands, a scorch, smoke, sparks thrown and bouncing
+    for (const st of strikes) {
+      const age = ageOf(f, st.f0), time = (((t - st.f0 / FPS) % P) + P) % P;
+      if (age < 6) {
+        const k = [1, 0.75, 1, 0.6, 0.85, 0.4][age], x0 = rootP(st.phi, -2), r = rng(o.seed, 41, st.f0, f);
+        stroke3(q, zigzag3(r, x0, [st.sx, 0, st.sz], 0.22, 0.55), k, C, age === 0 ? 0.95 : 0.8, { hero: age === 0 });
+        q.plane(st.sx, -0.5, st.sz, null, 3 * k + 1.5, (u, v) => (Math.hypot(u, v) > 3 * k + 0.5 ? C[2] : Math.hypot(u, v) > 2 * k ? C[5] : WHITE));
+        q.glow(st.sx, -10, st.sz, 40, C[4], 0.55 * k);
+        q.glow(st.sx, -3, st.sz, 12, C[6], 0.5 * k);
+        if (age < 2) q.glow(0, -50, 0, 120, C[3], 0.25 * k);
+      }
+      const T0 = Math.pow(clamp(1 - time / 1.1), 1.3), fade = 1 - clamp((time - 1.4) / 0.6);
+      if (fade > 0 && T0 > 0.02) q.decal(st.sx, 0, st.sz, null, 10, (pp) => scorchDisc(pp, 8, T0, fade));
+      for (let j = 0; j < 18; j++) {
+        const r = rng(o.seed, 51, st.f0, j), life = r.range(0.3, 0.65);
+        if (time >= life) continue;
+        const a = -Math.PI / 2 + r.range(-1.3, 1.3), v = r.range(50, 190), phi = r.range(0, TAU), hz = Math.cos(a) * v;
+        const [x, y, z, vx, vy, vz] = flight3(st.sx, -1, st.sz, hz * Math.cos(phi), Math.sin(a) * v, hz * Math.sin(phi), time, { floor: 0 });
+        spark3(q, x, y, z, vx, vy, vz, 1 - time / life, S);
+      }
+    }
+    // sparks spat off the arc tips as they strike
+    for (const a of arcs) {
+      const age = (((t - a.f0 / FPS) % P) + P) % P, x0 = rootP(a.phi);
+      for (let j = 0; j < 3; j++) {
+        const r = rng(o.seed, 61, a.f0, j), life = r.range(0.15, 0.35);
+        if (age >= life) continue;
+        const tl = a.L * 0.75, c = Math.cos(a.th0), tip = [x0[0] + Math.cos(a.phi) * c * tl, x0[1] + Math.sin(a.th0) * tl, x0[2] + Math.sin(a.phi) * c * tl];
+        const el = a.th0 + r.range(-0.9, 0.9), az = a.phi + r.range(-0.9, 0.9), v = r.range(50, 150);
+        const [x, y, z, vx, vy, vz] = flight3(...tip, Math.cos(az) * Math.cos(el) * v, Math.sin(el) * v, Math.sin(az) * Math.cos(el) * v, age, { floor: 0 });
+        spark3(q, x, y, z, vx, vy, vz, 1 - age / life, S);
+      }
+    }
+    // light: a cold pool under the coil, the torus glowing with the volleys
+    pool(q, 0, 0, 58, C[3], (0.14 + 0.25 * act) * 1.5);
+    q.glow(0, -10, 0, 58, C[3], 0.14 + 0.25 * act);
+    q.glow(0, TY, 0, 34, C[3], 0.18 + 0.3 * act);
+    // ozone smoke where zaps landed, drifting up and out
+    const smoke = [];
+    for (const st of strikes) {
+      const age = (((t - st.f0 / FPS) % P) + P) % P;
+      for (let j = 0; j < 2; j++) {
+        const u = (age - 0.12 - j * 0.18) / 1.2;
+        if (u > 0 && u < 1) smoke.push([st.sx + (j ? 3 : -2) + u * 5 * st.side, -3 - u * 16 - j * 2, st.sz + (j ? 2 : -2) * u * 3, u, 2.6 + j]);
+      }
+    }
+    for (const [x, y, z, u, sz] of q.sort(smoke, (e) => e)) puff3(q, x, y, z, sz, u, mix(ASH, C[2], 0.3));
+  },
+};

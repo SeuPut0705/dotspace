@@ -372,12 +372,67 @@ export class Plume {
     }
     return list.sort((a, b) => a.z - b.z);
   }
+  /**
+   * Every lobe at time t in world space (x right, y down, z towards the viewer at yaw 0): the same vortex ring as
+   * lobesAt, standing in space (no tilt: the camera supplies the perspective). o.squash still flattens the tube.
+   */
+  lobes3(t = this.t) {
+    const o = this.o, S = this.shape(t), base = o.heat - o.cool * t, span = S.ring + S.tube || 1, list = [];
+    for (const q of this.lobes) {
+      const fade = 1 - smooth(o.fade[0] + q.f, o.fade[1] + q.f * 0.5, t), loose = Math.pow(smooth(o.fade[0] - 1.8 + q.f, o.fade[1], t), 1.5) * o.spread;
+      if (fade <= 0) continue;
+      const th = q.th - this.roll, rt = S.tube * (1 + q.j), rho = S.ring + rt * Math.cos(th), up = Math.sin(th);
+      const X = rho * Math.cos(q.ph), Z = rho * Math.sin(q.ph), dz = Math.sin(q.th * 3.1 + q.ph * 2.3);
+      const heat = base + q.h - 0.18 * Math.max(0, Math.cos(th)) * clamp(t * 2) + o.under * Math.max(0, -up) * clamp(base + 0.6);
+      const r = q.s * (0.5 + 0.5 * S.g) * (1 + o.swell * clamp(1 - heat)) * (1 + 0.35 * (1 - fade));
+      list.push({ x: S.x + X + q.dx * loose, y: S.y - rt * up * o.squash + q.dy * loose, z: Z + dz * loose, up, out: Math.cos(th), heat, q, fade, r, d: Math.hypot(X, Z) / span, c: 1 - Math.min(1, Math.abs(X) / span) });
+    }
+    return list;
+  }
+  /**
+   * draw() in space: every lobe is a shaded ball billboard at its own x, y, z, far to near from the camera, so it
+   * rolls round the axis from any side. sp is a Space; mid(), if given, is drawn once the far lobes are down.
+   */
+  draw3(sp, FR, SM, { mid } = {}) {
+    const o = this.o, t = this.t;
+    if (t >= o.fade[1] + 0.5) return;
+    const S = this.shape(t), base = o.heat - o.cool * t, span = S.ring + S.tube || 1, age = clamp(t / o.fade[1]);
+    const E = this.ember(t), reach = 0.3 + 1.15 * E, dc = sp.depth(S.x, S.y, 0);
+    const list = this.lobes3(t);
+    for (const e of list) e.dd = sp.depth(e.x, e.y, e.z);
+    list.sort((a, b) => b.dd - a.dd);
+    let drawn = false;
+    for (const e of list) {
+      const zn = clamp((dc - e.dd) / span, -1, 1);
+      if (!drawn && zn >= 0 && mid) (drawn = true), mid();
+      const h = e.heat, fade = e.fade, fire = clamp((h - 0.2) / 0.75);
+      const glow = o.inner
+        ? E * clamp((reach - e.d) / 0.45) * (0.45 + 0.55 * Math.max(0, -e.up)) * e.q.gv * o.glow
+        : clamp((base + 0.45) / 0.85) * o.glow * (0.4 + 0.35 * Math.max(0, -e.up) + 0.4 * e.c) * e.q.gv;
+      sp.at(e.x, e.y, e.z, (p, k) => {
+        p.z -= e.r * 0.5;
+        lobe(p, 0, 0, e.r * k, FR, SM, fire, glow, fade * (0.82 + 0.18 * fire), zn, (age > 0.72 ? 1 : 0) + (o.hollow && e.up < -0.35 ? 1 : 0), o.style);
+        if (fire > 0.25) p.glow(0, 0, (e.r * 1.25 + 2) * k, FR[2], 0.07 * fire);
+      });
+    }
+    if (!drawn && mid) mid();
+    const hot = this.hot(t);
+    if (hot > 0) sp.glow(S.x, S.y, 0, span * 1.8 + 14, FR[3], 0.32 * hot * o.glow);
+    if (o.inner && E > 0.05) sp.glow(S.x, S.y + S.tube * 0.3, 0, span * (0.5 + 0.7 * E) + 8, FR[4], 0.22 * E * E);
+  }
   update(dt) {
     const o = this.o;
     this.t += dt;
     this.roll += o.spin * (0.12 + 0.88 * Math.exp(-this.t / o.spinTau)) * dt;
     // late on, the rim frays: lobes on the outside shed small puffs that drift off and thin
-    if (o.fray && this.onFray && this.t > o.fray[0] && this.t < (o.fray[2] ?? Infinity)) {
+    if (o.fray && this.onFray3 && this.t > o.fray[0] && this.t < (o.fray[2] ?? Infinity)) {
+      const S = this.shape(), k = o.fray[1] * dt * smooth(o.fray[0], o.fray[0] + 1, this.t);
+      for (const e of this.lobes3(this.t)) {
+        if (e.out < 0.2 || !this.R.chance(k * e.fade)) continue;
+        const ux = e.x - S.x, uy = e.y - S.y, uz = e.z, l = Math.hypot(ux, uy, uz) || 1;
+        this.onFray3(e.x + (ux / l) * e.r * 0.6, e.y + (uy / l) * e.r * 0.6, e.z + (uz / l) * e.r * 0.6, e.r, ux / l, uy / l, uz / l);
+      }
+    } else if (o.fray && this.onFray && this.t > o.fray[0] && this.t < (o.fray[2] ?? Infinity)) {
       const S = this.shape(), k = o.fray[1] * dt * smooth(o.fray[0], o.fray[0] + 1, this.t);
       for (const e of this.lobesAt(this.t)) {
         if (e.out < 0.2 || !this.R.chance(k * e.fade)) continue;
@@ -451,4 +506,145 @@ export class Column {
       lobe(p, x, b.y - r * 0.3 * foot, r, FR, SM, clamp(fire * (1.1 - u * 0.9)), glow * smooth(0.55, 1, u), Math.min(1, b.a) * end * 0.9, 0, u > 0.5 ? 0 : 1, o.style);
     }
   }
+  /** draw() in space: the stem's lobes at real x, y, z (swaying every way, wide at the foot), far to near from the camera. */
+  draw3(sp, top, FR, SM, fire, glow) {
+    const o = this.o, L = Math.max(10, -top), items = [];
+    for (const b of this.lobes) {
+      const u = clamp(-b.y / L), foot = Math.pow(1 - u, 4), w = o.w + o.foot * foot;
+      const x = b.x * w * 0.45 + Math.sin(this.t * 1.7 + b.ph + u * 3) * o.sway * u;
+      const z = Math.cos(b.ph * 2.1) * w * 0.45 + Math.cos(this.t * 1.5 + b.ph + u * 3) * o.sway * u;
+      const r = b.s * (0.75 + 0.5 * foot + 0.35 * u) * Math.min(1, b.a * 1.5);
+      items.push({ b, u, x, z, r, y: b.y - r * 0.3 * foot, d: sp.depth(x, b.y - r * 0.3 * foot, z) });
+    }
+    items.sort((a, c) => c.d - a.d);
+    const dc = sp.depth(0, 0, 0);
+    for (const e of items) {
+      const { b, u } = e, end = 1 - smooth(0.85, 1, u), zn = clamp((dc - e.d) / (o.w + o.foot), -1, 1);
+      sp.at(e.x, e.y, e.z, (p, k) => {
+        p.z -= e.r * 0.5;
+        lobe(p, 0, 0, e.r * k, FR, SM, clamp(fire * (1.1 - u * 0.9)), glow * smooth(0.55, 1, u), Math.min(1, b.a) * end * 0.9, zn, u > 0.5 ? 0 : 1, o.style);
+      });
+    }
+  }
+}
+
+// ---- 3D (through a Space, see docs/3D.md). The 2D helpers above are untouched.
+
+/**
+ * drawPs in space: the FIRE puffs, in the fire ramp FR, as shaded balls nearest first (opaque), then everything else
+ * the particle system draws (sparks, grit, soft smoke far to near) through its own 3D path.
+ */
+export function drawPs3(sp, ps, FR) {
+  const all = ps.list, fires = [], rest = [];
+  for (const q of all) (q.k === P.FIRE ? fires : rest).push(q);
+  const items = [];
+  for (const q of fires) if (q.delay <= 0 && sp.project(q.x, q.y, q.z)) items.push({ q, d: sp.d });
+  items.sort((a, b) => a.d - b.d);
+  const tmp = { life: 0, max: 1, seed: 0, size: 0, x: 0, y: 0 };
+  for (const it of items) {
+    const q = it.q;
+    sp.at(q.x, q.y, q.z, (p, k) => {
+      tmp.life = q.life; tmp.max = q.max; tmp.seed = q.seed; tmp.size = q.size * k;
+      p.z -= Math.max(1.5, q.size * 0.8);
+      fireBall(p, tmp, FR);
+    });
+  }
+  ps.list = rest;
+  ps.draw(sp);
+  ps.list = all;
+}
+
+/** Rocks (Bits CHUNKs) in space, drawn with rock(): tumbling billboards nearest first, each as thick as it is big. */
+export function rocks3(sp, bits, st, FR) {
+  const items = [];
+  for (const b of bits.list) if (sp.project(b.x, b.y, b.z)) items.push({ b, d: sp.d });
+  items.sort((a, c) => a.d - c.d);
+  const tmp = { x: 0, y: 0, s: 0, life: 0, a: 0, heat: 0 };
+  for (const it of items) {
+    const b = it.b;
+    sp.at(b.x, b.y, b.z, (p, k) => {
+      tmp.s = b.s * k; tmp.life = b.life; tmp.a = b.a; tmp.heat = b.heat ?? 0;
+      p.z -= b.s;
+      rock(p, tmp, st, FR);
+    });
+  }
+}
+
+/** trail() in space: pts [{ x, y, z, t }] (oldest first). */
+export function trail3(sp, pts, t, FR, SM, life = 0.5, w = 1, heat = 1) {
+  let lx = NaN, ly = NaN, lz = NaN;
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const q = pts[i], age = (t - q.t) / life;
+    if (age >= 1) break;
+    if (Math.hypot(q.x - lx, q.y - ly, q.z - lz) < 1.6) continue;
+    lx = q.x; ly = q.y; lz = q.z;
+    const r = w * (0.7 + age * 2.6);
+    sp.at(q.x, q.y - age * 6, q.z, (p, k) => {
+      if (age < 0.12 * heat) p.circle(0, 0, r * 0.8 * k, FR[age < 0.05 ? 3 : 5]);
+      else p.disc(0, 0, r * k, SM[Math.min(SM.length - 1, 1 + Math.floor(age * 3))], 0.55 * (1 - age));
+    });
+  }
+}
+
+/** scorch() as a true disc on the floor: radius R, spreading in a blink, cooling through the heat ramp HR to soot over cool seconds. */
+export function scorch3(sp, HR, t, R, cool, fade) {
+  if (fade <= 0) return;
+  const rx = Math.max(1, R * Math.min(1, t / 0.08)), n = HR.length;
+  sp.plane(0, 0, 0, null, rx, (u, v, out) => {
+    const d = Math.hypot(u, v) / rx;
+    if (d > 1) return;
+    const iu = Math.floor(u), k = rand(iu * 31 + Math.floor(v) * 977, 3), T = Math.pow(clamp(1 - t / cool), 1.4) * (1.25 - d) - k * 0.35;
+    const crack = k > 0.88 && d < 0.85 ? Math.pow(clamp(1 - t / (cool * 2)), 1.2) * (1.15 - d) * 0.8 : 0, H = Math.max(T, crack);
+    if (H > 0.06) {
+      const c = HR[Math.min(n - 1, Math.floor((1 - Math.min(1, H)) * (n - 1)))];
+      out.c = c;
+      out.a = fade;
+      if ((iu & 3) === 0 || crack > T) (out.l = c), (out.k = 0.3 * H * fade);
+    } else {
+      out.c = d < 0.5 ? SOOT : SOOT2;
+      out.a = (d < 0.95 - k * 0.3 ? 1 : 1 - d) * fade;
+    }
+  });
+}
+
+/** pool() on the floor as a true disc of light, radius R, centred at (x, 0, z). */
+export function pool3(sp, R, c, k, x = 0, z = 0) {
+  if (k <= 0.004 || R < 1) return;
+  sp.plane(x, 0, z, null, R, (u, v, out) => {
+    const f = 1 - Math.hypot(u, v) / R;
+    if (f <= 0) return;
+    out.l = c;
+    out.k = f * f * k;
+  });
+}
+
+/**
+ * dome() in space: a hemisphere of white-hot air standing on the floor at (x, 0, z), radius r, an orange rim, a hot
+ * body and a white core; k 1 → 0 as it dies. A ball with its underground half cut away, seen from any side.
+ */
+export function dome3(sp, F, r, k, x = 0, z = 0) {
+  if (r < 1) return;
+  const cp = sp.cp, spn = sp.sp;
+  sp.ball(
+    x, 0, z, r,
+    (nx, ny) => {
+      const d = Math.hypot(nx, ny);
+      return d > 0.94 ? F[2] : d > 0.78 ? (k > 0.45 ? F[6] : F[5]) : d > 0.5 ? (k > 0.45 ? WHITE : F[6]) : k > 0.2 ? WHITE : F[6];
+    },
+    (nx, ny, nz) => (r * (ny * cp - nz * spn) > 0.5 ? 0 : 1),
+  );
+}
+
+/**
+ * The silhouette of a sphere of radius R at (x, y, z), seen from any side: a ring facing the camera, with the part
+ * below the floor cut away (floor = false keeps all of it). w px thick, c a color (or (v, angle) =>), a alpha.
+ */
+export function shell3(sp, x, y, z, R, w, c, a = 1, floor = true) {
+  sp.at(x, y, z, (p, k) => {
+    p.ring(0, 0, R * k, Math.max(1, w), c, (v, g) => {
+      // the silhouette point at screen angle g sits R sin(g) cos(pitch) below the centre
+      if (floor && y + R * Math.sin(g) * sp.cp > 0.5) return 0;
+      return typeof a === "function" ? a(v, g) : a;
+    });
+  });
 }

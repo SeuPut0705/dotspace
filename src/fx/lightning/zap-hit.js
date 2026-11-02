@@ -1,7 +1,7 @@
 // The arc's halo-body-core inking, its flicker and the light that strobes as it dies follow Sprite Fusion's
 // open-source lightning (https://www.spritefusion.com/pixel-art-vfx/lightning), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, clamp, smooth, rng, TAU, WHITE, hex, mix } from "../../core/index.js";
-import { VOLT, zigzag, stroke, crackle } from "./_lib.js";
+import { Particles, Lights, P, Rng, fit, clamp, smooth, rng, space, TAU, WHITE, hex, mix } from "../../core/index.js";
+import { VOLT, zigzag, stroke, crackle, zigzag3, stroke3, crackle3, across } from "./_lib.js";
 
 export const meta = {
   name: "Zap hit",
@@ -16,7 +16,7 @@ export const meta = {
   options: { palette: VOLT, seed: 3 },
 };
 
-const SNAP = 0.05, ASH = hex("#6a6680");
+const SNAP = 0.05, ASH = hex("#6a6680"), FERN = 1.45;
 
 // the burn the current leaves on what it hit: a Lichtenberg fern, main fronds radiating, side fronds alternating
 function fern(R) {
@@ -133,3 +133,106 @@ export function create(o) {
     },
   };
 }
+
+// The same zap on the floor: the arc comes in low from -x, the hit point overloads into a knot of crackles in the
+// air, the burn fern lies flat on the ground as a true circle, jinking sparks spray every way and bounce.
+export const three = {
+  meta: { size: [176, 112], origin: [88, 88], bg: "ground", camera: { pitch: 0.5 } },
+  create(o) {
+    const C = fit(o.palette, 8), R = new Rng(o.seed), ground = () => 0, ps = new Particles({ rng: R, ground }), lights = new Lights();
+    const tree = fern(R), HIT = [0, -3, 0], FROM = [-66, R.range(-20, -8), R.range(-12, 12)];
+    const kinked = Array.from({ length: 18 }, () => {
+      const a = R.range(-1.2, 1.2) + (R.chance(0.7) ? 0 : Math.PI), sp = R.range(130, 250), roll = -R.range(0.15, Math.PI - 0.15), side = Math.abs(Math.sin(a)) * sp;
+      return { x: 0, y: -3, z: 0, vx: Math.cos(a) * sp, vy: Math.sin(roll) * side - 40, vz: Math.cos(roll) * side, life: R.range(0.2, 0.36), age: -SNAP, next: R.range(0.02, 0.05), trail: [] };
+    });
+    let t = 0, hit = false;
+    return {
+      update(dt) {
+        t += dt;
+        if (!hit && t >= SNAP) {
+          hit = true;
+          lights.add(0, -3, 60, C[4], 0.7, 0.3);
+          lights.add(0, -3, 14, WHITE, 0.5, 0.07);
+          for (let i = 0; i < 3; i++) ps.spawn3(P.SMOKE, R.range(-3, 5), -R.range(5, 9), R.range(-4, 4), R.range(-5, 8), -R.range(8, 16), R.range(-6, 6), R.range(0.5, 0.62), mix(ASH, C[4], 0.3), R.range(2.5, 3.8), R.range(0.06, 0.12));
+        }
+        for (const s of kinked) {
+          if ((s.age += dt) < 0 || s.age >= s.life) continue;
+          if ((s.next -= dt) <= 0) {
+            s.next = R.range(0.025, 0.055);
+            const sp = Math.hypot(s.vx, s.vy, s.vz), [d, e1, e2] = across([s.vx, s.vy, s.vz]), a = R.range(0.6, 1.3), phi = R.range(0, TAU);
+            const m = [e1[0] * Math.cos(phi) + e2[0] * Math.sin(phi), e1[1] * Math.cos(phi) + e2[1] * Math.sin(phi), e1[2] * Math.cos(phi) + e2[2] * Math.sin(phi)];
+            s.vx = (d[0] * Math.cos(a) + m[0] * Math.sin(a)) * sp;
+            s.vy = (d[1] * Math.cos(a) + m[1] * Math.sin(a)) * sp;
+            s.vz = (d[2] * Math.cos(a) + m[2] * Math.sin(a)) * sp;
+            s.trail.push([s.x, s.y, s.z]);
+            if (s.trail.length > 4) s.trail.shift();
+          }
+          s.vx -= s.vx * 3 * dt;
+          s.vy -= s.vy * 3 * dt - 140 * dt;
+          s.vz -= s.vz * 3 * dt;
+          s.x += s.vx * dt;
+          s.y += s.vy * dt;
+          s.z += s.vz * dt;
+          if (s.y > -0.5) (s.y = -0.5), (s.vy = -Math.abs(s.vy) * 0.4);
+        }
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), f = Math.floor(t * 30 + 1e-4);
+        // the burn: the fern lies on the floor, glowing white and cooling, only the last embers dither away
+        if (t >= SNAP) {
+          const cool = smooth(0.45, 0.85, t), fade = 1 - smooth(0.78, 0.88, t);
+          q.decal(0, 0, 0, null, 50, (pp) => {
+            for (const br of tree)
+              for (let i = 1; i < br.pts.length; i++) {
+                const [x0, y0] = br.pts[i - 1], [x, y, d] = br.pts[i], age = t - SNAP - d / 260;
+                if (age < 0) break;
+                const k = Math.exp(-age / 0.22) - cool * 0.3, c = k > 0.75 ? WHITE : k > 0.45 ? C[6] : k > 0.25 ? C[5] : k > 0.1 ? C[4] : k > -0.05 ? C[2] : C[1];
+                pp.line(x0 * FERN, y0 * FERN, x * FERN, y * FERN, c, fade);
+                if (br.w >= 1 && d < 9) pp.line(x0 * FERN + 1, y0 * FERN, x * FERN + 1, y * FERN, k > 0.45 ? C[5] : C[2], fade);
+                if ((i & 3) === 0 && k > 0) pp.glow(x * FERN, y * FERN, 5, C[5], 0.35 * k * fade);
+              }
+          });
+        }
+        // the arc snaps in from the left in two frames, holds and flickers, then lets go
+        if (t < 0.32) {
+          const r = rng(o.seed, 2, f), b = zigzag3(r, FROM, HIT, 0.22, 0.35), u = clamp(t / SNAP);
+          const k = t < SNAP ? 1 : t < 0.2 ? (f % 2 ? 0.7 : 1) : 0.55 * (1 - (t - 0.2) / 0.12);
+          stroke3(q, u < 1 ? { paths: [b.paths[0]] } : b, k, C, t < SNAP + 0.034 ? 0.95 : 0.7, { upTo: u, hero: t >= SNAP && t < SNAP + 0.034 });
+          if (u < 1) {
+            const tp = b.paths[0].pts, [hx, hy, hz] = tp[Math.floor(u * (tp.length - 1))];
+            q.ball(hx, hy, hz, 2, WHITE);
+            q.glow(hx, hy, hz, 14, C[5], 0.6);
+          }
+        }
+        // the hit point overloads: a tight knot of tiny zigzags re-struck every frame round a white heart
+        if (t >= SNAP && t < 0.45) {
+          const a = (t - SNAP) / 0.4, r = rng(o.seed, 5, f), R0 = 8 * (1 - a * 0.6), m = Math.round(11 * (1 - a * 0.5));
+          for (let i = 0; i < m; i++) {
+            const ang = r.range(0, TAU), el = r.range(-0.3, 1.4), d0 = r.range(0.5, R0 * 0.5), ang2 = ang + r.range(-1.2, 1.2), el2 = el + r.range(-0.6, 0.6), d1 = r.range(R0 * 0.55, R0);
+            const at = (g, e, d) => [Math.cos(g) * Math.cos(e) * d, HIT[1] - Math.sin(e) * d, Math.sin(g) * Math.cos(e) * d];
+            crackle3(q, zigzag3(r, at(ang, el, d0), at(ang2, el2, d1), 0.5, 0), 0.75 * (1 - a) + 0.25, C, 0.25);
+          }
+          q.ball(0, HIT[1], 0, 2.4 * (1 - a) + 0.8, WHITE);
+          q.glow(0, HIT[1], 0, 20, C[4], 0.55 * (1 - a));
+          if (t < SNAP + 0.07) q.glow(0, HIT[1], 0, 9, WHITE, 0.4);
+        }
+        // the sparks: a bright head, the zigzag behind it cooling
+        for (const s of kinked) {
+          if (s.age < 0 || s.age >= s.life) continue;
+          const k = 1 - s.age / s.life, path = [...s.trail, [s.x, s.y, s.z]];
+          for (let i = 0; i < path.length - 1; i++) q.line(...path[i], ...path[i + 1], i === path.length - 2 ? (k > 0.5 ? WHITE : C[6]) : k > 0.5 ? C[5] : C[4], 0.6 + 0.4 * (i / path.length));
+          q.px(s.x, s.y, s.z, k > 0.4 ? WHITE : C[5]);
+          q.glow(s.x, s.y, s.z, 4, C[5], 0.4 * k);
+        }
+        // the light strobes as it dies
+        if (t >= SNAP) {
+          q.glow(0, -6, 0, 40 * Math.max(0, 1 - t / 0.85), C[3], 0.45 * Math.exp(-(t - SNAP) * 5) * (f % 2 ? 0.7 : 1));
+        }
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

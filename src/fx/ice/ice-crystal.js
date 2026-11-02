@@ -1,7 +1,8 @@
 // A floating pickup that bobs, glints, glows and has motes circling in front and behind follows the recipe
 // in Sprite Fusion's open-source pickup gem (https://www.spritefusion.com/pixel-art-vfx/pickup),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { fit, cycle, sparkle, clamp, TAU, WHITE } from "../../core/index.js";
+import { fit, cycle, sparkle, clamp, space, TAU, WHITE } from "../../core/index.js";
+import { cone3 } from "./_lib.js";
 
 export const meta = {
   name: "Ice crystal",
@@ -122,3 +123,75 @@ export function draw(p, t, o) {
   if (g < 0.12) sparkle(p, 0, Y - R * 2.2 * Math.cos(TIP), Math.round(5 * Math.sin((g / 0.12) * Math.PI)), C[6], C[4], 0.6);
   motes(p, C, t, o, Y, true);
 }
+
+// 3D: the gem as real solid ice: a hexagonal prism with a tall pyramid above and a short one below (three faceted
+// cones sharing six sides, turning a sixth of a turn a loop), tipped a little in the world. Its facets light up as
+// they come round to the camera, glints flash on them, frost motes circle it in true horizontal orbits, and its
+// shadow on the floor is a true circle.
+export const three = {
+  meta: { size: [88, 104], origin: [44, 90], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const q = space(p, o), C = fit(o.palette, 8), D = meta.duration, ph = t / D, bob = Math.sin(TAU * ph) * 2.5, Y = -o.height + bob, R = 8;
+    const lean = 0.2, u = [0, -Math.cos(lean), Math.sin(lean)]; // the gem's axis, up, tipped toward +z
+    const at = (s) => [0, Y + u[1] * s * R, u[2] * s * R]; // a point on the axis, s radii up from its centre
+    // its shadow on the floor: a true circle, smaller as it dips; a cold pool of light
+    const sh = 1 - bob / 12, rx = 11 * sh;
+    q.plane(0, 0, 0, null, rx + 1, (uu, vv, out) => {
+      const d = Math.hypot(uu, vv) / rx;
+      if (d > 1) return;
+      out.c = C[0];
+      out.a = 0.65 * (1 - d * d);
+      out.blend = true;
+    });
+    // the solid: three cones, six facets, one phase; all axes run bottom to top so the facets line up
+    const th = (TAU / 6) * ph + 0.3, six = { sides: 6, phase: th, cap: false };
+    cone3(q, at(-1.7), at(-0.45), 0, R, C, six);
+    cone3(q, at(-0.45), at(0.45), R, R, C, six);
+    cone3(q, at(0.45), at(2.2), R, 0, C, six);
+    // facets that mirror the light to the eye flash: where each facet sits and how it faces the light
+    const ref = [1, 0, 0], d0 = ref[0] * u[0] + ref[1] * u[1] + ref[2] * u[2], e0 = [ref[0] - u[0] * d0, ref[1] - u[1] * d0, ref[2] - u[2] * d0];
+    const l0 = Math.hypot(...e0);
+    e0[0] /= l0; e0[1] /= l0; e0[2] /= l0;
+    const e1 = [u[1] * e0[2] - u[2] * e0[1], u[2] * e0[0] - u[0] * e0[2], u[0] * e0[1] - u[1] * e0[0]];
+    const LV = [-0.45, -0.6, 0.66], ll = Math.hypot(...LV), H = [LV[0] / ll, LV[1] / ll, LV[2] / ll + 1], hl = Math.hypot(...H);
+    for (let k = 0; k < 6; k++) {
+      const a = th + (k * TAU) / 6, rd = [Math.cos(a) * e0[0] + Math.sin(a) * e1[0], Math.cos(a) * e0[1] + Math.sin(a) * e1[1], Math.cos(a) * e0[2] + Math.sin(a) * e1[2]];
+      for (const [s, rr, cs] of [[0, 0.87, 0], [1.25, 0.5, 0.57], [-0.95, 0.5, -0.8]]) {
+        const n = [rd[0] + u[0] * cs, rd[1] + u[1] * cs, rd[2] + u[2] * cs], nl = Math.hypot(...n), V = q.view(n[0] / nl, n[1] / nl, n[2] / nl);
+        const spec = (V[0] * H[0] + V[1] * H[1] + V[2] * H[2]) / hl;
+        if (V[2] < 0.1 || spec < 0.955) continue;
+        const c = at(s);
+        q.at(c[0] + rd[0] * R * rr, c[1] + rd[1] * R * rr, c[2] + rd[2] * R * rr, (pp) => {
+          pp.z -= 4;
+          sparkle(pp, 0, 0, Math.round(2 + (spec - 0.955) * 120), C[6], C[4], 0.5);
+        });
+      }
+    }
+    // a glint at the tip now and then
+    const g = (ph * 2) % 1;
+    if (g < 0.12) {
+      const tip = at(2.2);
+      q.at(tip[0], tip[1], tip[2], (pp) => {
+        pp.z -= 3;
+        sparkle(pp, 0, 0, Math.round(5 * Math.sin((g / 0.12) * Math.PI)), C[6], C[4], 0.6);
+      });
+    }
+    // motes in true orbits round it: bright coming round the front, dim going behind
+    cycle(t, D, 16, o.seed, (gg) => gg.range(1.6, 2.6), (age, life, r, i) => {
+      const an = r.range(0, TAU) + age * r.range(1.6, 2.6), rad = r.range(14, 22), k = age / life, tilt = r.range(-0.25, 0.25);
+      const y = Y + r.range(-14, 12) - age * r.range(3, 7), x = Math.cos(an) * rad, z = Math.sin(an) * rad, yy = y + Math.sin(an) * rad * tilt;
+      const a = Math.min(1, age / 0.2) * (k > 0.75 ? (1 - k) / 0.25 : 1), front = q.view(x, yy, z)[2] > 0;
+      if (!front) return void q.dot(x, yy, z, C[4], a * 0.9);
+      q.dot(x, yy, z, i % 4 === 0 ? WHITE : C[6], a);
+      if (i % 4 === 0)
+        q.at(x, yy, z, (pp) => {
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) pp.dot(dx, dy, C[5], a);
+        });
+      q.glow(x, yy, z, 4, C[5], 0.3 * a);
+    });
+    // light
+    q.glow(0, -1, 0, 24, C[4], 0.2 + 0.05 * Math.sin(TAU * ph * 2));
+    q.glow(0, Y, 0, 34, C[3], 0.2);
+    q.glow(0, Y, 0, 14, C[5], 0.1 + 0.06 * Math.sin(TAU * ph * 3));
+  },
+};

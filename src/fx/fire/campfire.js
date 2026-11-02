@@ -1,7 +1,7 @@
 // The tongue, lick, flame-puff, smoke and ember recipe is adapted from Sprite Fusion's open-source fire
 // (https://www.spritefusion.com/pixel-art-vfx/fire), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Rng, fit, mix, hex, rand, clamp, WHITE } from "../../core/index.js";
-import { noiseFor, hotFirst, flameTongue, firePuff, lick, smokePuff, ember, spark, drift, sparkAt, floorLight, looped, LAYERS, BACK_LAYERS } from "./_lib.js";
+import { Rng, fit, mix, hex, rand, clamp, space, lit, TAU, WHITE } from "../../core/index.js";
+import { noiseFor, hotFirst, flameTongue, firePuff, lick, smokePuff, ember, spark, spark3, drift, sparkAt, floorLight, floorGlow, burn3, looped, LAYERS, BACK_LAYERS } from "./_lib.js";
 
 export const meta = {
   name: "Campfire",
@@ -185,3 +185,95 @@ export function draw(p, t, o) {
   p.glow(0, -3, 9, H[0], 0.16 * fl);
   floorLight(p, 0, 0.5, 48, 8, GLOW, 0.3 * fl);
 }
+
+// 3D: four logs laid like a star over a round bed of coals, their near ends showing the cut grain and their far ends raised in
+// the fire, a ring of stones round it; the fire stands round the axis, pops throw sparks every way.
+const STAR = [0, 1, 2, 3].map((j) => {
+  const a = (j * TAU) / 4 + 0.55, c = Math.cos(a), s = Math.sin(a), RO = 22, RI = 5, YO = -3.4, YI = -11 - 2.2 * (j % 2);
+  return { c, s, out: [c * RO, YO, s * RO], inn: [c * RI, YI, s * RI] };
+});
+
+export const three = {
+  meta: { size: [136, 132], origin: [68, 112], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const F = fit(o.palette, 9), H = hotFirst(F), W = fit(o.wood, 6), S = o.seed, HC = o.height, q = space(p, o);
+    const N = (rate, seed = 0, off = 0) => NL(t, rate, seed, off);
+    const fl = 0.74 + 0.16 * NL(t, 7.3, S + 1) + 0.1 * NL(t, 19, S + 2), GLOW = mix(mix(H[3], H[4], 0.5), WHITE, 0.25);
+    const SPARKS = [H[1], H[2], H[4], H[5]];
+    // the bed of coals: coals that breathe in the heat, grey ash round the rim, a true disc
+    q.plane(0, 0.2, 0, null, 15, (u, v, out) => {
+      const dx = u / 14, dy = v / 14, d = dx * dx + dy * dy;
+      if (d > 1) return;
+      const h = rand(Math.floor(u / 2), Math.floor(v / 2), S + 20);
+      if (d > 0.55 && h < 0.55) return ASH[h < 0.15 ? 2 : h < 0.32 ? 1 : 0];
+      if (h > 0.5) {
+        const g = (0.5 + 0.5 * Math.sin((t / D) * Math.PI * 4 + h * 40)) * (1.1 - d);
+        out.k = 0.35 * g;
+        return g > 0.7 ? H[2] : g > 0.5 ? H[3] : g > 0.3 ? H[4] : H[5];
+      }
+      return h > 0.3 ? W[1] : W[0];
+    });
+    // the stones: a ring of rounded grey stones, lit by the fire on their inner faces
+    const stone = lit([ASH[0], ASH[0], ASH[1], ASH[1], ASH[2]]);
+    for (let i = 0; i < 11; i++) {
+      const a = (i / 11) * TAU + 0.3 * rand(i, S + 40), r = 30 + 3 * rand(i, S + 41), sz = 3 + 2.2 * rand(i, S + 42);
+      q.ball(Math.cos(a) * r, -sz * 0.6, Math.sin(a) * r, sz, stone);
+    }
+    // the logs: a round trunk, a lit top, grooves along the grain, charred with glowing cracks where the fire is
+    STAR.forEach(({ c, s, out, inn }, j) => {
+      const len = Math.hypot(out[0] - inn[0], out[1] - inn[1], out[2] - inn[2]), r = 3.4;
+      const ux = (out[0] - inn[0]) / len, uy = (out[1] - inn[1]) / len, uz = (out[2] - inn[2]) / len;
+      q.beam(out[0] - ux * r * 0.9, out[1] - uy * r * 0.9, out[2] - uz * r * 0.9, inn[0], inn[1], inn[2], r * 2, (u, v) => {
+        const rad = 22 + (5 - 22) * u, burn = clamp(1.2 - rad / 11), run = rand(Math.floor((u * len) / 3), Math.floor(v * 5) + j * 7, S + 11), hot = rand(Math.floor((u * len) / 2), Math.floor(v * 6) + j, S + 12);
+        if (v > 0.9) return burn > 0.4 ? mix(W[0], H[4], 0.3 * burn) : W[0];
+        if (burn > 0.35 && v < 0.78) {
+          if (run < 0.55) {
+            const g = 0.5 + 0.5 * Math.sin((t / D) * Math.PI * 6 + hot * 6.3);
+            return g > 0.72 ? H[3] : g > 0.4 ? H[4] : H[5];
+          }
+          return v > 0.5 ? W[1] : W[0];
+        }
+        if (v < 0.3) return run < 0.25 ? W[2] : mix(W[3], H[4], 0.45 * burn);
+        if (v < 0.55) return run < 0.45 ? W[1] : W[2];
+        return run < 0.4 ? W[0] : W[1];
+      });
+      // the cut face at the near end: a dark rim, pale sapwood, growth rings round a dark heart
+      q.plane(out[0], out[1], out[2], [ux, uy, uz], r + 0.2, (u, v) => {
+        const d = Math.hypot(u, v) / (r + 0.2);
+        return d > 0.78 ? W[0] : d > 0.56 ? W[5] : d > 0.32 ? W[4] : W[3];
+      });
+    });
+    // the fire, round the axis
+    burn3(q, t, TONGUES, { H, D, NL, S, x: 0, y: 0, z: 0, height: HC, lean: 0.12, spread: 7, puffs: 8, licks: 4, smoke: 24, smokeSize: 3.3, smokeLife: [2, 2.9], embers: 12, glowR: 50, glow: 0.8, wind: 3.5, floor: 56 });
+    // flames licking up off the burning wood
+    looped(t, D, 90, S + 210, (r) => {
+      const a = r.range(0, TAU), d = Math.sqrt(r.next()) * 10;
+      return { x: Math.cos(a) * d, z: Math.sin(a) * d, y: -r.range(3, 8), vx: r.range(-5, 5), vz: r.range(-5, 5), vy: -r.range(20, 40), life: r.range(0.16, 0.3), s: r.range(1, 1.8), f: r.next() };
+    }, (b, age) => {
+      const [x, y] = drift(b.x, b.y, b.vx, b.vy, age, 0, -95, 5, 3.2), [z] = drift(b.z, 0, b.vz, 0, age, 0, 0, 5, 3.2);
+      q.at(x, y, z, (pp) => firePuff(pp, 0, 0, 1 - age / b.life, b.s, b.f, H));
+    });
+    // pops: a crack, a flash, and a fistful of sparks thrown up out of the wood that bounce on the floor
+    looped(t, D, 4, S + 400, (r) => {
+      const a = r.range(0, TAU), d = Math.sqrt(r.next()) * 9;
+      return { x: Math.cos(a) * d, z: Math.sin(a) * d, y: -r.range(4, 9), n: r.int(3, 5), seed: r.int(0, 1e6), life: 0.7 };
+    }, (b, age) => {
+      if (age < 0.08) {
+        q.px(b.x, b.y, b.z, WHITE);
+        q.glow(b.x, b.y, b.z, 12, H[1], 0.7 * (1 - age / 0.08));
+      }
+      const r = new Rng(b.seed);
+      for (let j = 0; j < b.n; j++) {
+        const phi = r.range(0, TAU), dev = r.range(-0.8, 0.8), sp = r.range(110, 220), life = r.range(0.25, 0.6), side = Math.abs(dev);
+        if (age >= life) continue;
+        const [h, y, vh, vy] = sparkAt(0, b.y, Math.sin(side) * sp, -Math.cos(side) * sp, age, 0), cp = Math.cos(phi), sp2 = Math.sin(phi);
+        spark3(q, b.x + cp * h, y, b.z + sp2 * h, cp * vh, vy, sp2 * vh, 1 - age / life, SPARKS);
+      }
+    });
+    // light: lights on the burning wood and a hot heart, all breathing with the flames
+    const br = 0.92 + 0.08 * N(0.67, S + 3);
+    for (const [x, z, y, k] of [[-6, 0, -17, 0.85], [0, 0, -21, 1], [6, 0, -17, 0.85], [0, 6, -17, 0.85], [0, -6, -17, 0.85]]) q.glow(x, y, z, 40 * br, GLOW, 0.1 * k * fl);
+    q.glow(0, -3, 0, 9, H[0], 0.16 * fl);
+    for (const { inn } of STAR) q.glow(inn[0], inn[1], inn[2], 10, H[3], 0.2 * fl);
+  },
+};

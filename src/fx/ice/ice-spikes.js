@@ -1,8 +1,8 @@
 // The eruption recipe (a frost line racing ahead, each spike punching up white with a spray of shards, a puff
 // and a glint, the floor frosting behind) is adapted from Sprite Fusion's open-source ice
 // (https://www.spritefusion.com/pixel-art-vfx/ice), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Bits, Lights, P, B, Rng, fit, sparkle, clamp, smooth, seg, ease, rand, TAU, WHITE } from "../../core/index.js";
-import { Panes, endBy, blade, splitPoly } from "./_lib.js";
+import { Particles, Bits, Lights, P, B, Rng, fit, space, sparkle, clamp, smooth, seg, ease, rand, TAU, WHITE } from "../../core/index.js";
+import { Panes, Panes3, endBy, blade, cone3, centroid, splitPoly } from "./_lib.js";
 
 export const meta = {
   name: "Ice spikes",
@@ -217,3 +217,195 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the frost line runs along the floor and clusters of ice spikes burst up round it, a band of them, leaning
+// into the wave; each spike is a faceted cone that turns its lit facets to the light as the camera goes round. They
+// flash, shatter into tumbling panes and shards that fly out in every direction.
+export const three = {
+  meta: { size: [272, 156], origin: [136, 118], bg: "ground", camera: { pitch: 0.3 }, options: { reach: 150 } },
+  create(o) {
+    const C = fit(o.palette, 8), R = new Rng(o.seed), REACH = o.reach, X0 = -REACH / 2, WD = 24, floor = () => 0;
+    const ps = new Particles({ rng: R, ground: floor, sparks: [C[7], C[6], C[5], C[4]], haze: C[5] });
+    const bits = new Bits({ ground: floor }), lights = new Lights();
+    const splinter = (x, y, z, vx, vz, n) => {
+      for (let i = 0; i < n; i++) bits.add({ kind: B.SHARD, x: x + R.range(-2, 2), y: y - 1, z: z + R.range(-2, 2), vx: vx * 0.5 + R.range(-45, 45), vy: -R.range(30, 100), vz: vz * 0.5 + R.range(-45, 45), g: 0.8, drag: 0.6, bounce: 0.35, life: R.range(0.4, 0.75), a: R.range(0, TAU), va: R.range(-18, 18), s: R.range(1.2, 2.4), c: C[R.int(4, 7)] });
+    };
+    const panes = new Panes3({
+      ground: floor,
+      onCrumble: (q) => {
+        splinter(q.x, 0, q.z, 0, 0, 3);
+        ps.spawn3(P.VAPOUR, q.x, -1, q.z, R.range(-12, 12), -R.range(2, 8), R.range(-12, 12), R.range(0.4, 0.7), C[6], R.range(1.4, 2.2));
+      },
+      onLand: (q, x, y, z, v) => {
+        if (v < 110) return;
+        ps.spawn3(P.VAPOUR, x, y - 1, z, R.range(-20, 20), -R.range(2, 8), R.range(-20, 20), R.range(0.4, 0.7), C[6], R.range(1.4, 2.4));
+        splinter(x, y, z, q.vx, q.vz, 3);
+        if (R.chance(0.3)) ps.spawn3(P.STAR, x, y - 2, z, 0, -5, 0, R.range(0.2, 0.4), WHITE, R.range(0.8, 1.6));
+      },
+    });
+    const front = (t) => REACH * (1 - Math.pow(1 - seg(t, START, START + RUN), 1.7));
+    const reachedAt = (x) => START + RUN * (1 - Math.pow(1 - clamp(x / REACH), 1 / 1.7));
+    const env = (q) => 0.28 + 0.72 * Math.exp(-(((q - 0.64) / 0.3) ** 2));
+    // clusters scattered across the band: a main spike leaning into the wave, a few smaller ones splayed round its foot
+    const clusters = [];
+    const addCluster = (x, z, kind) => {
+      const q = x / REACH, fall = 1 - 0.3 * Math.abs(z) / WD, H = o.height * env(q) * R.range(0.88, 1.06) * fall, W = clamp(H * 0.36, 5, 14), lean = H * R.range(0.18, 0.32);
+      const blades = [{ dx: 0, dz: 0, h: H, w: W, lx: lean, lz: R.range(-0.14, 0.14) * H, delay: 0, main: true, jag: R.chance(0.7) ? R.range(0.32, 0.58) : -1, ph: R.range(0, TAU) }];
+      const m = H > 14 ? R.int(2, 4) : 1, a0 = R.range(0, TAU);
+      for (let i = 0; i < m; i++) {
+        const a = a0 + (i / m) * TAU + R.range(-0.3, 0.3), h = H * R.range(0.24, 0.62);
+        blades.push({ dx: Math.cos(a) * W * 0.62, dz: Math.sin(a) * W * 0.62, h, w: W * R.range(0.5, 0.7), lx: Math.cos(a) * h * R.range(0.2, 0.5) + lean * 0.4, lz: Math.sin(a) * h * R.range(0.2, 0.5), delay: R.range(0.02, 0.07), jag: R.chance(0.4) ? R.range(0.35, 0.6) : -1, ph: R.range(0, TAU) });
+      }
+      clusters.push({ x, z, q, H, W, blades, main: blades[0], t0: reachedAt(x) + 0.012 + kind * 0.008, up: false });
+    };
+    for (let x = 8; x < REACH - 2; x += R.range(15, 21)) {
+      addCluster(x, R.range(-0.45, 0.45) * WD, 0);
+      if (x > REACH * 0.18) addCluster(x + R.range(-4, 6), (R.chance(0.5) ? 1 : -1) * R.range(0.45, 1) * WD, 1);
+    }
+    const crest = clusters.reduce((a, c) => (c.H > a.H && Math.abs(c.z) < 14 ? c : a), clusters[0]);
+    let t = 0, broke = false, trembled = false;
+
+    // a spike's base and tip right now (x shifted by the cluster's world position and the line's start)
+    const pose = (c, b) => {
+      const g = ease.outBack(clamp((t - c.t0 - b.delay) / 0.09), 2.2), jx = t >= TREMBLE && t < FLASH ? ((Math.floor(t * 40) + Math.round(c.x)) % 2 ? 1 : 0) : 0;
+      const x = X0 + c.x + b.dx + jx, z = c.z + b.dz;
+      return { g, base: [x, 0, z], tip: [x + b.lx * g, -b.h * g, z + b.lz * g], white: t - c.t0 - b.delay < 0.03 || (t >= FLASH && t < SHATTER) };
+    };
+    const drawClusters = (q) => {
+      if (t >= SHATTER) return;
+      for (const c of clusters) {
+        if (t < c.t0) continue;
+        for (const b of c.blades) {
+          const s = pose(c, b);
+          if (s.g <= 0.02) continue;
+          const gl = (t - SHIMMER - c.q * 0.34) / 0.2;
+          cone3(q, s.base, s.tip, (b.w / 2) * Math.min(1, s.g * 1.2), 0, C, { sides: 5, phase: b.ph, white: s.white, glint: gl >= 0 && gl <= 1 ? gl : -1, dim: b.main ? 0 : 1 });
+          // the notch: a small spur growing from the side, so it reads as a shard
+          if (b.jag >= 0 && s.g > 0.6) {
+            const u = b.jag, bx = s.base[0] + (s.tip[0] - s.base[0]) * u, by = s.base[1] + (s.tip[1] - s.base[1]) * u, bz = s.base[2] + (s.tip[2] - s.base[2]) * u, sd = Math.cos(b.ph) > 0 ? 1 : -1;
+            cone3(q, [bx, by, bz], [bx + sd * b.w * 0.55, by - b.h * 0.16, bz + Math.sin(b.ph) * b.w * 0.5], b.w * (1 - u) * 0.22, 0, C, { sides: 4, phase: b.ph, white: s.white, dim: 1 });
+          }
+        }
+      }
+      for (const c of clusters) {
+        if (t < c.t0) continue;
+        const pop = clamp(1 - (t - c.t0) / 0.15), wh = t >= FLASH, x = X0 + c.x;
+        q.glow(x + c.main.lx * 0.4, -c.H * 0.45, c.z, c.H * 0.9 + 10, C[4], (0.16 + 0.42 * pop + (wh ? 0.4 : 0)) * (0.85 + 0.15 * Math.sin(t * 3 + c.x)));
+        if (pop > 0) q.glow(x, -2, c.z, 14, WHITE, 0.55 * pop);
+      }
+    };
+    // the frosted floor: a crust over a band that swells with the crest, a white head while it runs
+    const drawFrost = (q) => {
+      const fr = front(t), len = Math.min(fr, REACH) + 8, cx = X0 + len / 2 - 4;
+      if (t <= START) return;
+      q.plane(cx, 0, 0, null, Math.hypot(len / 2 + 4, WD + 8), (u, v, out) => {
+        const x = u + cx - X0, z = v;
+        if (x < -4 || x > fr + 2) return;
+        const e = env(clamp(x / REACH)), hw = (WD + 3) * (0.5 + 0.5 * e) * (1 - clamp((x - REACH * 0.8) / (REACH * 0.3)) * 0.3), age = t - reachedAt(Math.max(0, x)), q2 = clamp(x / REACH);
+        const rg = (rand(Math.floor(x / 2), Math.floor(z / 2), 3) - 0.5) * 6, d = (Math.abs(z) + rg) / hw, a = 1 - smooth(MELT + q2 * 0.35, MELT + q2 * 0.35 + 0.6, t), head = fr - x < 5 && fr < REACH;
+        if (d > 1 || a <= 0 || age < 0) return;
+        const h = rand(Math.floor(x / 1.5), Math.floor(z / 1.5), 17), k = clamp((1.05 - d) / 0.6) * a;
+        out.l = C[4];
+        out.k = 0.1 * k;
+        if (h > 0.3 + 0.75 * k && !head) return;
+        out.c = head || age < 0.06 || h < 0.18 ? WHITE : h < 0.5 ? C[6] : C[5];
+        out.a = h < 0.5 ? 0.95 : 0.7;
+      });
+    };
+
+    const breakBlade = (c, b) => {
+      const s = pose(c, b), ax = [s.tip[0] - s.base[0], s.tip[1] - s.base[1], s.tip[2] - s.base[2]], L = Math.hypot(...ax) || 1, hw = (b.w / 2) * 0.9;
+      const hz = Math.hypot(ax[0], ax[2]) || 1, across = [-ax[2] / hz, ax[0] / hz], az = Math.atan2(-across[1], across[0]), tri = [[-hw, 0], [hw, 0], [0, -L]];
+      let parts = [tri];
+      if (L > 14) parts = parts.flatMap((poly) => splitPoly(poly, 0, -L * 0.4, 0));
+      if (L > 30) parts = parts.flatMap((poly) => (poly.some(([, y]) => y < -L * 0.5) ? splitPoly(poly, 0, -L * 0.72, 0) : [poly]));
+      for (const part of parts) {
+        const m = centroid(part), u = clamp(-m.y / L), up = clamp(L / 40);
+        panes.add({
+          pts: part.map(([x, y]) => [x - m.x, y - m.y]), x: s.base[0] + ax[0] * u + across[0] * m.x, y: s.base[1] + ax[1] * u, z: s.base[2] + ax[2] * u + across[1] * m.x,
+          vx: R.range(-25, 60) + across[0] * m.x * 3, vy: -R.range(40, 130) * (0.5 + up), vz: R.range(-40, 40) + across[1] * m.x * 3, az, a: 0, va: R.range(-8, 8), f: R.range(-0.7, 0.7), vf: R.range(-6, 6),
+          lit: b.main ? 0.75 : 0.5, g: 0.9, drag: 0.6, bounce: 0.3, solid: true, brittle: b.h > 30 ? 2 : 1, crumble: R.range(0.12, 0.4), life: R.range(1, 1.4),
+        });
+      }
+      for (let i = 0; i < 2 + b.h / 7; i++) {
+        const u = R.next();
+        bits.add({ kind: R.chance(0.15) ? B.CHUNK : B.SHARD, x: s.base[0] + ax[0] * u + R.range(-1.5, 1.5), y: ax[1] * u, z: s.base[2] + ax[2] * u + R.range(-1.5, 1.5), vx: R.range(-70, 90), vy: -R.range(60, 230), vz: R.range(-80, 80), g: 0.9, drag: 0.6, bounce: 0.3, life: R.range(0.7, 1.3), a: R.range(0, TAU), va: R.range(-20, 20), s: R.range(1.2, 3.2), c: C[R.int(4, 7)], ramp: [C[1], C[3], C[4], C[6], C[7]] });
+      }
+    };
+
+    return {
+      update(dt) {
+        t += dt;
+        if (t - dt <= START && t > START) {
+          for (let i = 0; i < 5; i++) ps.spawn3(P.VAPOUR, X0 + R.range(0, 6), -R.range(0, 3), R.range(-8, 8), R.range(10, 60), -R.range(2, 12), R.range(-20, 20), R.range(0.4, 0.7), C[6], R.range(2, 3.2));
+          lights.add(X0 + 4, -4, 0, 26, C[5], 0.6, 0.25);
+        }
+        const fr = front(t);
+        if (t > START && fr < REACH - 1) {
+          if (R.chance(0.6)) ps.spawn3(P.STREAK, X0 + fr - R.range(4, 12), -R.range(1, 3), R.range(-1, 1) * WD * 0.7, R.range(40, 80), -R.range(0, 6), R.range(-20, 20), R.range(0.08, 0.14), R.chance(0.5) ? C[6] : WHITE);
+          if (R.chance(0.35)) ps.spawn3(P.FLAKE, X0 + fr, -1, R.range(-1, 1) * WD * 0.7, R.range(10, 50), -R.range(20, 70), R.range(-25, 25), R.range(0.5, 0.9), R.chance(0.5) ? WHITE : C[6], R.range(0.5, 1.2));
+          if (R.chance(0.14)) ps.spawn3(P.VAPOUR, X0 + fr, -R.range(0, 3), R.range(-1, 1) * WD * 0.8, R.range(20, 60), -R.range(2, 10), R.range(-20, 20), R.range(0.4, 0.7), C[6], R.range(1.6, 2.8));
+        }
+        for (const c of clusters) {
+          if (c.up || t < c.t0) continue;
+          c.up = true;
+          const big = c === crest, n = 3 + Math.round(c.H / 8), x = X0 + c.x;
+          for (let i = 0; i < n; i++) {
+            const a = R.range(0, TAU), el = R.range(0.5, 1.5), sp = R.range(60, 190) * (0.45 + c.H / 44);
+            bits.add({ kind: B.SHARD, x: x + R.range(-3, 3), y: -1, z: c.z + R.range(-3, 3), vx: Math.cos(a) * sp * 0.6 + 25, vy: -sp * el * 0.7, vz: Math.sin(a) * sp * 0.6, g: 0.8, drag: 0.6, bounce: 0.3, life: R.range(0.6, 1.1), a: R.range(0, TAU), va: R.range(-18, 18), s: R.range(1.2, 3), c: C[R.int(5, 7)] });
+          }
+          ps.spawn3(P.VAPOUR, x, -1, c.z, R.range(-10, 40), -R.range(2, 10), R.range(-25, 25), R.range(0.5, 0.9), C[6], R.range(2.2, 3.4) * (0.6 + c.H / 60));
+          for (let i = 0; i < 2; i++) ps.spawn3(P.FLAKE, x + R.range(-4, 4), -R.range(2, c.H * 0.5), c.z + R.range(-4, 4), R.range(-20, 40), -R.range(20, 60), R.range(-30, 30), R.range(0.6, 1.1), R.chance(0.5) ? WHITE : C[6], R.range(0.5, 1.3));
+          if (c.H > 16) ps.spawn3(P.STAR, x + c.main.lx, -c.H * 0.96, c.z + c.main.lz, 0, -4, 0, R.range(0.3, 0.5), WHITE, R.range(1.4, 2.6), 0.08);
+          lights.add(x, -c.H * 0.4, c.z, 16 + c.H * 0.6, C[5], 0.5, 0.18);
+          if (big) {
+            lights.add(x, -c.H * 0.5, c.z, 54, WHITE, 0.5, 0.14);
+            for (let i = 0; i < 4; i++) ps.spawn3(P.VAPOUR, x + R.range(-6, 6), -R.range(0, 4), c.z + R.range(-6, 6), R.range(-40, 60), -R.range(4, 16), R.range(-40, 40), R.range(0.6, 1), C[6], R.range(3, 4.5));
+          }
+        }
+        if (t > START + RUN && t < TREMBLE && R.chance(0.09)) {
+          const c = R.pick(clusters), b = R.pick(c.blades), s = pose(c, b), u = R.range(0.3, 0.95);
+          ps.spawn3(P.STAR, s.base[0] + (s.tip[0] - s.base[0]) * u, s.tip[1] * u, s.base[2] + (s.tip[2] - s.base[2]) * u, 0, -3, 0, R.range(0.25, 0.5), R.chance(0.6) ? WHITE : C[6], R.range(0.6, 2));
+        }
+        if (!trembled && t >= TREMBLE) {
+          trembled = true;
+          for (const c of clusters)
+            for (let i = 0; i < 2; i++) bits.add({ kind: B.SHARD, x: X0 + c.x + R.range(-4, 4), y: -R.range(4, c.H * 0.8), z: c.z + R.range(-4, 4), vx: R.range(-20, 20), vy: -R.range(0, 30), vz: R.range(-20, 20), g: 0.8, drag: 0.5, bounce: 0.3, life: R.range(0.3, 0.6), a: R.range(0, TAU), va: R.range(-18, 18), s: R.range(1, 1.8), c: C[R.int(5, 7)] });
+        }
+        if (!broke && t >= SHATTER) {
+          broke = true;
+          for (const c of clusters) {
+            for (const b of c.blades) breakBlade(c, b);
+            const x = X0 + c.x;
+            for (let i = 0; i < 2; i++) ps.spawn3(P.VAPOUR, x + R.range(-6, 6), -R.range(1, 8), c.z + R.range(-6, 6), R.range(-30, 50), -R.range(4, 18), R.range(-40, 40), R.range(0.6, 1.1), C[6], R.range(2.4, 4) * (0.7 + c.H / 60));
+            if (R.chance(0.7)) ps.spawn3(P.STAR, x + R.range(-6, 6), -R.range(4, c.H), c.z + R.range(-6, 6), R.range(-10, 10), -R.range(6, 20), R.range(-10, 10), R.range(0.4, 0.8), R.chance(0.5) ? WHITE : C[6], R.range(1, 2.2));
+            for (let i = 0; i < 2; i++) ps.spawn3(P.FLAKE, x + R.range(-6, 6), -R.range(4, c.H), c.z + R.range(-6, 6), R.range(-30, 60), -R.range(30, 90), R.range(-40, 40), R.range(0.9, 1.5), R.chance(0.6) ? WHITE : C[6], R.range(0.5, 1.5));
+            lights.add(x, -c.H * 0.5, c.z, 22 + c.H, WHITE, 0.45, 0.12);
+          }
+          for (let i = 0; i < 5; i++) lights.add(X0 + (REACH * (i + 0.5)) / 5, -18, 0, 40, C[4], 0.4, 0.5);
+        }
+        if (broke && t < SHATTER + 0.8 && R.chance(0.1) && bits.list.length) {
+          const b = R.pick(bits.list);
+          ps.spawn3(P.STAR, b.x, b.y - 1, b.z, 0, -3, 0, R.range(0.2, 0.4), R.chance(0.5) ? WHITE : C[6], R.range(0.6, 1.5));
+        }
+        ps.update(dt);
+        bits.update(dt);
+        panes.update(dt);
+        lights.update(dt);
+        endBy(t, meta.duration, ps, bits, panes);
+      },
+      draw(p) {
+        const q = space(p, o);
+        drawFrost(q);
+        drawClusters(q);
+        const k = (1 - smooth(MELT, MELT + 0.9, t)) * smooth(START, START + 0.3, t), fr = front(t);
+        for (let i = 0; i < 6; i++) q.glow(X0 + (fr * (i + 0.5)) / 6, -3, 0, 26, C[4], 0.15 * k);
+        if (t >= FLASH && t < SHATTER + 0.1) for (const c of clusters) q.at(X0 + c.x + c.main.lx, -c.H, c.z + c.main.lz, (pp) => sparkle(pp, 0, 0, 6 * (1 - clamp((t - FLASH) / 0.16)), C[6], C[4], 0.4));
+        panes.draw(q, C);
+        bits.draw(q);
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

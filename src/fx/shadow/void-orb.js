@@ -1,5 +1,5 @@
-import { cycle, fit, clamp, smooth, ease, fbm, TAU, WHITE, mix } from "../../core/index.js";
-import { VOID, halo, ringLight, ringFast, unlight } from "./_lib.js";
+import { cycle, fit, clamp, smooth, ease, fbm, space, TAU, WHITE, mix } from "../../core/index.js";
+import { VOID, halo, ringLight, ringFast, unlight, unlit3 } from "./_lib.js";
 
 export const meta = {
   name: "Void orb",
@@ -181,3 +181,174 @@ export function draw(p, t, o) {
   halo(p, 0, Y, R - 0.5, R + 46, C[4], 0.38 + 0.15 * g);
   unlight(p, -R, Y - R, R, Y + R, (x, y) => x * x + (y - Y) ** 2 < (R - 0.6) ** 2);
 }
+
+// ---- 3D: the orb is a real sphere, the vortex a disc tilted in space (its arms wind the same way), motes and
+// streaks fall in from every side, and the light bent round it is traced from specks that really orbit it.
+// two discs crossing at the orb, tilted a quarter turn apart, so when one is edge-on the other is open
+const disc = (tilt, az, scale, off) => {
+  const n = [Math.sin(tilt) * Math.sin(az), -Math.cos(tilt), Math.sin(tilt) * Math.cos(az)], l = Math.hypot(n[2], n[0]);
+  const e1 = [n[2] / l, 0, -n[0] / l], e2 = [n[1] * e1[2] - n[2] * e1[1], n[2] * e1[0] - n[0] * e1[2], n[0] * e1[1] - n[1] * e1[0]];
+  return { n, e1, e2, scale, off };
+};
+const DISCS = [disc(0.7, 0.5, 1, 0), disc(0.7, 0.5 + Math.PI / 2, 0.82, 2.1)];
+// a point of a disc's plane round the orb: radius r, angle a, h out of the plane
+const inPlane = ({ n, e1, e2 }, r, a, h = 0) => {
+  const c = Math.cos(a) * r, s = Math.sin(a) * r;
+  return [e1[0] * c + e2[0] * s + n[0] * h, Y + e1[1] * c + e2[1] * s + n[1] * h, e1[2] * c + e2[2] * s + n[2] * h];
+};
+
+// the vortex as a shader on a disc's plane: the same arms, filaments, dashes and veil as the 2D version
+function vortexShader(C, t, g, sc, off) {
+  const wf = (TAU * 12) / D;
+  return (x, y, out) => {
+    const r = Math.hypot(x, y) / sc;
+    if (r < GAP || r > VR) return;
+    const env = smooth(VR, VR * 0.42, r) * smooth(GAP, GAP + 4, r);
+    if (env < 0.05) return;
+    const th = Math.atan2(y, x), ln = Math.log(Math.max(1, r)), nz = fbm(Math.cos(th) * 2.5 + ln * 2.4, Math.sin(th) * 2.5 + ln * 2.4, 17, 3);
+    const ph = ARMS * th + K * ln + WIND * t + nz * 2.6 + off, A = (0.5 + 0.5 * Math.cos(ph)) * env * (1 + 0.4 * g);
+    if (A < 0.16) return;
+    const hot = 1 - smooth(GAP, GAP + 16, r), fil = Math.cos(12 * th + 28 * ln + wf * t + nz * 1.6);
+    const dash = Math.cos(9 * ln * 2.2 + 2.2 * th + wf * 0.75 * t);
+    if (fil > 0.86 && A > 0.3 && dash > -0.55) {
+      const c = hot > 0.6 ? C[7] : (hot > 0.25 || fil > 0.97) && dash > 0 ? C[6] : C[5];
+      out.l = c;
+      out.k = 0.1 + 0.2 * hot;
+      return c;
+    }
+    if (A > 0.36 && A < 0.46 && Math.sin(ph) > 0) return hot > 0.4 ? C[6] : C[4];
+    out.blend = true;
+    out.a = Math.min(0.75, (A - 0.16) * 1.4) * (sc < 1 ? 0.8 : 1);
+    return A > 0.6 ? C[3] : C[2];
+  };
+}
+
+// specks of light on loops round the orb, in space: Lissajous paths that pass behind it and in front of it
+const speck = (s, i, t) => {
+  const q = (TAU * s.n * t) / D + s.ph;
+  return [s.cx + s.rho * Math.cos(q), s.cy + s.rho * Math.sin(q) * s.sy, s.rho * 0.95 * Math.sin(q + 1.7 * i + 0.6)];
+};
+
+// light from behind the orb, bent round it (the 2D lensing); a speck in front of it is just a speck
+function lens3(q, C, t, g) {
+  if (!q.project(0, Y, 0)) return;
+  const ox = q.x, oy = q.y, d0 = q.d, items = [];
+  SOURCES.forEach((s, i) => {
+    const [x, y, z] = speck(s, i, t);
+    if (!q.project(x, Y + y, z)) return;
+    items.push({ s, sx: q.x - ox, sy: q.y - oy, w: clamp((q.d - d0 + 5) / 10), x, y: Y + y, z });
+  });
+  for (const it of items) if (it.w < 1) {
+    q.dot(it.x, it.y, it.z, C[7], (1 - it.w) * 1.2);
+    q.glow(it.x, it.y, it.z, 4, C[6], 0.25 * (1 - it.w));
+  }
+  q.at(0, Y, 0, (p) => {
+    p.z += 3;
+    for (let a = 0, st = 0.7 / E; a < TAU; a += st) {
+      const f = 0.5 + 0.5 * Math.cos(5 * a - (TAU * 2 * t) / D) + 0.5 * g;
+      p.px(Math.cos(a) * E, Math.sin(a) * E, f > 0.85 ? C[5] : f > 0.45 ? C[4] : C[3]);
+    }
+    for (const { s, sx, sy, w } of items) {
+      if (w <= 0) continue;
+      const b = Math.max(0.3, Math.hypot(sx, sy)), al = Math.atan2(sy, sx), root = Math.sqrt(b * b + 4 * E * E);
+      for (const [r, a0, wt] of [[(b + root) / 2, al, 1], [(root - b) / 2, al + Math.PI, 0.55]]) {
+        if (r < R + 1.5) continue;
+        const mag = (r / b) * wt, hw = Math.min(Math.PI, (s.s * 1.6) / (2 * b)), step = 0.6 / r;
+        for (let a = a0 - hw; a <= a0 + hw + 1e-6; a += step) {
+          const u = hw > 0 ? Math.abs(a - a0) / hw : 0, x = Math.cos(a) * r, y = Math.sin(a) * r;
+          p.dot(x, y, u < 0.3 && mag > 0.8 ? WHITE : u < 0.65 ? C[7] : C[5], Math.min(1, mag * 1.4) * (1.15 - u) * w);
+          if (mag > 1.2 && u < 0.6) p.dot(x + Math.cos(a), y + Math.sin(a), C[6], 0.8 * w);
+        }
+        p.glow(Math.cos(a0) * r, Math.sin(a0) * r, 4 + Math.min(10, hw * r), C[6], Math.min(0.5, 0.18 * mag) * w);
+      }
+    }
+  });
+}
+
+// the orb as a sphere: void black, a dull glint and a crescent of reflected light, a pale rim crawling round it
+const orbShade = (C, t, g) => (nx, ny, nz) => {
+  const a = Math.atan2(ny, nx);
+  if (nz < 0.31) {
+    const f = 0.5 * Math.cos(3 * a - (TAU * 2 * t) / D) + 0.3 * Math.cos(7 * a + (TAU * 3 * t) / D + 1) + 0.25 * Math.cos(13 * a - (TAU * 5 * t) / D + 2) + g;
+    return f > 0.5 ? WHITE : f > 0.05 ? C[6] : f > -0.4 ? C[5] : C[4];
+  }
+  if (nz < 0.52 && Math.cos(a - 0.8) > 0.6) return C[2];
+  if ((nx + 0.42) ** 2 + (ny + 0.45) ** 2 < 0.012) return C[3];
+  return C[0];
+};
+
+export const three = {
+  meta: { size: [176, 172], origin: [88, 152], camera: { pitch: 0.32 } },
+  draw(p, t, o) {
+    const q = space(p, o), C = fit(o.palette, 8), g = gulp(t), S = o.seed;
+    // dust drawn up off the floor, curving into the orb from every side
+    const puffs = [];
+    cycle(t, D, 14, S + 2, (r) => r.range(1.6, 2.4), (age, L, r) => {
+      const a0 = r.range(0, TAU), d0 = r.range(8, 46), u = Math.pow(age / L, 1.7), x0 = Math.cos(a0) * d0, z0 = Math.sin(a0) * d0;
+      const be = r.range(0.3, 1), ex = Math.cos(a0) * Math.cos(be) * R, ey = Y + Math.sin(be) * R, ez = Math.sin(a0) * Math.cos(be) * R, mx = x0 * 0.2, my = -18 - r.range(0, 12), mz = z0 * 0.2;
+      const v = 1 - u, x = v * v * x0 + 2 * v * u * mx + u * u * ex, y = v * v * -1 + 2 * v * u * my + u * u * ey, z = v * v * z0 + 2 * v * u * mz + u * u * ez;
+      if (age < 0.5) puffs.push([x0, -1.5, z0, 2 + age * 6, 0.4 * (1 - age / 0.5)]);
+      q.dot(x, y, z, u > 0.6 ? C[7] : u > 0.25 ? C[6] : C[5], Math.min(1, age * 4));
+      if (u > 0.3) q.glow(x, y, z, 3, C[5], 0.25);
+    });
+    // motes swirl in along the arms, in and out of the vortex's plane, faster as they fall
+    cycle(t, D, 30, S, (r) => r.range(1.1, 1.8), (age, L, r, i) => {
+      const th0 = r.range(0, TAU), r0 = r.range(30, 64), sw = r.range(1.4, 2.6), col = r.pick([WHITE, C[7], C[6], C[6], C[5]]), h0 = r.range(-0.5, 0.5), dk = DISCS[i % 2];
+      const pos = (aa) => {
+        const u = clamp(aa / L), k = Math.pow(u, 1.8), rr = R + 1 + (r0 - R - 1) * (1 - k);
+        return [...inPlane(dk, rr, th0 - sw * (k + 0.5 * u), h0 * rr * (1 - k)), rr];
+      };
+      const [x, y, z, rr] = pos(age), [tx, ty, tz] = pos(age - 0.05), a = Math.min(1, age * 5);
+      if (y > -3) return;
+      if (rr < R + 3) {
+        q.px(x, y, z, WHITE);
+        q.glow(x, y, z, 5, C[6], 0.5);
+        return;
+      }
+      q.line(tx, ty, tz, (tx + x) / 2, (ty + y) / 2, (tz + z) / 2, C[4], a * 0.8);
+      q.line((tx + x) / 2, (ty + y) / 2, (tz + z) / 2, x, y, z, col, a);
+      q.glow(x, y, z, 3, col, 0.3 * a);
+    });
+    // streaks: long dotted lines shot in from further out, from any direction but under the floor
+    cycle(t, D, 12, S + 1, 0.42, (age, L, r) => {
+      const th = r.range(0, TAU), el = r.range(-1.3, 0.7), r0 = r.range(56, 74), u = age / L, k = (Math.exp(3 * u) - 1) / (Math.exp(3) - 1), rr = r0 - (r0 - R - 1) * k;
+      const len = 2 + 10 * k, dx = Math.cos(el) * Math.cos(th), dy = Math.sin(el), dz = Math.cos(el) * Math.sin(th);
+      for (let d = 0; d <= len; d += 0.5) q.dot(dx * (rr + d), Y + dy * (rr + d), dz * (rr + d), d < 1 ? WHITE : d < len * 0.5 ? C[6] : C[4], d < len * 0.5 ? 1 : 1.2 - d / len);
+      q.glow(dx * rr, Y + dy * rr, dz * rr, 4, C[6], 0.4);
+    });
+    // the orb, then the vortex round it
+    q.ball(0, Y, 0, R, orbShade(C, t, g));
+    for (const dk of DISCS) q.plane(0, Y, 0, dk.n, VR * dk.scale, vortexShader(C, t, g, dk.scale, dk.off));
+    // a gulp draws a ring in after it: on the discs' planes, with the light it throws
+    for (const gp of GULPS) {
+      const u = wrap(t / D - gp) / (0.4 / D);
+      if (u >= 1) continue;
+      const k = 1 - u;
+      for (const dk of DISCS) {
+        const rr = (R + 2 + (VR - R) * (1 - ease.inQuad(u))) * dk.scale;
+        q.plane(0, Y, 0, dk.n, rr + 4, (x, y, out) => {
+          const d = Math.abs(Math.hypot(x, y) - rr + 0.5);
+          if (d > 4) return;
+          const f = 1 - d / 4;
+          out.l = C[5];
+          out.k = 0.3 * k * f * f * 0.6;
+          if (d < 0.7) {
+            out.c = C[4];
+            out.a = 0.35 * k;
+          }
+        });
+      }
+    }
+    lens3(q, C, t, g);
+    // light: round the orb and over the floor under it
+    q.at(0, Y, 0, (pp) => {
+      pp.z -= 50;
+      halo(pp, 0, 0, R - 0.5, R + 7, C[6], 0.6 + 0.3 * g);
+      halo(pp, 0, 0, R - 0.5, R + 46, C[4], 0.38 + 0.15 * g);
+    });
+    q.glow(0, -1, 0, 52, C[4], 0.22 + 0.1 * g);
+    // the dust kicked up where it leaves the floor
+    for (const [x, y, z, r, a] of q.sort(puffs, (e) => e)) q.disc(x, y, z, r, C[3], a);
+    unlit3(q, 0, Y, 0, R, 0.6);
+  },
+};

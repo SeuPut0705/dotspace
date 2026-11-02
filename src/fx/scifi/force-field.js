@@ -1,8 +1,8 @@
 // The hit recipe (a tracer from the right, a flash and a ripple over a hex shell mapped by longitude and
 // latitude, sparks glancing off) is adapted from Sprite Fusion's open-source shield
 // (https://www.spritefusion.com/pixel-art-vfx/shield), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { P, Rng, fit, sparkle, band, bolt, forks, clamp, smooth, rand, hex, TAU, WHITE, READY } from "../../core/index.js";
-import { Ghosts, flash, since } from "./_lib.js";
+import { P, Rng, fit, sparkle, band, bolt, forks, space, clamp, smooth, rand, hex, TAU, WHITE, READY } from "../../core/index.js";
+import { Ghosts, flash, flash3, since, sphere, coreLine } from "./_lib.js";
 
 export const meta = {
   name: "Force field",
@@ -293,3 +293,209 @@ export function draw(p, t, o) {
   p.glow(0, -R * 0.45, R * 1.3, C[3], 0.11 + 0.1 * Math.max(0, 1 - a0 * 2));
   ghosts(o, C, R).at(t).draw(p);
 }
+
+// 3D: a true hemisphere standing on the floor. Its hex plates are laid out round the zenith, so there is no seam anywhere
+// and every side of the dome is plated; the tracers come in from the +x side along the line to each strike, the ripple
+// and the cracks race out over the curve, the far wall shows through the near one, the hero stands inside.
+const GH = 5.4;
+// a point on the dome as the plate grid sees it (distance from the zenith, azimuth): grid coords
+const plateAt = (X, Y, Z) => {
+  const th = Math.acos(clamp(Y, -1, 1)), a = Math.atan2(Z, X);
+  return [th * Math.cos(a) * GH, th * Math.sin(a) * GH];
+};
+const plateDir = (hx, hy) => {
+  const th = Math.hypot(hx, hy) / GH, a = Math.atan2(hy, hx);
+  return th > 1.5 ? null : [Math.sin(th) * Math.cos(a), Math.cos(th), Math.sin(th) * Math.sin(a)];
+};
+// the strikes in 3D: the same longitude and latitude as in 2D, the normal pointing up out of the dome
+const SHOTS3 = SHOTS.map((s) => ({ ...s, phi: Math.atan2(s.N[2], s.N[0]) }));
+const onDome = (R, N, k = 1) => [N[0] * R * k, -N[1] * R * k, N[2] * R * k];
+
+// fractures: jagged forked paths over the dome out from a strike, in the tangent plane of the strike
+const crack3 = new Map();
+function cracks3(R, seed, s) {
+  const key = `${R}:${seed}`;
+  if (crack3.has(key)) return crack3.get(key);
+  const rn = new Rng(seed * 13 + 5), out = [], N = s.N;
+  const T1 = (() => {
+    const c = [N[2], 0, -N[0]], l = Math.hypot(c[0], c[2]) || 1;
+    return [c[0] / l, 0, c[2] / l];
+  })();
+  const T2 = [N[1] * T1[2] - N[2] * T1[1], N[2] * T1[0] - N[0] * T1[2], N[0] * T1[1] - N[1] * T1[0]];
+  const toDome = (path, u0, u1) => {
+    const pts = [];
+    for (let i = 0; i < path.length; i++) {
+      const [a, b] = path[i];
+      let v = [N[0] + a * T1[0] + b * T2[0], N[1] + a * T1[1] + b * T2[1], N[2] + a * T1[2] + b * T2[2]];
+      const l = Math.hypot(...v);
+      v = v.map((c) => c / l);
+      if (v[1] < 0.04) break;
+      pts.push([...onDome(R + 0.6, v), u0 + ((u1 - u0) * i) / (path.length - 1)]);
+    }
+    return pts;
+  };
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * TAU + rn.range(-0.35, 0.35), L = rn.range(0.42, 0.8);
+    const path = bolt(rn, 0, 0, Math.cos(a) * L, Math.sin(a) * L, { jag: 0.2, depth: 4 });
+    out.push(toDome(path, 0, 1));
+    for (const f of forks(rn, path, { count: rn.int(0, 2), len: L * 0.5, jag: 0.25, spread: 0.9 })) {
+      const j = path.findIndex((q) => q[0] === f[0][0] && q[1] === f[0][1]), u0 = Math.max(0, j) / (path.length - 1);
+      out.push(toDome(f, u0, u0 + 0.5));
+    }
+  }
+  crack3.set(key, out);
+  return out;
+}
+
+const ghost3 = new Map();
+function ghosts3(o, C, R) {
+  const key = `${R}:${o.seed}:${o.sparks.join()}:${o.palette.join()}`;
+  if (ghost3.has(key)) return ghost3.get(key);
+  const rn = new Rng(o.seed), D = meta.duration, g = new Ghosts(D, { ground: () => 0, box: [-120, -120, 120, 14] });
+  for (const s of SHOTS3) {
+    const [hx, hy, hz] = onDome(R, s.N), n = s.big ? 1 : 0.55;
+    // glancing off the curve: up and away, the way the shot was going when it was turned
+    for (let i = 0; i < 24 * n; i++) {
+      const a = (s.big ? -0.9 : -0.55) + rn.range(-0.7, 0.65), sp = rn.range(100, 280) * (0.7 + 0.3 * n);
+      g.add(s.t + rn.range(0, 0.02), P.SPARK, 0, hy, Math.cos(a) * sp, Math.sin(a) * sp - 30, rn.range(0.25, 0.75), WHITE, 1, 0, s.phi + rn.range(-0.9, 0.9), hx, hz);
+    }
+    for (let i = 0; i < 7 * n; i++) {
+      const a = -0.9 + rn.range(-1.2, 1.2), sp = rn.range(30, 90);
+      g.add(s.t + rn.range(0, 0.05), P.MOTE, 0, hy, Math.cos(a) * sp, Math.sin(a) * sp - 15, rn.range(0.3, 0.6), rn.pick([C[5], C[6], C[4]]), 0.7, 0, s.phi + rn.range(-1, 1), hx, hz);
+    }
+    for (let i = 0; i < 3 * n; i++) g.add(s.t + 0.04 + i * 0.07, P.STAR, 0, hy + rn.range(-5, 5), 0, -4, rn.range(0.3, 0.5), C[6], rn.range(1, 2), 0, 0, hx + rn.range(-6, 6), hz + rn.range(-6, 6));
+    for (let i = 0; i < 3 * n; i++) g.add(s.t + 0.03 + i * 0.04, P.SMOKE, 0, hy - 1, rn.range(8, 22), rn.range(-14, -4), rn.range(0.9, 1.3), hex("#5b5f78"), rn.range(2.2, 3.4), 0, s.phi + rn.range(-0.6, 0.6), hx, hz);
+  }
+  // a star on each plate as it glints
+  for (let r = -12; r <= 12; r++)
+    for (let q = -14; q <= 14; q++) {
+      if (!glints(o.seed, q, r)) continue;
+      const d = plateDir(S3 * (q + r / 2), 1.5 * r);
+      if (!d || d[1] < 0.15) continue;
+      const [x, y, z] = onDome(R, d, 1.01);
+      g.add(glintAt(o.seed, q, r) + 0.03, P.STAR, 0, y, 0, -3, 0.4, C[6], 1.4 + rand(q, r, 9), 0, 0, x, z);
+    }
+  ghost3.set(key, g);
+  return g;
+}
+
+export const three = {
+  meta: { size: [216, 124], origin: [108, 86], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const C = fit(o.palette, 8), SP = fit(o.sparks, 4), R = o.radius, D = meta.duration, S = o.seed, ph = t / D, q = space(p, o);
+    const ages = SHOTS3.map((s) => since(t, s.t, D));
+    const sk = clamp((ph - 0.72) / 0.26), scanLat = -0.2 + sk * 2, scanK = Math.sin(Math.PI * sk);
+    // the glass: plates, glints, the scan, the ripples and the hot spot of each strike; the far wall dim, the near wall lit
+    sphere(q, 0, 0, 0, R, (h, out) => {
+      const X = h.nx, Y = -h.ny, Z = h.nz;
+      if (Y < 0) return;
+      const near = h.front, ff = h.rim * h.rim, sil = (1 - Math.sqrt(Math.max(0, 1 - (1 - h.rim) ** 2))) * R;
+      const [gx, gy] = plateAt(X, Y, Z), c = cell(gx, gy), lat = Math.asin(Y);
+      const seam = c.e > 0.86, bevel = !seam && c.e > 0.72 && X * -0.5 + Y * 0.6 + Z * 0.5 > 0.2;
+      let rp = 0, hot = 0;
+      for (let i = 0; i < SHOTS3.length; i++) {
+        const s = SHOTS3[i], age = ages[i];
+        if (age >= 1) continue;
+        const d = Math.acos(clamp(X * s.N[0] + Y * s.N[1] + Z * s.N[2], -1, 1)), f = 0.06 + 3.1 * age, k = (1 - age) * (s.big ? 1 : 0.7);
+        rp = Math.max(rp, Math.exp(-(((d - f) / 0.15) ** 2)) * k, d < f ? 0.22 * k * k * (1 - d / f) : 0);
+        const hr = s.big ? 0.3 : 0.17;
+        if (age < 0.55 && d < hr) hot = Math.max(hot, age < 0.07 && d < hr * 0.75 ? 2 : (1 - age / 0.55) ** 1.5 * (1.1 - (0.6 * d) / hr));
+      }
+      let gl = 0;
+      if (glints(S, c.q, c.r)) {
+        const a = since(t, glintAt(S, c.q, c.r), D);
+        if (a < 0.45) gl = 1 - a / 0.45;
+      }
+      const sc = scanK * Math.exp(-(((lat - scanLat) / 0.09) ** 2));
+      out.blend = true;
+      if (!near) {
+        out.c = seam ? (rp > 0.3 ? C[5] : C[3]) : C[2];
+        out.a = seam ? clamp(0.18 + 0.25 * ff + 0.6 * rp + 0.3 * sc) : 0.04 + 0.06 * ff + 0.15 * rp;
+        return;
+      }
+      if (sil < 1.15) {
+        const lit = -X * 0.55 + Y * 0.85;
+        out.blend = false;
+        out.c = rp > 0.4 || lit > 0.8 ? WHITE : lit > 0.3 ? C[6] : C[5];
+        out.l = C[4];
+        out.k = 0.3;
+        return;
+      }
+      if (hot >= 2) {
+        out.blend = false;
+        out.c = seam ? C[6] : WHITE;
+        return;
+      }
+      if (seam) {
+        const I = 0.12 + 0.5 * ff + 0.08 * Math.sin(Math.atan2(X, Z) * 2.3 + lat * 3 - ph * TAU) + 0.9 * gl + 0.7 * sc + 1.3 * rp + hot;
+        out.c = gl > 0.6 || rp > 0.55 || hot > 0.5 ? WHITE : I > 0.8 ? C[6] : I > 0.55 ? C[5] : C[4];
+        if (I > 0.36) out.blend = false;
+        else out.a = 0.3 + I;
+        out.l = C[4];
+        out.k = 0.04 + 0.08 * I;
+      } else {
+        const a = 0.05 + 0.34 * ff * h.rim + 0.1 * c.e ** 4 + (bevel ? 0.12 + 0.2 * ff : 0) + 0.35 * gl + 0.1 * sc + 0.3 * rp + 0.6 * hot;
+        out.c = hot > 0.6 ? WHITE : hot > 0.3 || gl > 0.5 ? C[6] : rp > 0.4 || bevel ? C[5] : ff > 0.5 ? C[4] : C[3];
+        out.a = clamp(a);
+        if (rp > 0.1 || hot > 0 || gl > 0) {
+          out.l = C[4];
+          out.k = 0.06 * (rp + hot + gl);
+        }
+      }
+    }, 0);
+    // the dome's foot: a ring on the floor with emitters round it, chasing
+    q.decal(0, 0, 0, null, R + 4, (pp) => {
+      pp.ring(0, 0, R + 1, 1, C[6]);
+      pp.ring(0, 0, R, 1.2, C[5]);
+      pp.ring(0, 0, R - 1.2, 1, C[3]);
+      pp.ring(0, 0, R - 2.2, 1, C[1], 0.8);
+    });
+    for (let i = 0; i < 10; i++) {
+      const g = (i / 10) * TAU + 0.31, x = Math.cos(g) * (R - 0.5), z = Math.sin(g) * (R - 0.5), k = 0.5 + 0.5 * Math.cos(TAU * (2 * ph - i / 10));
+      q.ball(x, -1.2, z, 1.3, k > 0.6 ? WHITE : C[5]);
+      q.glow(x, -1, z, 6 + 4 * k, C[4], 0.22 * (0.4 + k));
+    }
+    for (const s of SHOTS3) {
+      const age = since(t, s.t, D), H = onDome(R, s.N), n = s.big ? 1 : 0.6;
+      // the fractures: race out from the hit white-hot, then cool down the ramp and fade
+      if (s.big && age < 0.9) {
+        const fade = 1 - smooth(0.35, 0.9, age), reach = clamp(age / 0.09);
+        for (const c of cracks3(R, S, s))
+          for (let i = 1; i < c.length; i++) {
+            const a = c[i - 1], b = c[i], u = b[3];
+            if (u > reach) continue;
+            const k = fade * (1.2 - u * 0.4);
+            if (age < 0.32) q.beam(a[0], a[1], a[2], b[0], b[1], b[2], 2.2, age < 0.12 ? C[6] : C[5], k * (1 - age / 0.32));
+            coreLine(q, a, b, age < 0.12 + u * 0.08 ? WHITE : age < 0.3 + u * 0.1 ? C[6] : C[5], 1.2);
+            if (i % 3 === 0) q.glow(b[0], b[1], b[2], 6, C[4], 0.35 * fade * (1 - u * 0.5));
+          }
+      }
+      // the tracer, in from outside along the line to the strike: a streak, its tail never past where it entered
+      const tk = (t - (s.t - 0.1)) / 0.1;
+      if (tk >= 0 && tk < 1) {
+        const L = 48, sx = H[0] + s.N[0] * L, sy = H[1] - s.N[1] * L - 12, sz = H[2] + s.N[2] * L, Ll = Math.hypot(sx - H[0], sy - H[1], sz - H[2]);
+        const at = (d) => {
+          const f = Math.max(0, d) / Ll;
+          return [sx + (H[0] - sx) * f, sy + (H[1] - sy) * f, sz + (H[2] - sz) * f];
+        };
+        const h = Ll * tk, P0 = at(h), P2 = at(h - 2), P7 = at(h - 7), P16 = at(h - 16);
+        q.line(...P16, ...P7, SP[3]);
+        q.line(...P7, ...P2, SP[1]);
+        q.line(...P2, ...P0, SP[0]);
+        q.px(...P0, WHITE);
+        q.glow(...P0, 9, SP[1], 0.55);
+      }
+      // the impact: a white star, light that flares and dies
+      const [bx, by, bz] = onDome(R + 1.5, s.N);
+      if (age < 0.14) q.at(bx, by, bz, (pp) => sparkle(pp, 0, 0, (7 * (1 - age / 0.14) + 1) * n, C[6], C[5], 0.4));
+      const out = [H[0] + s.N[0] * 4, H[1] - s.N[1] * 4, H[2] + s.N[2] * 4];
+      flash3(q, t, s.t, ...out, 56 * n, C[4], 0.45, 0.45);
+      flash3(q, t, s.t, ...out, 12, WHITE, 0.5 * n, 0.08);
+      flash3(q, t, s.t, H[0] + 3, H[1], H[2], 22, SP[1], 0.4 * n, 0.15);
+    }
+    // the dome's own light, and what glances off
+    const a0 = since(t, SHOTS3[0].t, D);
+    q.glow(0, -R * 0.45, 0, R * 1.3, C[3], 0.11 + 0.1 * Math.max(0, 1 - a0 * 2));
+    ghosts3(o, C, R).at3(t).draw(q);
+  },
+};

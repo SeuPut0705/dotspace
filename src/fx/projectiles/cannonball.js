@@ -1,7 +1,7 @@
 // The flash, spark and smoke recipes are adapted from Sprite Fusion's open-source muzzle-flash and explosion
 // (https://www.spritefusion.com/pixel-art-vfx/muzzle-flash), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, mix, clamp, hex, WHITE } from "../../core/index.js";
-import { flash, cloud, Smoke } from "./_lib.js";
+import { Particles, Lights, P, Rng, fit, mix, clamp, hex, lit, space, TAU, WHITE } from "../../core/index.js";
+import { flash, cloud, Smoke, flash3, Smoke3, cloud3, cone3 } from "./_lib.js";
 
 export const meta = {
   name: "Cannon shot",
@@ -103,3 +103,85 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the same shot with the bore pointing down +x: the flash is a ball of fire with rays bursting in every direction
+// round the bore, sparks and wadding leave in a cone, the gunsmoke is a cloud that rolls out in all directions and
+// lifts, the iron ball is a lit sphere, and it flies off down the +x axis.
+export const three = {
+  meta: { size: [240, 136], origin: [120, 108], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const F = fit(o.palette, 9), SM = fit(o.smoke, 7), IR = fit(o.iron, 4), H = o.height, MY = -H, R = new Rng(o.seed);
+    const ps = new Particles({ rng: R, ground: () => 0, sparks: [F[7], F[6], F[4], F[3]] }), smoke = new Smoke3(R), lights = new Lights();
+    const RIGHT = 100, ironBall = lit(IR);
+    const ca = Math.cos(ANG), sa = Math.sin(ANG);
+    const spray = (th, ph, sp) => cone3(th, ph, sp, ANG);
+    const ball = { x: 4, y: MY, vx: ca * 330, vy: sa * 330, out: false };
+    const jit = Array.from({ length: 16 }, () => R.next());
+    lights.add(12, MY - 2, 44, hex("#ffb060"), 1, 0.35);
+    lights.add(6, MY, 18, WHITE, 0.9, 0.08);
+    // burning wadding and sparks thrown out with the shot
+    for (let i = 0; i < 22; i++) {
+      const [vx, vy, vz] = spray(R.range(0, 0.45), R.range(0, TAU), R.range(140, 380));
+      ps.spawn3(P.SPARK, 6, MY, 0, vx, vy, vz, R.range(0.1, 0.4));
+    }
+    for (let i = 0; i < 10; i++) {
+      const [vx, vy, vz] = spray(R.range(0, 0.3), R.range(0, TAU), R.range(70, 170));
+      ps.spawn3(P.SPARK, 6, MY, 0, vx, vy, vz, R.range(0.5, 0.9));
+    }
+    for (let i = 0; i < 8; i++) {
+      const [vx, vy, vz] = spray(R.range(0, 0.5), R.range(0, TAU), R.range(40, 110));
+      ps.spawn3(P.EMBER, 8, MY, 0, vx, vy, vz, R.range(0.7, 1.4), F[5], 2);
+    }
+    // the gunsmoke: a great white shove of it out of the bore that slows, rolls over itself, swells and lifts
+    for (let i = 0; i < 34; i++) {
+      const [vx, vy, vz] = spray(R.range(0, 0.4), R.range(0, TAU), R.range(40, 215) * (i < 12 ? 1.1 : 0.75));
+      smoke.add({ x: 6 + R.range(0, 6), y: MY + R.range(-2, 2), z: R.range(-2, 2), vx, vy, vz, r0: R.range(3, 4.5), r1: R.range(9, 16), life: R.range(2.7, 3.5), a: R.range(0.6, 0.75), b: R.range(0.9, 1), drag: R.range(2.2, 3.2), rise: R.range(7, 13), grow: R.range(1.5, 2.4), curl: R.range(-1.2, 0.4), warm: 1, delay: R.range(0, 0.05) });
+    }
+    let t = 0, wisp = 0;
+    return {
+      update(dt) {
+        t += dt;
+        if (!ball.out) {
+          const x0 = ball.x, y0 = ball.y;
+          ball.vy += 260 * dt;
+          ball.x += ball.vx * dt;
+          ball.y += ball.vy * dt;
+          // the ball leaves a thin wisp of smoke off its hot skin, one puff every two pixels of flight
+          for (wisp += Math.hypot(ball.x - x0, ball.y - y0) / 2; wisp > 1; wisp--) {
+            const f = R.next(), x = x0 + (ball.x - x0) * f, y = y0 + (ball.y - y0) * f;
+            if (x < RIGHT - 8 && x > 24 && t < 0.6) smoke.add({ x: x - 3, y, z: R.range(-0.6, 0.6), vx: -ball.vx * 0.04, vy: -ball.vy * 0.04, vz: R.range(-6, 6), r0: 1, r1: R.range(2.5, 3.6) * (1 - t), life: R.range(0.7, 1.1), a: 0.5 * (1 - t), b: 0.95, drag: 2, rise: 5, grow: 2 });
+          }
+          if (ball.x > RIGHT) ball.out = true;
+        }
+        ps.update(dt);
+        smoke.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), pop = Math.exp(-(t + 0.008) / 0.06), list = smoke.puffs();
+        for (const s of list) s.w *= 0.2 + pop * 1.3;
+        // the ball: dark iron, a lit crescent, a hot glint where the flash still burns on it
+        if (!ball.out) {
+          const hot = t < 0.3;
+          q.ball(ball.x, ball.y, 0, 3.2, (nx, ny, nz) => (hot && nx > 0.35 && ny > 0.1 ? F[5] : ironBall(nx, ny, nz)));
+          q.glow(ball.x, ball.y, 0, 6, F[4], 0.45 * clamp(1 - t / 0.5));
+        }
+        // the flash: a white ball with a tongue of flame for a frame, then a cooler, bigger burst as the gas spills
+        if (t < 3 * F1) {
+          const f = t < F1 ? 1 : t < 2 * F1 ? 2 : 3, k = (f === 1 ? 1 : f === 2 ? 1.15 : 0.8) * 1.3;
+          const L = [{ off: 0, a: 0, len: 12 * k, wid: 5 * k, core: 0.55 }, { off: 2, a: 0, len: (24 + jit[0] * 8) * k, wid: 2.2 * k, core: 0.4 }];
+          for (let i = 0; i < 6; i++) L.push({ off: 2, a: 0.4 + (i % 3) * 0.45 + jit[i + 1] * 0.2, len: (8 + jit[i + 7] * 7) * k * (f === 3 ? 0.7 : 1), wid: 1.6 * k, core: 0.25 });
+          flash3(q, 4, MY, 0, ANG, L, f === 1 ? [WHITE, F[7], F[6], F[3]] : f === 2 ? [F[7], F[6], F[4], F[2]] : [F[5], F[4], F[3], F[1]], f, f === 1 ? 0 : 4 * k);
+          if (f === 1) {
+            q.ball(7, MY - 1, 0, 6.5, WHITE);
+            q.ring(7, MY - 1, 0, 7.5, 1, F[7], 1, [ca, sa, 0]);
+          }
+        }
+        ps.draw(q);
+        cloud3(q, list, SM, [SM[0], mix(F[1], SM[1], 0.5), mix(F[2], SM[2], 0.45), F[3], F[4], F[6], F[7]], { dens: 1.35, max: 0.86, lit: 1.3 });
+        lights.draw(q);
+        q.glow(14, 0, 0, 22, F[4], 0.25 * pop);
+      },
+    };
+  },
+};

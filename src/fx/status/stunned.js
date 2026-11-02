@@ -1,8 +1,8 @@
 // The shaded, outlined icons and the twinkles are
 // adapted from Sprite Fusion's open-source heal (https://www.spritefusion.com/pixel-art-vfx/heal),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { cycle, fit, hex, mix, sparkle, flare, rand, TAU } from "../../core/index.js";
-import { icon, bitmap, shaped, starShape } from "./_lib.js";
+import { cycle, fit, hex, mix, sparkle, flare, rand, space, clamp, TAU } from "../../core/index.js";
+import { icon, bitmap, shaped, starShape, lift } from "./_lib.js";
 
 export const meta = {
   name: "Stunned",
@@ -106,3 +106,62 @@ export function draw(p, t, o) {
   });
   p.glow(0, a.y + 1, 26, C[4], 0.13);
 }
+
+// 3D: the same ring round the head, now a true circle in the air. Stars (the same from every side) and birds
+// (turned to fly the way they go) are upright billboards on it; what is behind the head goes behind it, what is in
+// front comes in front, whichever way the camera looks. Glitter hangs along the circle behind each star.
+export const three = {
+  meta: { size: [76, 70], origin: [38, 62], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const q = space(p, o), C = fit(o.palette, 7), Bd = fit(o.birds, 4), a = o.actor, cy = lift(q, a.y + 2), R = a.w * 0.62;
+    const at = (th, r = R, y = cy) => [Math.cos(th) * r, y, Math.sin(th) * r];
+    const items = Array.from({ length: N }, (_, i) => ({ i, th: TAU * ((TURNS * t) / D + i / N), bird: i % 2 === 1 }));
+    // the path itself, a hair of light so the circle reads from above
+    q.ring(0, cy - 1, 0, R, 1, C[4], 0.16);
+    // glitter along the circle behind each star
+    for (const it of items) {
+      if (it.bird) continue;
+      for (let k = 1; k <= 12; k++) {
+        const th = it.th - k * 0.085, [x, y, z] = at(th, R, cy - 1);
+        if (rand(it.i, k, Math.floor(((t / D) * TURNS + k * 0.37) * 9)) < 0.25) continue;
+        const far = q.depth(x, y, z) > 0, c = k < 4 ? C[6] : k < 8 ? C[5] : C[4];
+        q.dot(x, y, z, far ? mix(c, Bd[0], 0.3) : c, 1.1 - k / 13);
+      }
+    }
+    for (const it of items) {
+      const [x, y, z] = at(it.th), far = q.depth(x, y, z) > 0, dim = (c) => (far ? mix(c, Bd[0], 0.3) : c);
+      const front = clamp(-q.depth(x, y, z) / R);
+      if (it.bird) {
+        const up = Math.floor(t * 8 + it.i * 0.5) % 2 === 0, bob = Math.sin((t / D) * TAU * 4 + it.i) * 0.7;
+        // it flies along the circle: turn it to face whichever way that runs across the screen
+        const flip = q.view(-Math.sin(it.th), 0, Math.cos(it.th))[0] < 0, f = BIRD[up ? 0 : 1], ins = flip ? (dx, dy) => f(-dx, dy) : f;
+        q.at(x, y, z, (pp) => icon(pp, 0, -3 + bob, 7, ins, [Bd[0], dim(Bd[1]), dim(Bd[2]), dim(Bd[3])], 1, { e: Bd[0], b: dim(hex(o.beak)), w: dim(Bd[1]) }));
+      } else {
+        const spin = (t / D) * TAU * 3 + it.i, Rm = [C[0], dim(C[3]), dim(C[4]), dim(C[5])], depth = 0.5 + 0.5 * front;
+        q.at(x, y, z, (pp) => {
+          if (depth > 0.55) icon(pp, 0, -1, 7, STAR(4 + 0.8 * depth, spin), Rm);
+          else icon(pp, 0, -1, 5, bitmap(STAR7), Rm);
+          pp.px(0, -1, far ? C[5] : C[6]);
+        });
+      }
+    }
+    // light after the solids, so a star behind the head doesn't light it
+    for (const it of items) {
+      if (it.bird) continue;
+      const [x, y, z] = at(it.th), depth = 0.5 + 0.5 * clamp(-q.depth(x, y, z) / R);
+      q.glow(x, y - 1, z, 11, C[4], 0.24 + 0.3 * depth);
+      q.glow(x, y - 1, z, 4, C[6], 0.3 * depth);
+      // a flare as it sweeps past the front, nearest the eye
+      const fr = Math.exp(-((Math.acos(clamp(-q.depth(x, y, z) / R, -1, 1)) / 0.32) ** 2));
+      if (fr > 0.08 && q.depth(x, y, z) < 0) q.at(x, y, z + 3, (pp) => flare(pp, 0, -1, 9 * fr, fr, [C[3], C[4], C[5], C[6]]));
+    }
+    // little twinkles popping round the circle
+    cycle(t, D, 14, o.seed + 3, (r) => r.range(0.25, 0.5), (age, life, r) => {
+      const th = r.range(0, TAU), u = age / life, d = a.w * r.range(0.45, 0.95), s = Math.sin(Math.PI * u), arm = Math.round(r.range(1, 2.6) * s);
+      const [x, y, z] = at(th, d, lift(q, a.y + 1 - r.range(0, 9)));
+      if (arm < 1) q.dot(x, y, z, C[6], s * 1.4);
+      else q.at(x, y, z, (pp) => sparkle(pp, 0, 0, arm, C[5], C[4], 0.35 * s));
+    });
+    q.glow(0, cy, 0, 26, C[4], 0.13);
+  },
+};

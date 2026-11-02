@@ -1,8 +1,8 @@
 // The blast's particle recipe (fire that cools, sparks, embers, grit, rocks, scorch, floor ring, lights) is adapted
 // from Sprite Fusion's open-source explosion (https://www.spritefusion.com/pixel-art-vfx/explosion),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Bits, Lights, P, B, Rng, fit, band, clamp, smooth, rand, mix, scale, hex, TAU, WHITE } from "../../core/index.js";
-import { cloud, Smoke, turnSprite } from "./_lib.js";
+import { Particles, Bits, Lights, P, B, Rng, fit, band, clamp, smooth, rand, mix, scale, hex, lit, space, TAU, WHITE } from "../../core/index.js";
+import { cloud, Smoke, turnSprite, Smoke3, cloud3, tube, quad3, frame3 } from "./_lib.js";
 
 export const meta = {
   name: "Homing missile",
@@ -172,3 +172,172 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the missile climbs out of its launcher, swings wide round the target in space and dives on it. It is a real body
+// of revolution (lit steel tube, red warhead, four swept fins) rolling about its own heading; the smoke trail hangs in the
+// air along the whole curve; the blast is a ball of fire, a sphere of shock rings, rocks and sparks thrown in every
+// direction, a column of smoke and a ring of dust rolling out round the floor.
+const PATH3 = [[-112, -20, 42], [-98, -106, 64], [-28, -112, 22], [0, -2, 0]];
+const bez = (u, i) => {
+  const v = 1 - u;
+  return v * v * v * PATH3[0][i] + 3 * v * v * u * PATH3[1][i] + 3 * v * u * u * PATH3[2][i] + u * u * u * PATH3[3][i];
+};
+const at3 = (u) => [bez(u, 0), bez(u, 1), bez(u, 2)];
+const heading3 = (u) => {
+  const v = 1 - u, d = (i) => 3 * v * v * (PATH3[1][i] - PATH3[0][i]) + 6 * v * u * (PATH3[2][i] - PATH3[1][i]) + 3 * u * u * (PATH3[3][i] - PATH3[2][i]);
+  const x = d(0), y = d(1), z = d(2), l = Math.hypot(x, y, z) || 1;
+  return [x / l, y / l, z / l];
+};
+
+export const three = {
+  meta: { size: [264, 168], origin: [132, 123], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const F = fit(o.palette, 9), M = fit(o.metal, 5), SM = fit(o.smoke, 7), R = new Rng(o.seed), floor = () => 0;
+    const st = hex(o.stone), stone = { light: mix(scale(st, 1.35), WHITE, 0.08), body: st, shade: scale(st, 0.64), dust: mix(scale(st, 1.2), hex("#968c96"), 0.3) };
+    const ps = new Particles({ rng: R, ground: floor, sparks: [F[7], F[6], F[4], F[3]] }), smoke = new Smoke3(R), rocks = new Bits({ ground: floor }), lights = new Lights();
+    const steel = lit(M), warhead = lit([F[0], F[1], F[2], F[3], F[4]]);
+    let t = 0, emit = 0, hit = false;
+    lights.add(PATH3[0][0], PATH3[0][1], 30, F[4], 0.7, 0.25, PATH3[0][2]);
+    for (let i = 0; i < 6; i++) smoke.add({ x: PATH3[0][0] + 2, y: PATH3[0][1] + 2, z: PATH3[0][2], vx: R.range(-30, 20), vy: R.range(-10, 15), vz: R.range(-20, 20), r0: 2, r1: R.range(5, 7.5), life: R.range(1.2, 1.8), a: 0.6, warm: 1, rise: 8 });
+    // a random direction on the upper half of a sphere, u (0 along the floor, 1 straight up) and speed sp
+    const dome = (u, sp) => {
+      const a = R.range(0, TAU), s = Math.sqrt(1 - u * u);
+      return [Math.cos(a) * s * sp, -u * sp, Math.sin(a) * s * sp];
+    };
+
+    const blast = () => {
+      const Y = -6;
+      lights.add(0, Y - 2, 52, hex("#ffb060"), 0.8, 0.8);
+      lights.add(0, Y - 2, 30, WHITE, 0.75, 0.1);
+      for (let i = 0; i < 26; i++) {
+        const a = R.range(0, TAU), b = R.range(-1, 1), s = Math.sqrt(1 - b * b), d = R.range(0, 6), sp = R.range(30, 170);
+        ps.spawn3(P.FIRE, Math.cos(a) * s * d, Y + b * d, Math.sin(a) * s * d, Math.cos(a) * s * sp, b * sp * 0.75 - 40, Math.sin(a) * s * sp, R.range(0.45, 0.95), 0, R.range(3.2, 6.5));
+      }
+      for (let i = 0; i < 5; i++) ps.spawn3(P.FIRE, R.range(-3, 3), Y, R.range(-3, 3), R.range(-10, 10), -R.range(90, 150), R.range(-10, 10), R.range(0.7, 1.1), 0, R.range(4, 5.5), R.range(0, 0.08));
+      for (let i = 0; i < 70; i++) {
+        const [vx, vy, vz] = dome(R.range(0.1, 1), R.range(110, 280));
+        ps.spawn3(P.SPARK, 0, Y, 0, vx, vy - 40, vz, R.range(0.2, 0.65));
+      }
+      for (let i = 0; i < 22; i++) {
+        const [vx, vy, vz] = dome(R.range(0, 1), R.range(30, 110)), a = R.range(0, TAU);
+        ps.spawn3(P.EMBER, Math.cos(a) * 4, Y, Math.sin(a) * 4, vx, vy - 50, vz, R.range(0.9, 1.6), F[4]);
+      }
+      for (let i = 0; i < 16; i++) {
+        const a = R.range(0, TAU), sp = R.range(0, 110);
+        rocks.add({ kind: B.CHUNK, x: R.range(-5, 5), y: -2, z: R.range(-5, 5), vx: Math.cos(a) * sp, vz: Math.sin(a) * sp, vy: -R.range(140, 290), g: 1, drag: 0.4, bounce: 0.3, life: R.range(1.5, 2.2), a: R.range(0, TAU), va: R.range(-16, 16), s: R.int(1, 2) });
+      }
+      for (let i = 0; i < 60; i++) {
+        const a = R.range(0, TAU), th = R.range(0, 0.55), sp = R.range(80, 220) * (1 - 0.4 * (th / 0.55));
+        ps.spawn3(P.GRIT, Math.cos(a) * 4, -1, Math.sin(a) * 4, Math.cos(a) * Math.sin(th) * sp, -Math.cos(th) * sp, Math.sin(a) * Math.sin(th) * sp, R.range(1, 1.8), R.pick([stone.light, stone.body, stone.body, stone.shade]), R.chance(0.4) ? 2 : 1);
+      }
+      // the smoke: a column off the fire and dust rolling out along the floor in a ring, lit by the blast at first
+      for (let i = 0; i < 18; i++) {
+        const [vx, vy, vz] = dome(R.range(0.2, 0.9), R.range(20, 90));
+        smoke.add({ x: vx * 0.05, y: Y + vy * 0.05, z: vz * 0.05, vx: vx * 0.7, vy: vy - 45 * (i / 18), vz: vz * 0.7, r0: 3, r1: R.range(8, 14), life: R.range(1.7, 2.2), a: 0.62, b: 0.88, warm: 1, rise: 30 + i * 2, drag: 1.8, delay: R.range(0.05, 0.35) });
+      }
+      for (let i = 0; i < 14; i++) {
+        const a = ((i + R.range(-0.3, 0.3)) / 14) * TAU, sp = R.range(60, 150);
+        smoke.add({ x: Math.cos(a) * R.range(0, 6), y: -3, z: Math.sin(a) * R.range(0, 6), vx: Math.cos(a) * sp, vy: -R.range(3, 12), vz: Math.sin(a) * sp, r0: 2.5, r1: R.range(6, 9), life: R.range(1.1, 1.7), a: 0.5, b: 0.75, warm: 0.3, rise: 6, drag: 3 });
+      }
+    };
+
+    return {
+      update(dt) {
+        t += dt;
+        if (t < FLY) {
+          // the trail: puffs left behind along the path, hanging where they're dropped, swelling and thinning
+          const u = progress(t), [x, y, z] = at3(u), [cx, cy, cz] = heading3(u), [px, py, pz] = at3(progress(Math.max(0, t - dt))), dl = Math.hypot(x - px, y - py, z - pz);
+          // one puff every pixel and a half of flight, wherever along this step it fell, so the trail has no beads
+          for (emit += dl / 1.5; emit > 1; emit--) {
+            const f = (emit - 1) / Math.max(1e-6, dl / 1.5), ex = x + (px - x) * f, ey = y + (py - y) * f, ez = z + (pz - z) * f;
+            smoke.add({ x: ex - cx * 7 + R.range(-0.6, 0.6), y: ey - cy * 7 + R.range(-0.6, 0.6), z: ez - cz * 7 + R.range(-0.6, 0.6), vx: -cx * R.range(10, 30) + R.range(-6, 6), vy: -cy * R.range(10, 30) + R.range(-6, 6), vz: -cz * R.range(10, 30) + R.range(-6, 6), r0: 1.4, r1: R.range(3.5, 6), life: R.range(1.5, 2.3), a: 0.5, b: 0.9, warm: 0.8, rise: 4, drag: 3, grow: 1.2 });
+          }
+          if (R.chance(0.35)) {
+            const a = R.range(0, TAU), c = R.range(0.7, 1), sp = R.range(40, 140), [e1, e2] = frame3(cx, cy, cz), s = Math.sqrt(1 - c * c);
+            const dx = -cx * c + (e1[0] * Math.cos(a) + e2[0] * Math.sin(a)) * s, dy = -cy * c + (e1[1] * Math.cos(a) + e2[1] * Math.sin(a)) * s, dz = -cz * c + (e1[2] * Math.cos(a) + e2[2] * Math.sin(a)) * s;
+            ps.spawn3(P.SPARK, x - cx * 7, y - cy * 7, z - cz * 7, dx * sp, dy * sp, dz * sp, R.range(0.15, 0.35));
+          }
+        } else if (!hit) {
+          hit = true;
+          blast();
+        }
+        for (const b of rocks.list)
+          if (b.rest && !b.dusted) {
+            b.dusted = true;
+            for (let i = 0; i < 2; i++) ps.spawn3(P.DUST, b.x + R.range(-1, 1), -0.5, b.z + R.range(-1, 1), R.range(-30, 30), -R.range(2, 14), R.range(-30, 30), R.range(0.3, 0.6), stone.dust, R.range(1.2, 2.2));
+          }
+        ps.update(dt);
+        smoke.update(dt);
+        rocks.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), list = smoke.puffs(), k = t - FLY;
+        // the scorch on the floor: white-hot where it hit, cooling through the fire to soot, fading late; then the
+        // shock ring running out over it, a true circle
+        if (hit) {
+          const fade = 1 - smooth(meta.duration - 1, meta.duration - 0.2, t), rx = 16 * Math.min(1, k / 0.06);
+          q.plane(0, 0, 0, null, rx + 1, (u, v, out) => {
+            const d = Math.hypot(u, v) / rx;
+            if (d > 1) return;
+            const T = Math.pow(clamp(1 - k / 1.4), 1.4) * (1.25 - d) - rand(Math.floor(u) * 31 + Math.floor(v), 3) * 0.35;
+            out.c = T > 0.06 ? F[Math.max(1, Math.min(8, Math.round(T * 8)))] : d < 0.5 ? hex("#0d0a12") : hex("#17121d");
+            out.a = fade;
+          });
+          const w = k / 0.45;
+          if (w < 1) q.ring(0, 0, 0, 60 * (1 - Math.pow(1 - w, 3)) + 2, Math.max(1, 4 * (1 - w)), (v) => (v > 0.7 ? F[7] : v > 0.4 ? F[4] : v > 0.2 ? stone.light : stone.body), Math.min(1, 1.15 - w));
+          // the fire's light pooling on the floor, as a smooth circle
+          const pool = Math.exp(-k / 0.45);
+          q.plane(0, 0, 0, null, 70, (u, v, out) => {
+            const f = 1 - Math.hypot(u, v) / 70;
+            if (f <= 0) return;
+            out.l = F[4];
+            out.k = f * f * 0.5 * pool;
+          });
+        }
+        // solids: the rocks, then the missile and the hit's flash, nearest first
+        rocks.draw(q);
+        if (t < FLY) {
+          const u = progress(t), [x, y, z] = at3(u), [cx, cy, cz] = heading3(u), fr = Math.floor(t * 30), roll = t * 5;
+          const [e1, e2] = frame3(cx, cy, cz), P_ = (s, rad = 0, ph = 0) => {
+            const ca = Math.cos(ph), sa = Math.sin(ph);
+            return [x + cx * s + (e1[0] * ca + e2[0] * sa) * rad, y + cy * s + (e1[1] * ca + e2[1] * sa) * rad, z + cz * s + (e1[2] * ca + e2[2] * sa) * rad];
+          };
+          // the body: lit steel, the red warhead, a white tip
+          tube(q, ...P_(-5), ...P_(2.4), 2, 2, steel);
+          tube(q, ...P_(2), ...P_(4.4), 2, 1.7, warhead);
+          tube(q, ...P_(4.2), ...P_(6.6), 1.7, 0, (nx, ny, nz) => (nz > 0.6 ? WHITE : warhead(nx, ny, nz)));
+          // four swept fins about the tail, rolling with the missile
+          for (let j = 0; j < 4; j++) {
+            const ph = roll + (j * TAU) / 4, Fa = P_(-2.6, 1.8, ph), Fb = P_(-6.4, 1.8, ph), Fc = P_(-7.8, 5.2, ph), Fd = P_(-5, 4.4, ph);
+            quad3(q, Fa, Fb, Fc, Fd, (uu, v) => (v > 0.7 ? M[4] : uu < 0.35 ? M[3] : M[2]));
+            q.line(...Fa, ...Fd, M[4]);
+            q.line(...Fd, ...Fc, M[3]);
+          }
+          // the motor: a short white-hot jet that flickers, the missile riding its heading
+          const J = 5 + 3 * rand(fr, 7);
+          q.beam(...P_(-6), ...P_(-6 - J), 3, (uu) => (uu < 0.3 ? WHITE : uu < 0.6 ? F[6] : F[4]), (uu) => 1.05 - uu * 0.7);
+          q.beam(...P_(-6.5), ...P_(-6.5 - J * 0.6), 1.4, (uu) => (uu < 0.5 ? WHITE : F[7]));
+          const [gx, gy, gz] = P_(-8), [hx, hy, hz] = P_(-7);
+          q.glow(gx, gy, gz, 18, F[4], 0.5);
+          q.glow(hx, hy, hz, 6, F[7], 0.5);
+        }
+        // the hit's flash: a white ball for two frames
+        if (k >= 0 && k < 0.07) {
+          const r = 14 * (0.8 + 0.2 * (1 - k / 0.07)), core = k < 0.035;
+          q.ball(0, -6, 0, r + 1.2, (nx, ny, nz) => (Math.hypot(nx, ny) > r / (r + 1.2) ? F[3] : Math.hypot(nx, ny) > 0.55 ? (core ? F[7] : F[6]) : core ? WHITE : F[7]));
+        }
+        // and a shell of flame: three rings, one on the floor and two standing, opening out
+        if (k >= 0 && k < 0.3) {
+          const rr = 8 + 30 * (1 - Math.pow(1 - k / 0.3, 3)), w = Math.max(1, 2.5 * (1 - k / 0.3) + 0.4), a = Math.min(1, (1 - k / 0.3) * 1.6);
+          q.ring(0, -6, 0, rr, w, F[5], a);
+          q.ring(0, -6, 0, rr, w, F[5], a, [0, 0, 1]);
+          q.ring(0, -6, 0, rr, w, F[5], a, [1, 0, 0]);
+        }
+        ps.draw(q);
+        cloud3(q, list, SM, [SM[0], mix(F[1], SM[1], 0.5), mix(F[2], SM[2], 0.4), F[3], F[4], F[6], F[7]], { dens: 1.4, max: 0.82, lit: 1.4 });
+        lights.draw(q);
+      },
+    };
+  },
+};

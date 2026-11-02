@@ -1,4 +1,4 @@
-import { Particles, Lights, P, Rng, fit, sparkle, clamp, seg, ease, TAU, WHITE, scale } from "../../core/index.js";
+import { Particles, Lights, P, Rng, fit, space, createFrame, Painter, sparkle, clamp, seg, ease, TAU, WHITE, scale } from "../../core/index.js";
 import { spell, drawWord, shake } from "./_lib.js";
 
 export const meta = {
@@ -163,3 +163,167 @@ export function create(o) {
     },
   };
 }
+
+// ---- 3D: the banner is a real band bent round a cylinder, standing in the world ---------------------------------------
+// The ribbon and its words are painted flat into a texture each frame. Thin slices of the bent band each sample it from
+// their own plane: the band keeps its pixels face on, narrows round the bend, and reads again from behind.
+
+const RAD = 80, H3 = -34, PROUD = 8, SLICE = 8, SR = 10, TW = 216, TH = 48;
+// where arc length s along the band lands on the floor plan: x, z
+// the band's frame is turned about the vertical axis by the camera's yaw (a cylindrical billboard), so its middle always faces the camera
+const rot = (x, z, yaw) => [x * Math.cos(yaw) + z * Math.sin(yaw), -x * Math.sin(yaw) + z * Math.cos(yaw)];
+const arcAt = (s, yaw = 0) => rot(RAD * Math.sin(s / RAD), RAD * (Math.cos(s / RAD) - 1), yaw);
+const sphere = (R) => {
+  const a = R.range(0, TAU), c = R.range(-1, 1), s = Math.sqrt(1 - c * c);
+  return [Math.cos(a) * s, c, Math.sin(a) * s];
+};
+
+export const three = {
+  meta: { size: [232, 126], origin: [116, 88], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const G = fit(o.palette, 8), Rb = fit(o.ribbon, 7), R = new Rng(o.seed), floor = () => 0;
+    const ps = new Particles({ rng: R, ground: floor, sparks: [G[7], G[6], G[5], G[3]] }), lights = new Lights();
+    const word = spell(o.text, "mini"), TS = 2, TX = -(word.w * TS) / 2 - 4, TY = -5;
+    const glyphs = word.letters.filter((Lt) => Lt.g);
+    const tex = createFrame(TW, TH), tp = new Painter(tex);
+    // seven stars pop in a ring round the banner, above and below it, and circle it
+    const sats = Array.from({ length: 7 }, (_, i) => ({ an: (i / 7) * TAU + R.range(-0.3, 0.3), r: R.range(60, 78), y: H3 + (i % 2 ? 1 : -1) * R.range(15, 22), t0: STAMP + 0.12 + i * 0.12 + R.range(0, 0.04), dur: R.range(0.3, 0.45), L: R.range(3, 6) }));
+    let t = 0, stamped = false, popped = false;
+    const end = meta.duration - 0.05;
+    // the seal stands proud of the band at its right end, and drops in from above
+    const sealAt = (fall = 0, yaw = 0) => {
+      const th = SX / RAD, [x, z] = rot(RAD * Math.sin(th) + Math.sin(th) * PROUD, RAD * (Math.cos(th) - 1) + Math.cos(th) * PROUD, yaw);
+      return [x, H3 + SY - 14 * fall, z];
+    };
+    const burst = (S, n, sp0, sp1, big) => {
+      for (let i = 0; i < n; i++) {
+        const [dx, dy, dz] = sphere(R), sp = R.range(sp0, sp1);
+        ps.spawn3(P.STAR, S[0] + dx * 11, S[1] + dy * 11, S[2] + dz * 11, dx * sp, dy * sp, dz * sp, Math.min(R.range(0.3, 0.5), end - t), R.pick([G[7], G[6], G[5]]), i % 3 ? 1.2 : R.range(big, big + 0.8));
+      }
+    };
+    return {
+      update(dt) {
+        t += dt;
+        if (!stamped && t >= STAMP) {
+          stamped = true;
+          const S = sealAt(0, o.camera?.yaw ?? 0);
+          lights.add(S[0], S[1], 40, G[5], 0.7, 0.35, S[2]);
+          lights.add(S[0], S[1], 18, WHITE, 0.7, 0.1, S[2]);
+          burst(S, 16, 45, 95, 1.8);
+          for (let i = 0; i < 12; i++) {
+            const [dx, dy, dz] = sphere(R), sp = R.range(90, 190);
+            ps.spawn3(P.SPARK, S[0] + dx * 10, S[1] + dy * 10, S[2] + dz * 10, dx * sp, dy * sp - 20, dz * sp, R.range(0.15, 0.3));
+          }
+        }
+        // gold motes drift up out of the volume round the banner while it holds
+        if (t > STAMP && t < POPSEAL && R.chance(0.12)) {
+          const an = R.range(0, TAU), r = L * Math.sqrt(R.next());
+          ps.spawn3(P.STAR, Math.cos(an) * r, H3 + R.range(-BH, BH), -10 + Math.sin(an) * r, R.range(-5, 5), -R.range(8, 20), R.range(-5, 5), Math.min(R.range(0.4, 0.8), end - t), R.pick([G[6], G[5]]), 0.6);
+        }
+        if (!popped && t >= POPSEAL + 0.05) {
+          popped = true;
+          const S = sealAt(0, o.camera?.yaw ?? 0);
+          lights.add(S[0], S[1], 30, G[6], 0.6, 0.2, S[2]);
+          burst(S, 10, 40, 90, 1.5);
+        }
+        ps.update(dt);
+        lights.update(dt);
+      },
+
+      draw(p) {
+        const q = space(p, o), yaw = q.camera.yaw ?? 0;
+        const [jx, jy] = shake(t, 2, STAMP, 0.18, o.seed);
+        // the ribbon unrolls from the middle, and rolls back up at the end
+        const l = L * (t < ROLL ? ease.outCubic(seg(t, 0, OPEN)) : 1 - ease.inCubic(seg(t, ROLL, ROLL + 0.26)));
+        const tails = ease.outBack(seg(t, OPEN - 0.02, OPEN + 0.12), 2) * (t < ROLL ? 1 : 0);
+        const sh = seg(t, 1.2, 1.5), shine = sh > 0 && sh < 1 ? -L - 10 + (2 * L + 20) * sh : null;
+        const dk = seg(t, STAMP - 0.12, STAMP), pk = t - POPSEAL, sealOn = dk > 0 && pk < 0.08;
+        const fall = 1 - ease.inQuad(dk), rk = (t - STAMP) / 0.3, S0 = sealAt(0, yaw), thS = SX / RAD, ctr = rot(0, -9, yaw);
+        if (l >= 1) {
+          // the flat band: the ribbon, its words and the seal's shadow on it
+          tex.color.fill(0);
+          tp.reset().place(TW / 2, TH / 2);
+          ribbon(tp, Rb, G, l, tails, t);
+          if (shine !== null)
+            for (let y = -BH + 1; y < BH; y++) {
+              const x = shine + (y + BH) * 0.6;
+              if (Math.abs(x) < l - 2) (tp.px(x, y, Rb[6]), tp.px(x + 1, y, Rb[5]));
+            }
+          const items = [];
+          glyphs.forEach((Lt, i) => {
+            const u = t - (TYPE + i * STEP), x = TX + Lt.x * TS + jx;
+            if (u < 0 || Math.abs(x + Lt.w) > l - 3) return;
+            const s = u < 0.035 ? 2.6 : TS;
+            items.push({ g: Lt.g, x: x - ((s - TS) * Lt.w) / 2, y: TY + jy - ((s - TS) * 5) / 2, sx: s, sy: s, flash: u < 0.07 ? 1 : 0 });
+          });
+          drawWord(tp, items, { fill: [G[4], G[5], G[6], G[7]], edge: WHITE, under: G[3], outline: Rb[0], shadow: Rb[1] });
+          if (sealOn && dk < 1) tp.ellipse(SX, SY + 12, 10 * (1 - 0.3 * fall), 2, Rb[0], 0.5 * dk);
+          // thin slices, each in its own plane, bend it round the cylinder; from behind the words read the right way round too
+          const lim = l + (tails > 0.02 ? 24 : 4);
+          for (let s = -Math.floor(lim / SLICE) * SLICE; s <= lim; s += SLICE) {
+            const th = s / RAD, [x, z] = arcAt(s, yaw), nr = rot(Math.sin(th), Math.cos(th), yaw), n = [nr[0], 0, nr[1]];
+            for (const cv of tails > 0.02 && Math.abs(s) > l - 20 ? [0, 7] : [0])
+              q.plane(x, H3 + cv, z, n, SR, (u, v, out) => {
+                const X = Math.floor(TW / 2 + s + u), Y = Math.floor(TH / 2 + cv + v);
+                if (X < 0 || Y < 0 || X >= TW || Y >= TH) return;
+                const c = tex.color[Y * TW + X], a = c >>> 24;
+                if (!a) return;
+                out.c = a === 255 ? c : (c & 0xffffff) | 0xff000000;
+                out.a = a / 255;
+                out.blend = a < 255;
+              });
+          }
+          // while it unrolls the ends are real rolls of cloth: capsules standing at the edges of the band
+          if (tails < 0.02)
+            for (const sd of [-1, 1]) {
+              const [x, z] = arcAt(sd * l, yaw);
+              q.beam(x, H3 - BH - 2, z, x, H3 + BH + 2, z, 4.6, (u, v) => (v < 0.3 ? Rb[4] : v < 0.7 ? Rb[2] : Rb[1]));
+            }
+        }
+        // the seal: drops in big and faint, stamps with a squash and a flash, ticks, pops at the end
+        if (sealOn) {
+          const sq = Math.exp(-(t - STAMP) * 30) * (t >= STAMP ? 1 : 0);
+          let s = 1 + 0.8 * fall, sx = s * (1 + 0.2 * sq), sy = s * (1 - 0.2 * sq);
+          if (pk > 0) (sx = sy = 1 + 0.3 * (pk / 0.08));
+          const white = (t >= STAMP && t < STAMP + 0.05) || pk > 0, Sf = sealAt(fall, yaw), tg = rot(Math.cos(thS), -Math.sin(thS), yaw);
+          // the shake nudges it along the band and up and down
+          q.at(Sf[0] + jx * tg[0], Sf[1] + jy, Sf[2] + jx * tg[1], (pp) => seal(pp, G, 0, 0, 11, sx, sy, white, seg(t, STAMP + 0.08, STAMP + 0.24)));
+        }
+        // light on the floor under the banner, and a shadow
+        if (l >= 1)
+          q.plane(ctr[0], 0, ctr[1], null, 54, (u, v, out) => {
+            const d = Math.hypot(u, v) / 54;
+            if (d > 1) return;
+            out.c = Rb[0];
+            out.a = 0.5 * (l / L) * (1 - d * d);
+            out.blend = true;
+            out.l = G[4];
+            out.k = 0.2 * (l / L) * (1 - d) * (1 - d);
+          });
+        // a ring of gold ticks turns slowly on the floor round the banner
+        if (l >= 1) {
+          const lk = l / L;
+          q.ring(ctr[0], 0, ctr[1], 66, 2.5, (v) => (v > 0.5 ? G[5] : G[3]), (v, g) => (((g + t * 0.5 + 20 * TAU) % (TAU / 16)) < (TAU / 16) * 0.5 ? 0.85 * lk : 0));
+        }
+        // the stamp's shock: a ring racing out across the floor from under the seal, a ring round the seal in the band's plane
+        if (rk > 0 && rk < 1) {
+          q.ring(S0[0], 0, S0[2], 10 + 30 * ease.outCubic(rk), 2.5 * (1 - rk) + 1, rk < 0.3 ? WHITE : G[5], 1.2 - rk);
+          const nS = rot(Math.sin(thS), Math.cos(thS), yaw);
+          q.ring(S0[0], S0[1], S0[2], 12 + 13 * ease.outCubic(rk), 1.8, rk < 0.3 ? WHITE : G[5], 1.2 - rk, [nS[0], 0, nS[1]]);
+        }
+        // stars pop round the banner one after another, circling it: they pass behind it and in front
+        for (const s of sats) {
+          const u = (t - s.t0) / s.dur;
+          if (u > 0 && u < 1) {
+            const an = s.an + (t - s.t0) * 1.6;
+            q.at(ctr[0] + Math.cos(an) * s.r, s.y, ctr[1] + Math.sin(an) * s.r * 0.8, (pp) => sparkle(pp, 0, 0, s.L * Math.pow(Math.sin(u * Math.PI), 0.7), G[6], G[5], 0.5));
+          }
+        }
+        ps.draw(q);
+        q.glow(ctr[0], H3, ctr[1], 76, G[4], 0.2 * seg(t, 0.2, 0.5) * (1 - seg(t, ROLL, ROLL + 0.2)));
+        if (sealOn) q.glow(S0[0], S0[1], S0[2], 22, G[5], 0.3 + ((t >= STAMP && t < STAMP + 0.05) || pk > 0 ? 0.4 : 0));
+        lights.draw(q);
+      },
+    };
+  },
+};

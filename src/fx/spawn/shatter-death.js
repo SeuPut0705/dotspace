@@ -1,7 +1,7 @@
 // The faceted ice shell, the cracks, and the shards, mist and glints of the burst are adapted from Sprite
 // Fusion's open-source ice (https://www.spritefusion.com/pixel-art-vfx/ice), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Bits, Lights, P, B, Rng, fit, crystal, sparkle, clamp, smooth, ease, rand, TAU, WHITE, mix, READY } from "../../core/index.js";
-import { bodyOf } from "./_lib.js";
+import { Particles, Bits, Lights, P, B, Rng, fit, crystal, sparkle, clamp, smooth, ease, rand, space, TAU, WHITE, mix, READY } from "../../core/index.js";
+import { bodyOf, rightOf, toward } from "./_lib.js";
 
 export const meta = {
   name: "Shatter death",
@@ -30,9 +30,9 @@ export const act = {
 const LOCK = 0.5, CRACK = 1.05, BURST = 1.4;
 export const actorAlpha = (t) => (t < BURST ? 1 : 0);
 
-export function create(o) {
-  const C = fit(o.palette, 8), R = new Rng(o.seed), floor = () => 0;
-  const body = bodyOf(o.actor, C), W = body.w + 2, H = body.h + 1, X0 = body.x - 1, Y0 = body.y - 1;
+// the ice shell round the body, its facets, spikes and cracks: one place for the 2D effect and its 3D variant
+function buildIce(body, C, R) {
+  const W = body.w + 2, H = body.h + 1, X0 = body.x - 1, Y0 = body.y - 1;
   // the ice: the body grown by a pixel (not below its feet), cut into facets round a few seeds
   const ice = new Int16Array(W * H).fill(-1), col = new Uint32Array(W * H), glass = new Uint32Array(W * H), solid = new Uint8Array(W * H);
   const inBody = (mx, my) => body.on(mx, my);
@@ -101,6 +101,12 @@ export function create(o) {
     cracks.push(pts);
   };
   for (let i = 0; i < 7; i++) walk(IX, IY, (i / 7) * TAU + R.range(-0.3, 0.3), 20);
+  return { W, H, X0, Y0, ice, col, glass, solid, spikes, cracks, IX, IY, at };
+}
+
+export function create(o) {
+  const C = fit(o.palette, 8), R = new Rng(o.seed), floor = () => 0;
+  const body = bodyOf(o.actor, C), { W, H, X0, Y0, ice, col, glass, solid, spikes, cracks, IX, IY, at } = buildIce(body, C, R);
 
   const ps = new Particles({ rng: R, ground: floor, sparks: [WHITE, C[6], C[5], C[4]], haze: C[5] });
   const bits = new Bits({ ground: floor }), lights = new Lights(), pieces = [], rime = [];
@@ -281,3 +287,234 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the ice shell is the stock character's flat sprite, frozen and cracked as in 2D, with rime spikes standing in a
+// ring round it and frost spreading over the floor as a true disc. At the burst every facet flies as a flat shard of
+// ice tumbling about a random axis (a decal on a turning plane), bounces, and ends lying flat on the floor to melt; the
+// bits, mist and glints leave over a whole sphere.
+export const three = {
+  meta: { size: [208, 116], origin: [104, 82], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), R = new Rng(o.seed), floor = () => 0;
+    const body = bodyOf(o.actor, C), { W, H, X0, Y0, ice, col, glass, solid, spikes: flat, cracks, IX, IY, at } = buildIce(body, C, R);
+    // rime spikes: the ones on the ice stand in its thickness, the ones at the feet in a ring round it
+    const spikes = flat.filter((s) => s.base !== 0).map((s, i) => ({ ...s, z: (rand(i, 5) - 0.5) * 6, ring: null }));
+    for (let i = 0; i < 6; i++) {
+      const h = i % 2 ? R.range(5, 7) : R.range(8, 11), a = ((i + 0.5) / 6) * TAU + R.range(-0.25, 0.25), r = R.range(8, 13);
+      spikes.push({ x: Math.cos(a) * r, z: Math.sin(a) * r, base: 0, h, w: i % 2 ? 3.5 : 4.5, lean: h * R.range(0.25, 0.45), at: R.range(0.08, 0.2), ring: [Math.cos(a), Math.sin(a)] });
+    }
+    const ps = new Particles({ rng: R, ground: floor, sparks: [WHITE, C[6], C[5], C[4]], haze: C[5] });
+    const bits = new Bits({ ground: floor }), lights = new Lights(), pieces = [], rime = [];
+    let t = 0, locked = false, cracked = false, burst = false;
+    const level = (t) => H * (1 - ease.outCubic(clamp(t / LOCK)));
+    const radial = (n, up) => {
+      // a direction out over a whole sphere (up > 0 leans it upward), [x, y(down), z]
+      const a = R.range(0, TAU), e = up ? R.range(0.05, 1.5) : R.range(-0.1, 0.5);
+      return [Math.cos(a) * Math.cos(e) * n, -Math.sin(e) * n, Math.sin(a) * Math.cos(e) * n];
+    };
+
+    // the burst: every facet flies as one flat shard of ice, carrying its own pixels
+    function shatter() {
+      const cells = new Map();
+      for (let y = 0; y < H; y++)
+        for (let x = 0; x < W; x++) {
+          const k = ice[y * W + x];
+          if (k < 0) continue;
+          if (!cells.has(k)) cells.set(k, []);
+          const i = y * W + x;
+          cells.get(k).push([x, y, solid[i] ? col[i] : mix(col[i], glass[i], 0.3)]);
+        }
+      for (const px of cells.values()) {
+        let cx = 0, cy = 0;
+        for (const [x, y] of px) (cx += x + 0.5), (cy += y + 0.5);
+        (cx /= px.length), (cy /= px.length);
+        const map = new Map(), r = Math.max(...px.map(([x, y]) => Math.hypot(x + 0.5 - cx, y + 0.5 - cy))) + 1;
+        for (const [x, y, c] of px) map.set(`${Math.round(x + 0.5 - cx)},${Math.round(y + 0.5 - cy)}`, c);
+        const dx = cx - IX, dy = cy - IY, d = Math.hypot(dx, dy) || 1, sp = R.range(55, 115);
+        const life = R.range(1.3, 1.85);
+        pieces.push({
+          id: pieces.length + 1, x: X0 + cx, y: Y0 + cy, z: R.range(-2, 2), vx: (dx / d) * sp + R.range(-18, 18), vy: (dy / d) * sp * 0.6 - R.range(110, 220), vz: R.range(-1, 1) * sp * 0.9,
+          a: 0, va: R.range(-9, 9), th: Math.PI / 2, ph: Math.PI / 2, wth: R.range(-7, 7), wph: R.range(-7, 7), flat: 0, r, map, life, max: life, rest: false, n: px.length,
+        });
+      }
+      for (let i = 0; i < 64; i++) {
+        const [vx, vy, vz] = radial(R.range(60, 180), true);
+        bits.add({ kind: B.SHARD, x: X0 + IX + R.range(-6, 6), y: Y0 + IY + R.range(-8, 8), z: R.range(-4, 4), vx, vy, vz, g: 0.85, drag: 0.6, bounce: 0.3, life: R.range(0.9, 1.6), a: R.range(0, TAU), va: R.range(-20, 20), s: R.range(1.5, 3.2), c: R.pick([C[7], C[6], C[5]]) });
+      }
+      for (let i = 0; i < 14; i++) {
+        const a = R.range(0, TAU), sp = R.range(20, 80);
+        ps.spawn3(P.VAPOUR, R.range(-10, 10), -R.range(1, 20), R.range(-10, 10), Math.cos(a) * sp, -R.range(4, 20), Math.sin(a) * sp, R.range(0.6, 1.1), R.chance(0.5) ? C[6] : C[5], R.range(2.5, 4.5));
+      }
+      for (let i = 0; i < 16; i++) ps.spawn3(P.STAR, R.range(-16, 16), -R.range(4, 38), R.range(-10, 10), R.range(-40, 40), -R.range(10, 60), R.range(-40, 40), R.range(0.4, 1), R.pick([WHITE, C[6]]), R.range(1, 2.4));
+      lights.add(0, Y0 + IY, 46, WHITE, 0.75, 0.14, 0);
+      lights.add(0, Y0 + IY, 70, C[4], 0.6, 0.5, 0);
+    }
+
+    return {
+      update(dt) {
+        t += dt;
+        // the cold climbs: rime sparkles at the frost line, vapour rolls off the feet
+        if (t < LOCK) {
+          const y = Y0 + level(t);
+          if (R.chance(0.7)) ps.spawn3(P.STAR, R.range(-10, 10), y, R.range(-6, 6), R.range(-12, 12), -R.range(0, 18), R.range(-12, 12), R.range(0.25, 0.5), R.chance(0.5) ? WHITE : C[6], R.range(0.8, 1.8));
+          if (R.chance(0.25)) {
+            const a = R.range(0, TAU), sp = R.range(15, 50);
+            ps.spawn3(P.VAPOUR, R.range(-8, 8), -1, R.range(-8, 8), Math.cos(a) * sp, -R.range(2, 10), Math.sin(a) * sp, R.range(0.6, 1), C[6], R.range(2, 3.5));
+          }
+        }
+        if (!locked && t >= LOCK) {
+          locked = true;
+          lights.add(0, -20, 54, C[4], 0.6, 0.3, 0);
+          for (let i = 0; i < 6; i++) ps.spawn3(P.STAR, R.range(-12, 12), -R.range(4, 36), R.range(-8, 8), 0, -4, 0, R.range(0.35, 0.7), R.pick([WHITE, C[6]]), R.range(1.2, 2.4));
+        }
+        if (locked && t < CRACK && R.chance(0.08)) ps.spawn3(P.STAR, R.range(-11, 11), -R.range(2, 36), R.range(-8, 8), 0, -3, 0, R.range(0.3, 0.6), R.pick([WHITE, C[6]]), R.range(0.8, 2));
+        if (!cracked && t >= CRACK) {
+          cracked = true;
+          for (let i = 0; i < 5; i++) {
+            const [vx, vy, vz] = radial(R.range(60, 150), true);
+            bits.add({ kind: B.SHARD, x: X0 + IX, y: Y0 + IY, z: R.range(-3, 3), vx, vy: vy - 40, vz, g: 0.8, drag: 0.6, bounce: 0.3, life: R.range(0.5, 0.9), a: R.range(0, TAU), va: R.range(-20, 20), s: R.range(1, 2), c: C[6] });
+          }
+          lights.add(0, Y0 + IY, 24, WHITE, 0.7, 0.1, 0);
+        }
+        if (!burst && t >= BURST) {
+          burst = true;
+          shatter();
+        }
+        // the pieces: tumble, bounce, skid to a stop, lie flat, melt
+        for (let i = pieces.length - 1; i >= 0; i--) {
+          const k = pieces[i];
+          if ((k.life -= dt) <= 0) {
+            pieces.splice(i, 1);
+            continue;
+          }
+          if (k.rest) {
+            k.flat = Math.min(1, k.flat + dt * 8);
+            k.y += (-1.2 - k.y) * Math.min(1, dt * 14);
+            if (t < meta.duration - 0.9 && R.chance(0.02)) ps.spawn3(P.VAPOUR, k.x, k.y - 1, k.z, R.range(-4, 4), -R.range(4, 10), R.range(-4, 4), R.range(0.5, 0.8), C[5], R.range(1.5, 2.5));
+            continue;
+          }
+          k.vy += 900 * dt;
+          k.vx -= k.vx * 0.5 * dt;
+          k.vz -= k.vz * 0.5 * dt;
+          k.x += k.vx * dt;
+          k.y += k.vy * dt;
+          k.z += k.vz * dt;
+          k.a += k.va * dt;
+          k.th += k.wth * dt;
+          k.ph += k.wph * dt;
+          const g = -(1 + k.r * 0.8 * Math.abs(Math.sin(k.th)));
+          if (k.y > g && k.vy > 0) {
+            k.y = g;
+            if (k.vy > 90) {
+              rime.push({ x: k.x, z: k.z, w: 2 + k.r * 0.6, t0: t });
+              k.vy *= -0.32;
+              k.vx *= 0.65;
+              k.vz *= 0.65;
+              k.va = k.va * 0.5 + R.range(-4, 4);
+              k.wth = k.wth * 0.5 + R.range(-3, 3);
+              k.wph = k.wph * 0.5 + R.range(-3, 3);
+              if (k.n > 8) ps.spawn3(P.STAR, k.x, k.y, k.z, 0, -6, 0, 0.3, WHITE, 1.2);
+              for (let j = 0; j < 2; j++) {
+                const a = R.range(0, TAU), sp = R.range(10, 30);
+                ps.spawn3(P.DUST, k.x + R.range(-2, 2), -0.5, k.z + R.range(-2, 2), Math.cos(a) * sp, -R.range(2, 8), Math.sin(a) * sp, R.range(0.3, 0.5), C[5], R.range(1.2, 2));
+              }
+            } else if (Math.hypot(k.vx, k.vz) > 12) (k.vy = 0), (k.vx *= 0.9), (k.vz *= 0.9), (k.va *= 0.85), (k.wth *= 0.85), (k.wph *= 0.85);
+            else (k.rest = true), (k.vx = k.vy = k.vz = 0);
+          }
+        }
+        bits.update(dt);
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o);
+        if (!burst) {
+          // the ice body: everything below the frost line, a white rime edge at the line itself
+          const lv = level(t), shake = t > CRACK && t < BURST ? (Math.floor(t * 50) % 2 ? 1 : -1) * (t > BURST - 0.15 ? 1 : 0.5) : 0;
+          const glint = t > LOCK ? ((t - LOCK) * 0.9) % 1.6 : -1;
+          for (let y = 0; y < H; y++) {
+            if (y < Math.floor(lv)) continue;
+            for (let x = 0; x < W; x++) {
+              const i = y * W + x;
+              if (ice[i] < 0) continue;
+              let c = y === Math.floor(lv) && t < LOCK ? (rand(x, 5) < 0.6 ? WHITE : C[6]) : t >= LOCK && t < LOCK + 0.05 ? WHITE : col[i];
+              const g = Math.abs((x + (H - y) * 0.6) / (W + H * 0.6) - glint), on = glint >= 0 && glint <= 1;
+              if (on && g < 0.035) c = WHITE;
+              else if (on && g < 0.07 && c !== C[3]) c = C[6];
+              p.px(X0 + x + shake, Y0 + y, c);
+              if (!solid[i] && c === col[i]) p.blend(X0 + x + shake, Y0 + y, glass[i], 0.3);
+            }
+          }
+          for (let y = Math.max(0, Math.floor(lv) - 1); y <= H; y++)
+            for (let x = -1; x <= W; x++) if (!at(x, y) && (at(x - 1, y) || at(x + 1, y) || (at(x, y + 1) && y + 1 >= lv) || at(x, y - 1)) && y < H) p.px(X0 + x + shake, Y0 + y, C[0]);
+          if (cracked) {
+            const k = clamp((t - CRACK) / 0.25);
+            for (const pts of cracks)
+              for (let i = 0, n = Math.floor(pts.length * k); i < n; i++) {
+                const [x, y] = pts[i], fresh = i > n - 3 && t - CRACK < 0.3;
+                p.px(X0 + x + shake, Y0 + y, fresh ? WHITE : C[7]);
+                if (!fresh) p.px(X0 + x + shake, Y0 + y + 1, C[1]);
+              }
+          }
+          // rime spikes standing round and on the ice, leaning the way they grow: out from the body
+          for (const s of spikes) {
+            const g = ease.outBack(clamp((t - s.at) / 0.12), 2.4);
+            if (g <= 0) continue;
+            const lean = s.ring ? rightOf(q, s.ring[0], s.ring[1]) * s.lean : s.lean;
+            q.at(s.x + shake, s.base, s.z ?? 0, (pp) => crystal(pp, 0, 0, s.h * g, s.w, lean * g, C, { white: t < s.at + 0.04 }));
+          }
+          q.glow(0, -18, 0, 30, C[4], 0.18 * smooth(0, LOCK, t));
+          if (t > LOCK && t < LOCK + 0.18) q.at(...toward(q, 4), (pp) => sparkle(pp, -4, Y0 + 8, Math.round(8 * (1 - (t - LOCK) / 0.18)), WHITE, C[5], 0.6));
+        } else if (t < BURST + 0.08) {
+          // the burst frame
+          const k = (t - BURST) / 0.08;
+          q.ball(0, Y0 + IY, 0, 10 * (1 - k) + 3, WHITE);
+        }
+        // frost on the floor under the feet, spreading as the ice locks, gone as the pieces melt: a true disc of rime
+        const fk = smooth(0.1, LOCK, t) * (1 - smooth(BURST + 0.6, BURST + 1.6, t)), reach = 6 + 12 * smooth(0, LOCK + 0.3, t);
+        if (fk > 0) {
+          q.plane(0, 0, 0, null, reach + 1, (u, v, out) => {
+            const e = 1 - Math.hypot(u, v) / (reach + 1);
+            if (e <= 0) return;
+            const h = rand(Math.round(u), Math.round(v), 17);
+            if (h > 0.6) return;
+            out.c = h < 0.25 ? WHITE : h < 0.45 ? C[6] : C[5];
+            out.a = fk * Math.min(1, e * 2.2);
+          });
+          q.glow(0, -2, 0, 26, C[4], 0.25 * fk);
+        }
+        // rime left where the pieces hit the floor
+        for (const r of rime) {
+          const a = clamp((t - r.t0) / 0.08) * (1 - smooth(meta.duration - 1, meta.duration - 0.15, t));
+          if (a <= 0) continue;
+          q.plane(r.x, 0, r.z, null, r.w, (u, v, out) => {
+            const d = Math.hypot(u, v) / r.w;
+            if (d > 1) return;
+            const h = rand(Math.round(u), Math.round(v), 23);
+            if (h > 0.7) return;
+            out.c = h < 0.25 ? WHITE : h < 0.5 ? C[6] : C[5];
+            out.a = a * (1 - d * 0.6);
+          });
+        }
+        // the shards: each drawn back from its own little map on its own turning plane, so they spin without holes
+        for (const k of pieces) {
+          const ca = Math.cos(k.a), sa = Math.sin(k.a), fade = Math.min(1, k.life / 0.5), r = Math.ceil(k.r);
+          let nx = Math.sin(k.th) * Math.cos(k.ph), ny = Math.cos(k.th), nz = Math.sin(k.th) * Math.sin(k.ph);
+          if (ny > 0) (nx = -nx), (ny = -ny), (nz = -nz);
+          const f = k.flat, n = [nx * (1 - f), ny * (1 - f) - f, nz * (1 - f)];
+          q.decal(k.x, k.y, k.z, n, r + 1, (pp) => {
+            for (let py = -r; py <= r; py++)
+              for (let px = -r; px <= r; px++) {
+                const ux = Math.round(px * ca + py * sa), uy = Math.round(-px * sa + py * ca), c = k.map.get(`${ux},${uy}`);
+                if (c && rand(ux, uy, k.id) < fade) pp.px(px, py, k.max - k.life < 0.05 ? WHITE : c);
+              }
+          });
+          if (k.n > 6) q.glow(k.x, k.y, k.z, 6, C[5], 0.2 * fade);
+        }
+        bits.draw(q);
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

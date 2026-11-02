@@ -1,7 +1,7 @@
 // The bead swelling at the tip and the falling drop's tail follow Sprite Fusion's open-source blood
 // (https://www.spritefusion.com/pixel-art-vfx/blood), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { fit, clamp, smooth, ease, TAU, WHITE } from "../../core/index.js";
-import { WATER, bead, ring, rock } from "./_lib.js";
+import { fit, clamp, smooth, ease, space, lit, TAU, WHITE } from "../../core/index.js";
+import { WATER, bead, ring, ring3, rock } from "./_lib.js";
 
 export const meta = {
   name: "Drip",
@@ -125,3 +125,76 @@ export function draw(p, t, o) {
   p.glow(0, -H + 2, 8, C[5], 0.16);
   p.glow(0, 0, 26, C[3], 0.14);
 }
+
+// 3D: a hanging stalactite over a round puddle. The stone is a cluster of lit balls with a dripstone point, the
+// puddle a true circle of dark water on the floor, the plink's crown a ring of flecks thrown out all round, and
+// every ring a true circle spreading over it.
+export const three = {
+  meta: { size: [80, 118], origin: [40, 106], camera: { pitch: 0.38 } },
+  draw(p, t, o) {
+    const q = space(p, o), C = fit(o.palette, 8), H = o.height, land = landAt(H), shade = lit(rock().slice(0, 5));
+    if (o.source) {
+      // a lump of ceiling rock and a stalactite tapering in ridged steps to the point at (0, -H)
+      for (const [x, y, z, r] of [[0, -H - 30, 0, 11], [-12, -H - 27, -2, 8], [10.5, -H - 26, -4, 7.5], [3, -H - 25, 9, 6], [-5, -H - 26, 7, 5]]) q.ball(x, y, z, r, shade);
+      for (let i = 0; i < 12; i++) q.ball(0, -H - 1.6 - i * 2.1, 0, 1.5 + i * 0.72 + (i % 3 === 1 ? 0.5 : 0), shade);
+      // a wet streak down the front of the point, catching the light
+      q.line(-0.5, -H - 12.5, 4.3, -0.2, -H - 1.6, 1.5, (u) => C_WET[u > 0.6 ? 1 : 0]);
+      q.px(-0.2, -H - 1.4, 1.6, WHITE);
+    }
+    // the puddle: dark see-through water with a lit far edge, a darker near edge
+    q.plane(0, 0, 0, null, PRX, (u, v, out) => {
+      const d = (u * u + v * v) / (PRX * PRX);
+      if (d > 1) return;
+      const far = Math.sin(Math.atan2(v, u) + q.camera.yaw) < 0, edge = d > 0.9 && far;
+      out.blend = true;
+      out.c = edge ? (Math.abs(u) < PRX * 0.5 ? C[4] : C[3]) : d > 0.8 ? C[2] : C[1];
+      out.a = edge ? 0.95 : 0.72 * Math.min(1, (1 - d) * 5);
+    });
+    // the bead swells at the tip, wobbling, and catches the light; its neck stretches before it lets go
+    if (t < LET) {
+      const k = t / LET, r = 0.7 + 2.3 * ease.inQuad(k), wob = 0.15 * Math.sin(t * 26) * k, neck = smooth(0.82, 1, k) * 2.5, cy = -H + r + neck;
+      if (neck > 0.2) q.line(0, -H, 0, 0, cy - r, 0, C[5]);
+      q.at(0, cy, 0, (pp) => {
+        pp.ellipse(0, 0, r * (1 - wob), r * (1 + wob) + 0.3 * k, (d, a) => (d > 0.72 ? (Math.cos(a) < 0 && Math.sin(a) < 0.3 ? C[5] : C[3]) : d < 0.35 && Math.cos(a) > 0 ? C[6] : C[4]));
+        if (r > 1) pp.px(-r * 0.4, -r * 0.45, WHITE);
+      });
+      q.glow(0, cy, 0, 4 + r * 2, C[5], 0.14 + 0.14 * k);
+    } else {
+      const s = (t - LET) / 0.15;
+      if (s < 1) q.ball(0, -H + 0.8, 0, 1.2 * (1 - s * 0.6) + 0.3, C[4]);
+    }
+    // the fall, stretched by its speed
+    const f = t - LET;
+    if (f > 0 && t < land) {
+      const y = -H + 3 + 0.5 * G * f * f, vy = G * f;
+      q.at(0, y, 0, (pp) => bead(pp, 0, 0, 0, vy, 3, C));
+      q.glow(0, y, 0, 6, C[5], 0.2);
+      // and it shimmers on the water below
+      q.px(Math.sin(t * 20) > 0 ? 1 : 0, 0, 1, C[5]);
+    }
+    // the plink: a white fleck on the water, a crown of flecks thrown out all round, the rebound, the rings
+    const u = t - land;
+    if (u >= 0) {
+      ring3(q, 0, 0, 2 + 17 * ease.outCubic(u / 0.75), 1.1 * (1 - u / 0.75), C, { n: 2, gap: 2.5, hot: u < 0.08, seed: 1, wob: 0.4, glint: u < 0.5 ? 1 - u * 2 : 0 });
+      if (u < 0.06) {
+        for (const [x, z] of [[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1]]) q.px(x, 0, z, x || z ? C[6] : WHITE);
+        q.glow(0, -1, 0, 10, C[5], 0.5 * (1 - u / 0.06));
+      }
+      for (let i = 0; i < 7; i++) {
+        const a = (i / 7) * TAU + 0.35, v = 24 + 5 * (i % 3), vh = 56 + 12 * (i % 4), h = vh * u - 0.5 * G * u * u;
+        if (h > 0 && u < 0.32) q.px(Math.cos(a) * v * u, -h, Math.sin(a) * v * u, u < 0.1 ? WHITE : C[6]);
+      }
+      const r = u - REBOUND, h = 52 * r - 0.5 * G * 0.5 * r * r * 2;
+      if (r > 0 && h > 0) {
+        q.beam(0, -1, 0, 0, -h + 1, 0, 1.2, C[5]);
+        q.ball(0, -h, 0, 1.1, (nx, ny) => (ny < -0.4 ? WHITE : C[6]));
+      }
+      const v = u - REBOUND - BACK;
+      if (v >= 0) ring3(q, 0, 0, 1.5 + 9 * ease.outCubic(v / 0.5), 0.9 * (1 - v / 0.5), C, { n: 1, seed: 2, hot: v < 0.06 });
+      q.glow(0, 0, 0, 18, C[4], 0.22 * (1 - clamp(u / 0.6)));
+    }
+    // the wet light under the tip and in the puddle
+    q.glow(0, -H + 2, 0, 8, C[5], 0.16);
+    q.glow(0, 0, 0, 26, C[3], 0.14);
+  },
+};

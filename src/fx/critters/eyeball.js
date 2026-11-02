@@ -1,5 +1,5 @@
-import { fit, hex, mix, clamp, wrap, lerp, ease, rng, TAU } from "../../core/index.js";
-import { Grid, shift, shadow, curve } from "./_lib.js";
+import { fit, hex, mix, clamp, wrap, lerp, ease, rng, space, TAU } from "../../core/index.js";
+import { Grid, shift, shadow, curve, floorShadow, floorPool } from "./_lib.js";
 
 export const meta = {
   name: "Eyeball",
@@ -145,3 +145,75 @@ export function drawBack(p, time, o) {
   shadow(p, S.x, 0, 10, 1.5, hex("#0d0a12"), 0.5);
   for (let x = -26; x <= 26; x += 6) p.glow(S.x + x, -1, 18, I[2], 0.15 * (1 - Math.abs(x) / 34));
 }
+
+// ---- 3D: the eyeball drifts round a slow circle in the air, its nerve and two vessels trailing behind in space
+const DRIFT = { x: 17, z: 14 };
+function at3(t, hover) {
+  const a = (t / D) * TAU;
+  return { x: DRIFT.x * Math.sin(a), z: DRIFT.z * Math.cos(a), y: -hover - 3 * Math.sin(2 * a + 0.4) };
+}
+// a tube through points, as overlapping balls: dark rim, lit down its screen-left side
+function tube(q, pts, r0, r1, tone, rim) {
+  const n = pts.length - 1;
+  for (let i = 0; i <= n; i++) {
+    const u = i / n, r = lerp(r0, r1, u), [x, y, z] = pts[i], rm = rim && r > 1.05 ? rim : null, rr = rm ? r + 0.6 : r, edge = (r / rr) ** 2;
+    q.ball(x, y, z, rr, (nx, ny) => (rm && nx * nx + ny * ny > edge ? rm : tone(nx * (rr / r), u)));
+  }
+}
+
+export const three = {
+  meta: { size: [136, 120], origin: [68, 96], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, time, o) {
+    const t = shift(time, D, o.seed), C = fit(o.palette, 6), Fl = fit(o.flesh, 5), I = fit(o.iris, 5), q = space(p, o), S = at3(t, o.hover);
+    const rx = q.cy, rz = -q.sy, a2 = (t / D) * TAU * 2;
+    // its shadow slides over the floor, and the floor glows green under it
+    floorShadow(q, S.x, S.z, 12, "#0d0a12", 0.7);
+    // the optic nerve hangs from the back, each bit of it where the eye was a beat before, swinging round in a helix
+    const NS = 26, nerve = [];
+    for (let s = 0; s <= NS; s += 0.5) {
+      const B = at3(t - s * 0.035, o.hover), sw = 3.4 * (s / NS) ** 1.3, ph = a2 - s * 0.16;
+      nerve.push([B.x + Math.cos(ph) * sw, B.y + R - 2 + s, B.z + Math.sin(ph) * sw]);
+    }
+    tube(q, nerve, 2.1, 0.7, (nx) => (nx < -0.35 ? Fl[4] : nx < 0.4 ? Fl[3] : Fl[2]), Fl[0]);
+    // two thin vessels curl off it, wider swings, a different beat
+    for (let j = 0; j < 2; j++) {
+      const vs = [], ph0 = j * Math.PI + 0.9;
+      for (let s = 0; s <= 20; s += 1) {
+        const B = at3(t - (s + 2) * 0.042, o.hover), sw = 1 + 5.4 * (s / 20) ** 1.2, ph = a2 * (j ? -1 : 1) - s * 0.22 + ph0;
+        vs.push([B.x + Math.cos(ph) * sw, B.y + R - 3 + s * 0.85, B.z + Math.sin(ph) * sw]);
+      }
+      tube(q, vs, 1.2, 0.6, (nx) => (nx < -0.2 ? Fl[4] : nx < 0.5 ? Fl[3] : Fl[2]), Fl[1]);
+    }
+    // the eye itself: the 2D sprite, standing up and always facing the viewer; it wins over the nerve's root
+    const g = GRID;
+    eye(g, C, Fl, I, t, o.seed);
+    q.at(S.x, S.y, S.z, (pp) => ((pp.z -= 3), g.draw(pp, 1, 0, 0)));
+    // motes of green light wheel round it on tilted orbits in every plane, trailing streaks
+    const [lx, ly] = look(t), snap = Math.max(...LOOKS.map(([t0]) => Math.max(0, 1 - Math.abs(wrap(t - t0 + D / 2, D) - D / 2) / 0.2)));
+    const open = 1 - lid(t), dS = q.depth(S.x, S.y, S.z), streaks = [], heads = [];
+    for (let i = 0; i < 8; i++) {
+      const sp = (i % 2 ? 1 : -1) * (i % 3 ? 1 : 2), a0 = (i * TAU) / 8, rr = 20 + (i % 3) * 2.5, tilt = ((i % 4) - 1.5) * 0.42, yw = i * 0.8;
+      const sT = Math.sin(tilt), cT = Math.cos(tilt), cw = Math.cos(yw), sw = Math.sin(yw);
+      const pos = (k) => {
+        const a = (t / D) * TAU * sp + a0 - sp * k * 0.035, B = at3(t - k * 0.035, o.hover), lxx = Math.cos(a) * rr, lzz = Math.sin(a) * rr * cT;
+        return [B.x + lxx * cw - lzz * sw, B.y + Math.sin(a) * rr * sT, B.z + lxx * sw + lzz * cw];
+      };
+      let prev = null;
+      for (let k = 5; k >= 0; k--) {
+        const P = pos(k);
+        if (prev) streaks.push([prev, P, 0.4 + (5 - k) * 0.12]);
+        prev = P;
+      }
+      heads.push(prev);
+    }
+    for (const P of heads) q.px(P[0], P[1], P[2], q.depth(...P) < dS ? I[4] : I[3]);
+    for (const [A, B, a] of streaks) q.line(...A, ...B, I[2], a);
+    // the iris glows, an eerie halo round the whole eye, glints of light on every mote
+    const ix = S.x + rx * lx, iz = S.z + rz * lx;
+    q.glow(ix, S.y + ly, iz, 15, I[3], (0.5 + 0.3 * snap) * open);
+    q.glow(ix, S.y + ly, iz, 5, I[4], 0.4 * open);
+    q.glow(S.x, S.y, S.z, 50, I[1], 0.3);
+    for (const P of heads) q.glow(...P, 5, I[3], 0.45);
+    floorPool(q, S.x, S.z, 34, I[2], 0.3);
+  },
+};

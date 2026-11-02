@@ -1,4 +1,4 @@
-import { Particles, Bits, P, B, Rng, rng, fit, sparkle, clamp, smooth, ease, TAU, WHITE, mix } from "../../core/index.js";
+import { Particles, Bits, Lights, P, B, Rng, rng, fit, space, sparkle, clamp, smooth, ease, TAU, WHITE, mix } from "../../core/index.js";
 import { VOID, Puffs, PK, ringFast } from "./_lib.js";
 
 export const meta = {
@@ -158,3 +158,177 @@ export function create(o) {
     },
   };
 }
+
+// ---- 3D: the sigil is a shallow glass dish standing in the air, leaning back a little, its strokes laid at a depth
+// that follows the dish (the star rides above the outer circle), so from the side it is a dish and not a line. A ring
+// turns round it, a copy of it is cast on the floor, and the pen, the sparks, the power drawn in, the flare and the
+// crumbling debris all go through every direction.
+const PHI = 0.28, SP = Math.sin(PHI), CP = Math.cos(PHI), NRM = [0, -SP, CP];
+const dish = (x, y) => 7 * (1 - Math.min(1, (x * x + (y - CY) * (y - CY)) / (RO * RO)));
+// a point of the 2D sigil (x, y) in the world, lifted off its plane by off (towards the viewer)
+const onSigil = (x, y, off = dish(x, y)) => {
+  const sy = y - CY;
+  return [x, CY + sy * CP - off * SP, sy * SP + off * CP];
+};
+
+export const three = {
+  meta: { size: [192, 148], origin: [96, 122], camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), R = new Rng(o.seed), floor = () => 0, S = strokes(o.seed), G = glyphs(o.seed);
+    const ps = new Particles({ rng: R, ground: floor, sparks: [WHITE, C[7], C[6], C[5]] });
+    const embers = new Particles({ rng: R, ground: floor, sparks: [C[7], C[6], C[5], C[4]] });
+    const puffs = new Puffs({ rng: R, flame: [WHITE, C[7], C[6], C[5], C[4], C[3], C[2], C[1], C[0]], soot: [mix(C[3], C[2], 0.5), mix(C[2], C[1], 0.5)], cap: mix(C[4], C[2], 0.5), rim: [C[6], C[5], C[4]], floor });
+    const bits = new Bits({ ground: floor }), lights = new Lights(), CEN = onSigil(0, CY, 3.5);
+    const sphere = () => {
+      const z = R.range(-1, 1), a = R.range(0, TAU), s = Math.sqrt(1 - z * z);
+      return [Math.cos(a) * s, z, Math.sin(a) * s];
+    };
+    let t = 0, pi = 0, flared = false, broke = false;
+    const pen = () => S.pts[Math.min(S.pts.length - 1, pi)];
+    const penAt = () => {
+      const q = pen();
+      return onSigil(q.x, q.y, dish(q.x, q.y) + 1.5);
+    };
+    return {
+      update(dt) {
+        t += dt;
+        // the pen: it spits sparks and drips burning embers as it writes, in every direction
+        while (pi < S.pts.length - 1 && S.pts[pi + 1].t <= t) pi++;
+        if (t > 0.12 && t < S.end) {
+          const [x, y, z] = penAt();
+          if (R.chance(dt * 70)) ps.spawn3(P.SPARK, x, y, z, R.range(-70, 70), R.range(-100, 20), R.range(-70, 70), R.range(0.12, 0.35));
+          if (R.chance(dt * 10)) embers.spawn3(P.EMBER, x, y, z, R.range(-12, 12), R.range(5, 25), R.range(-12, 12), R.range(0.5, 0.9));
+        }
+        // power drawn into the sigil while it's written and held: streaks racing in from a whole sphere
+        if (t > 0.2 && t < FLARE - 0.05 && R.chance(dt * (8 + 14 * smooth(0.2, FLARE, t)))) {
+          const d = sphere(), D0 = R.range(40, 60), T = R.range(0.22, 0.32), v = (D0 * 3) / (Math.exp(3 * T) - 1);
+          if (CEN[1] + d[1] * D0 > -5) d[1] = -d[1];
+          ps.spawn3(P.STREAK, CEN[0] + d[0] * D0, CEN[1] + d[1] * D0, CEN[2] + d[2] * D0, -d[0] * v, -d[1] * v, -d[2] * v, T, R.chance(0.5) ? C[7] : C[6]);
+        }
+        for (const g of G)
+          if (!g.popped && t >= g.t) {
+            g.popped = true;
+            const [x, y, z] = onSigil(g.x, g.y, dish(g.x, g.y) + 0.5);
+            lights.add(x, y, 14, C[6], 0.7, 0.2, z);
+            for (let i = 0; i < 4; i++) ps.spawn3(P.SPARK, x, y, z, R.range(-60, 60), R.range(-70, 20), R.range(-60, 60), R.range(0.1, 0.25));
+          }
+        if (t >= FLARE && !flared) {
+          flared = true;
+          lights.add(CEN[0], CEN[1], 96, C[5], 1.4, 0.45, CEN[2]);
+          lights.add(CEN[0], CEN[1], 44, C[6], 1, 0.14, CEN[2]);
+          for (let i = 0; i < 40; i++) {
+            const d = sphere(), sp = R.range(60, 130);
+            ps.spawn3(P.SPARK, CEN[0] + d[0] * 13, CEN[1] + d[1] * 13, CEN[2] + d[2] * 13, d[0] * sp, d[1] * sp - 30, d[2] * sp, R.range(0.2, 0.45));
+          }
+        }
+        if (t >= BREAK && !broke) {
+          // it crumbles: every stroke breaks into burning fragments that tumble down in every direction and bounce
+          broke = true;
+          for (let i = 0; i < S.pts.length - 1; i += 7) {
+            const q = S.pts[i], n = S.pts[i + 1], a = Math.atan2(n.y - q.y, n.x - q.x), [x, y, z] = onSigil(q.x, q.y);
+            bits.add({ kind: B.SHARD, x, y, z, vx: R.range(-8, 8), vy: R.range(-12, 6), vz: R.range(-8, 8), g: R.range(0.22, 0.45), drag: 0.6, bounce: 0.25, life: R.range(0.8, 1.2), a, va: R.range(-3, 3), s: R.range(2.5, 3.5), c: R.pick([C[7], C[6], C[6], C[5]]) });
+            if (i % 27 === 0) embers.spawn3(P.EMBER, x, y, z, R.range(-10, 10), -R.range(10, 40), R.range(-10, 10), R.range(0.6, 1.1));
+          }
+          for (const g of G) {
+            const [x, y, z] = onSigil(g.x, g.y);
+            puffs.spawn(PK.SOOT, x, y, R.range(-6, 6), -R.range(8, 18), R.range(0.7, 1.1), R.range(3, 5), 0, false, z, R.range(-6, 6));
+          }
+          // and a ring of soot spreading out across the air in a full circle
+          for (let i = 0; i < 10; i++) {
+            const a = (i / 10) * TAU + R.range(-0.2, 0.2), sp = R.range(8, 16);
+            puffs.spawn(PK.SOOT, CEN[0] + Math.cos(a) * 8, CEN[1] + R.range(-6, 6), Math.cos(a) * sp, -R.range(2, 10), R.range(0.8, 1.2), R.range(3, 6), R.range(0, 0.15), false, CEN[2] + Math.sin(a) * 8, Math.sin(a) * sp);
+          }
+          for (let i = 0; i < 8; i++) {
+            const [x, y, z] = onSigil(R.range(-20, 20), CY + R.range(-20, 20));
+            puffs.spawn(PK.SOOT, x, y, R.range(-8, 8), -R.range(6, 16), R.range(0.8, 1.2), R.range(3, 6), R.range(0, 0.15), false, z, R.range(-8, 8));
+          }
+        }
+        lights.update(dt);
+        bits.update(dt);
+        ps.update(dt);
+        embers.update(dt);
+        puffs.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), k = t < BREAK ? smooth(0.1, 0.6, t) : 1 - smooth(BREAK, BREAK + 0.6, t);
+        const hold = t > S.end ? 0.5 + 0.5 * Math.sin((t - S.end) * 9) : 0, white = t >= FLARE;
+        if (!broke) {
+          // the traced lines: white where the pen just passed, cooling to violet; each doubled a hair behind so they keep a body
+          for (const s of S.pts) {
+            if (s.t > t) break;
+            const age = t - s.t, off = dish(s.x, s.y);
+            const c = white ? WHITE : age < 0.05 ? WHITE : age < 0.15 ? C[7] : age < 0.35 ? C[6] : hold > 0.75 ? C[6] : C[5];
+            q.px(...onSigil(s.x, s.y, off), c);
+            q.px(...onSigil(s.x, s.y, off - 1.5), white || age < 0.05 ? C[7] : age < 0.35 ? C[5] : C[4]);
+          }
+          if (white) for (const s of S.pts) if (((s.x * 2) | 0) % 3 === 0) q.light(...onSigil(s.x, s.y), C[6], 0.5);
+          // glyphs: laid in the dish, each pops in white and settles
+          for (const g of G) {
+            if (t < g.t) continue;
+            const age = t - g.t, col = white || age < 0.06 ? WHITE : age < 0.2 ? C[7] : hold > 0.75 ? C[7] : C[6], off = dish(g.x, g.y) + 0.5;
+            for (const [a, b] of g.segs) q.line(...onSigil(g.x - 2 + a[0] * 2, g.y - 2 + a[1] * 2, off), ...onSigil(g.x - 2 + b[0] * 2, g.y - 2 + b[1] * 2, off), col);
+            if (age < 0.18) {
+              const rr = 2 + 4 * (age / 0.18), c = age < 0.09 ? C[7] : C[5];
+              q.ring(...onSigil(g.x, g.y, off), rr, 1, c, 1, NRM);
+            }
+            q.glow(...onSigil(g.x, g.y, off), 6, C[5], 0.25);
+          }
+          // the pen: a white-hot point with a little cross of light
+          if (t > 0.12 && t < S.end + 0.05) {
+            const [x, y, z] = penAt();
+            q.at(x, y, z, (pp) => sparkle(pp, 0, 0, 3 + Math.sin(t * 60), C[7], C[6], 0.6));
+            q.glow(x, y, z, 16, C[6], 0.55);
+          }
+        }
+        bits.draw(q);
+        // the flare: a burst of light and a ring racing out in the sigil's plane, another across the floor
+        const fu = (t - FLARE) / 0.35, bu = (t - FLARE) / 0.22;
+        if (bu > 0 && bu < 1) q.at(...CEN, (pp) => sparkle(pp, 0, 0, 18 * (1 - bu), C[7], C[5], 0.9 * (1 - bu)));
+        if (fu > 0 && fu < 1) {
+          const e = ease.outCubic(fu), col = fu < 0.4 ? WHITE : fu < 0.7 ? C[6] : C[4];
+          q.ring(...CEN, RO + 3 + 12 * e, Math.max(1, 3 * (1 - fu)), col, 1, NRM);
+          const rf = RO + 6 + 40 * e;
+          q.plane(0, 0, 0, null, rf, (u, v, out) => {
+            const b = (rf - Math.hypot(u, v)) / Math.max(1.5, 4 * (1 - fu));
+            if (b < 0 || b > 1) return;
+            out.c = b < 0.4 ? col : C[4];
+            out.a = (1 - fu) * (1.1 - b * 0.5);
+            out.l = C[5];
+            out.k = 0.4 * (1 - fu) * (1 - b);
+          });
+        }
+        // the dish itself: a faint sheet of glass behind the strokes, the ring that turns round it, and the sigil cast on the floor
+        if (k > 0) {
+          q.plane(...onSigil(0, CY, -1.5), NRM, RO + 1, (u, v, out) => {
+            const f = 1 - Math.hypot(u, v) / (RO + 1);
+            out.c = C[3];
+            out.a = (0.08 + 0.14 * f) * k;
+            out.blend = true;
+            out.l = C[4];
+            out.k = 0.1 * f * k;
+          });
+          q.ring(0, CY, 0, RO + 10, 1, C[5], (v, g) => (((g / TAU) * 24 + t * 0.9) % 1 + 1) % 1 < 0.55 ? 0.7 * k : 0.12 * k);
+          q.decal(0, 0, 0, null, RO + 4, (pp) => {
+            ringFast(pp, 0, 0, RO, 1, C[5], 0.7 * k);
+            ringFast(pp, 0, 0, RI, 1, C[3], 0.5 * k);
+            for (let i = 0; i < 7; i++) {
+              const a = -Math.PI / 2 + ((i * 3) % 7) * (TAU / 7), b = -Math.PI / 2 + (((i + 1) * 3) % 7) * (TAU / 7);
+              pp.line(Math.cos(a) * RI, Math.sin(a) * RI, Math.cos(b) * RI, Math.sin(b) * RI, C[4], 0.6 * k);
+            }
+          });
+          q.plane(0, 0, 0, null, 60, (u, v, out) => {
+            const f = 1 - Math.hypot(u, v) / 60;
+            if (f <= 0) return;
+            out.l = C[4];
+            out.k = f * f * 0.28 * k;
+          });
+          q.glow(0, CY, 0, 52, C[4], 0.3 * k);
+        }
+        puffs.draw(q, PK.SOOT, { x: CEN[0], y: CEN[1], z: CEN[2], k: broke ? 0.3 : 0, reach: 50 });
+        ps.draw(q);
+        embers.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

@@ -195,3 +195,194 @@ export function rock(p, b, st) {
     return lit > 0.35 ? st.light : lit < -0.4 ? st.shade : st.body;
   });
 }
+
+// ---- 3D: the same recipes in space. q is a Space (src/core/space.js); world x right, y down, z towards the viewer.
+
+/** A unit vector from a 2D aim angle (x right, y down), lying in the screen plane at yaw 0. */
+export const dir2 = (a) => [Math.cos(a), Math.sin(a), 0];
+/** A random unit vector, all directions alike. */
+export function onSphere(R) {
+  const z = R.range(-1, 1), a = R.range(0, TAU), r = Math.sqrt(1 - z * z);
+  return [Math.cos(a) * r, z, Math.sin(a) * r];
+}
+const unit = ([x, y, z]) => {
+  const l = Math.hypot(x, y, z) || 1;
+  return [x / l, y / l, z / l];
+};
+const cross3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+
+/** Two unit vectors that, with d, make a frame. */
+export function frame3(d) {
+  const e1 = unit(cross3(d, Math.abs(d[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0]));
+  return [e1, cross3(d, e1)];
+}
+
+/** A random unit vector within spread radians of d (a unit vector or a 2D aim angle), all the way round it. */
+export function aimed(R, d, spread, pow = 0.75) {
+  d = typeof d === "number" ? dir2(d) : unit(d);
+  const [e1, e2] = frame3(d), th = Math.abs(spread) * Math.pow(R.next(), pow), ph = R.range(0, TAU), s = Math.sin(th), c = Math.cos(th), cp = Math.cos(ph), sp = Math.sin(ph);
+  return [0, 1, 2].map((i) => d[i] * c + (e1[i] * cp + e2[i] * sp) * s);
+}
+
+/** A random unit vector in the upper half space within spread radians of straight up, all the way round. */
+export const aimedUp = (R, spread, pow) => aimed(R, [0, -1, 0], spread, pow);
+
+/**
+ * spikes() with a direction in space (a 2D aim angle, or a vector): the same lengths and widths, but each spike turns
+ * by its own angle about the aim axis, so the burst is a spiky ball, long along the blow, short behind it.
+ * [{ d, len, w, a, th }].
+ */
+export function spikes3(R, n, aim, opts = {}) {
+  const ax = typeof aim === "number" ? dir2(aim) : unit(aim), a0 = typeof aim === "number" ? aim : 0, [e1, e2] = frame3(ax), ph0 = R.range(0, TAU);
+  return spikes(R, n, a0, opts).map((s, i) => {
+    let th = s.a - a0;
+    th = Math.abs(th - Math.round(th / TAU) * TAU);
+    const ph = ph0 + i * 2.39996 + R.range(-0.3, 0.3), st = Math.sin(th), ct = Math.cos(th), cp = Math.cos(ph), sp = Math.sin(ph);
+    return { d: [0, 1, 2].map((j) => ax[j] * ct + (e1[j] * cp + e2[j] * sp) * st), len: s.len, w: s.w, a: s.a, th };
+  });
+}
+
+/** star() in space: spikes3 as tapered rods in a rim, a body and a hot core, round a heart that is a ball. */
+export function star3(q, x, y, z, list, sc, th, [rim, body, inner, core], a = 1, heart = 2.4) {
+  for (const s of list) {
+    const L = s.len * sc;
+    if (L < 1) continue;
+    const n = Math.max(2, Math.ceil(L / 2)), hw0 = s.w * th;
+    for (let i = 0; i < n; i++) {
+      const d0 = (i / n) * L, d1 = ((i + 1) / n) * L, dm = (d0 + d1) / 2;
+      const hw = hw0 * (1 - dm / L) * Math.min(1, 0.5 + dm / 3), wd = hw * 2 + 1.6;
+      const vr = Math.max(0, 1 - 1.4 / wd), vc = dm < L * 0.55 ? (hw * 0.45) / (wd / 2) : 0, c = dm < L * 0.35 ? inner : body;
+      q.beam(x + s.d[0] * d0, y + s.d[1] * d0, z + s.d[2] * d0, x + s.d[0] * d1, y + s.d[1] * d1, z + s.d[2] * d1, wd, (u, v) => (v > vr ? rim : v < vc ? core : c), a);
+    }
+  }
+  const r = heart * sc * Math.sqrt(th);
+  q.ball(x, y, z, r + 0.8, (nx, ny) => (Math.hypot(nx, ny) > r / (r + 0.8) ? inner : core), a);
+}
+
+/**
+ * brokenRing() as a true ring in a plane (default the floor): the same segments, each flying out at its own pace
+ * and tapering into a crescent. glow lights the floor or air round the ring in colour gl.
+ */
+export function brokenRing3(q, cx, cy, cz, r, th, segs, brk, c, c2 = c, k = 1, n = null, glow = 0, gl = c) {
+  if (r <= 0 || k <= 0) return;
+  const full = TAU / segs.length, Rm = r * (1 + Math.max(...segs.map((s) => s.dr)) * brk) + th + 2;
+  q.plane(cx, cy, cz, n, Rm, (u, v, out) => {
+    const d = Math.hypot(u, v), g = Math.atan2(v, u);
+    let s = null, bd = Infinity, bg = 0;
+    for (const e of segs) {
+      let dg = g - e.a;
+      dg -= Math.round(dg / TAU) * TAU;
+      if (Math.abs(dg) < bd) (bd = Math.abs(dg)), (s = e), (bg = dg);
+    }
+    if (glow > 0) {
+      const gr = r * (1 + s.dr * brk);
+      if (Math.abs(d - gr) < 6) (out.l = gl), (out.k = glow * (1 - Math.abs(d - gr) / 6));
+    }
+    const span = full * (1 - s.gap * brk) + 0.02;
+    if (bd > span / 2) return;
+    const rr = r * (1 + s.dr * brk), uu = bg / span + 0.5, w = Math.max(1.2, th * (s.w ?? 1) * (1 - brk * Math.pow(Math.abs(2 * uu - 1), 1.6))), off = d - rr;
+    if (Math.abs(off) > w / 2) return;
+    out.c = off > -0.26 ? c : c2;
+    out.a = k;
+  });
+}
+
+/** A ring of beams: a hoop of radius r and thickness w at (cx, cy, cz) on the floor plane; c(v, angle), a(angle). */
+export function hoop(q, cx, cy, cz, r, w, c, a = 1, seg = 7) {
+  if (r <= 0) return;
+  const n = Math.max(12, Math.ceil((TAU * r) / seg)), fa = typeof a === "function";
+  for (let i = 0; i < n; i++) {
+    const g0 = (i / n) * TAU, g1 = ((i + 1) / n) * TAU + 0.03, gm = (g0 + g1) / 2;
+    q.beam(cx + Math.cos(g0) * r, cy, cz + Math.sin(g0) * r, cx + Math.cos(g1) * r, cy, cz + Math.sin(g1) * r, w, (u, v) => c(v, gm), fa ? a(gm) : a);
+  }
+}
+
+// a jagged walk across the floor from (x, z) heading a for L px; each point is [x, z, distance along]
+function walkFlat(R, x, z, a, L, { jit = 0.5, steer = 0.4, step = [2, 4], d0 = 0 } = {}) {
+  const pts = [[x, z, d0]];
+  let d = 0, cur = a;
+  while (d < L - 0.01) {
+    const s = Math.min(L - d, R.range(step[0], step[1]));
+    cur += R.range(-jit, jit) + (a - cur) * steer;
+    x += Math.cos(cur) * s;
+    z += Math.sin(cur) * s;
+    d += s;
+    pts.push([x, z, d0 + d]);
+  }
+  return pts;
+}
+
+/** makeCracks() across the floor in every direction: n jagged cracks out from the middle, some forked. [x, z] points. */
+export function makeCracks3(R, n, { len = [14, 40], forks = 0.5, x0 = [1, 5] } = {}) {
+  const a0 = R.range(0, TAU);
+  return Array.from({ length: n }, (_, i) => {
+    const a = a0 + (i / n) * TAU + R.range(-0.3, 0.3), L = R.range(len[0], len[1]), r0 = R.range(x0[0], x0[1]);
+    const pts = walkFlat(R, Math.cos(a) * r0, Math.sin(a) * r0, a, L), c = { pts, len: L, t0: R.range(0, 0.035), kids: [] };
+    for (let j = 2; j < pts.length - 1; j++)
+      if (R.chance(forks * 0.4)) {
+        const [fx, fz, fd] = pts[j];
+        c.kids.push(walkFlat(R, fx, fz, a + R.sign() * R.range(0.45, 1), R.range(3, 9) * (1 - (0.5 * j) / pts.length), { d0: fd, jit: 0.7, step: [1.5, 3] }));
+      }
+    return c;
+  });
+}
+
+/** drawCracks() on the floor of a Space, at height y (a hair above it for settled cracks), with a glow along the hot parts. */
+export function drawCracks3(q, cracks, g, heat, hot, dark, k = 1, y = 0, lip = null) {
+  if (k <= 0) return;
+  const col = (d) => {
+    const h = heat(d);
+    return h > 0.75 ? hot[0] : h > 0.5 ? hot[1] : h > 0.3 ? hot[2] : h > 0.12 ? hot[3] : dark;
+  };
+  for (const c of cracks) {
+    const G = g(c);
+    if (G <= 0) continue;
+    for (const path of [c.pts, ...c.kids])
+      for (let i = 1; i < path.length; i++) {
+        const [x0, z0, d0] = path[i - 1], [x1, z1, d1] = path[i];
+        if (d0 >= G) break;
+        const f = d1 > G ? (G - d0) / (d1 - d0) : 1, ex = x0 + (x1 - x0) * f, ez = z0 + (z1 - z0) * f;
+        if (lip) q.line(x0, y, z0 + 1, ex, y, ez + 1, lip, (u) => (rand(Math.round(x0 + (ex - x0) * u), Math.round(z0 + (ez - z0) * u), 5) < 0.3 ? k * 0.8 : 0));
+        q.line(x0, y, z0, ex, y, ez, (u) => col(d0 + (d1 - d0) * f * u), k);
+        const h = heat(d0);
+        if (h > 0.12) q.glow((x0 + ex) / 2, y - 1, (z0 + ez) / 2, 4 + h * 4, hot[2], 0.22 * h * k);
+      }
+  }
+}
+
+/** A tumbling rock (see rock) as a billboard at its place in space, lifted so it sits on the floor it lands on. */
+export function rock3(q, b, st) {
+  const r = 0.75 + b.s * 0.8;
+  q.at(b.x, b.y - r * 0.5, b.z, (pp) => rock(pp, { ...b, x: 0, y: 0 }, st));
+}
+
+/**
+ * dustRing() on the floor of a Space: a soft, lumpy ring of dust, radius r, w thick, alpha k, lit along its outer edge;
+ * brk 0..1 tears it into clumps as it thins; ph varies it. Translucent: draw it after the solid things.
+ */
+export function dustRing3(q, cx, cy, cz, r, w, k, c, { ph = 0, brk = 0, lit = 0.35 } = {}) {
+  if (k <= 0.01 || r <= 0) return;
+  const lite = mix(c, WHITE, lit);
+  q.plane(cx, cy, cz, null, r + w * 1.6 + 1, (u, v, out) => {
+    const d = Math.hypot(u, v), g = Math.atan2(v, u);
+    const lumpy = 0.6 + 0.3 * Math.sin(5 * g + ph) + 0.18 * Math.sin(11 * g + ph * 2.1) + 0.12 * Math.sin(17 * g + ph * 0.7);
+    const wt = w * lumpy, off = Math.abs(d - r - w * 0.25 * Math.sin(7 * g + ph));
+    if (off >= wt) return;
+    const tear = brk > 0 ? clamp((0.55 + 0.45 * Math.sin(6 * g + ph * 1.7) - brk) / 0.25) : 1, a = k * (1 - Math.pow(off / wt, 2)) * tear;
+    if (a <= 0.01) return;
+    out.c = d > r - wt * 0.3 ? lite : c;
+    out.a = a;
+    out.blend = true;
+  });
+}
+
+/**
+ * A comic wedge in space: a point at distance from (x, y, z) along d, widening to w over L px outward, filled with
+ * fill and edged in ink.
+ */
+export function wedge3(q, x, y, z, d, from, L, w, ink, fill, n = 4) {
+  for (let j = 0; j < n; j++) {
+    const f0 = j / n, f1 = (j + 1) / n, a = from + L * f0, b = from + L * f1, wd = Math.max(1.6, w * (f0 + f1) * 0.5 + 1.8), vr = 1 - 0.9 / (wd / 2);
+    q.beam(x + d[0] * a, y + d[1] * a, z + d[2] * a, x + d[0] * b, y + d[1] * b, z + d[2] * b, wd, (u, v) => (v > vr ? ink : fill));
+  }
+}

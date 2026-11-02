@@ -1,7 +1,7 @@
 // The bubbles are adapted from Sprite Fusion's open-source bubbles (https://www.spritefusion.com/pixel-art-vfx/bubbles),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { fit, mix, clamp, wrap, lerp, seg, ease, rng, cycle, TAU } from "../../core/index.js";
-import { Grid, shift, bubble } from "./_lib.js";
+import { fit, mix, clamp, wrap, lerp, seg, ease, rng, cycle, space, TAU } from "../../core/index.js";
+import { Grid, shift, bubble, floorPool } from "./_lib.js";
 
 export const meta = {
   name: "Jellyfish",
@@ -224,3 +224,150 @@ export function draw(p, time, o) {
   // a soft cool glow all round
   p.glow(B.x, B.y + 6, 58, C[3], 0.14);
 }
+
+// ---- 3D: the jellyfish drifts round a slow circle, its tentacles hanging from the whole margin, a ring of lamps
+// round the rim, and the pulse of water it shoves down travelling on to the floor
+const JELLY = { r: 11, y: -50 }, TOP = -98;
+function at3(t) {
+  const a = (t / D) * TAU;
+  return { x: JELLY.r * Math.sin(a), y: JELLY.y + bell(t).y, z: JELLY.r * Math.cos(a) };
+}
+
+// strand() in 3D: a strand hangs from the margin at angle ang and radius rho(bell), each point following where its
+// root was a moment ago, with the slow wave swaying it along its own direction psi
+function strand3(t, rho, ang, psi, len, step, lag, sway, ph, pull, y0) {
+  const pts = [], r1 = rho(bell(t)), ca = Math.cos(ang), sa = Math.sin(ang), cp = Math.cos(psi), sp = Math.sin(psi);
+  for (let s = 0; s <= len; s += step) {
+    const T = t - s * lag, B = bell(T), P = at3(T), relax = 1 - clamp(B.c), ox = lerp(r1, rho(B), 0.4);
+    const w = (0.3 + s * sway) * (0.55 + 0.65 * relax) * Math.sin((t / D) * TAU * 2 - s * 0.11 + ph), r = ox + ox * s * (0.009 * relax - 0.005 * pull * B.c);
+    pts.push([P.x + r * ca + w * cp, P.y + y0 + s * (0.88 + 0.05 * B.c), P.z + r * sa + w * sp]);
+  }
+  return pts;
+}
+
+// a ring of light on the floor
+function floorRing(q, x, z, r, w, c, k) {
+  if (r <= 0 || k <= 0) return;
+  q.plane(x, 0, z, null, r + w + 1, (u, v, o) => {
+    const f = 1 - Math.abs(Math.hypot(u, v) - r) / w;
+    if (f <= 0) return;
+    (o.l = c), (o.k = f * f * k);
+  });
+}
+
+export const three = {
+  meta: { size: [104, 124], origin: [52, 108], bg: "dark", camera: { pitch: 0.3 } },
+  draw(p, time, o) {
+    const t = shift(time, D, o.seed), C = fit(o.palette, 8), G = fit(o.glow, 4), B = bell(t), P = at3(t), q = space(p, o);
+    const pulse = 0.5 + 0.5 * B.c, cy = P.y - B.H * 0.45, wave = (t / D) * TAU, bd = q.depth(P.x, cy, P.z), far = (x, y, z) => q.depth(x, y, z) > bd;
+    // the light it throws down: a cool pool under it, and each squeeze's pulse of water reaching the floor as a ring
+    floorPool(q, P.x, P.z, 34, C[4], 0.16 + 0.1 * pulse);
+    floorPool(q, P.x, P.z, 14, G[2], 0.2 + 0.16 * pulse);
+    for (let b = 0; b < 2; b++) {
+      const age = wrap(t - b * BEAT - 0.35, D), L = 1.3;
+      if (age > L) continue;
+      const P0 = at3(b * BEAT + 0.05), e = ease.outCubic(age / L), k = 1 - age / L;
+      floorRing(q, P0.x, P0.z, 6 + 30 * e, 2.4, G[2], 0.6 * k);
+    }
+    // specks drifting in the water, all round
+    cycle(t, D, 24, o.seed * 5 + 1, D, (age, L, r) => {
+      const ang = r.range(0, TAU), rad = Math.sqrt(r.next()) * 46, ph = r.next() * 6;
+      const x = Math.cos(ang) * rad + Math.sin(age * 0.8 + ph) * 3, z = Math.sin(ang) * rad, y = r.range(-96, -4) + age * r.range(1, 4);
+      const tw = Math.sin(age * 2.2 + ph), a = Math.min(1, age * 2, (L - age) * 2) * (0.35 + 0.35 * tw);
+      q.dot(x, y, z, tw > 0.8 ? G[2] : C[3], a);
+    });
+    // ten tentacles round the margin and four frilled arms at its middle; the ones behind the bell go in first
+    const parts = [];
+    for (let i = 0; i < 10; i++) {
+      const r = rng(o.seed, i, 4), f = i % 2 ? 0.6 : 0.88, ang = (i / 10) * TAU + r.range(-0.12, 0.12);
+      parts.push({ arm: false, i, pts: strand3(t, (b) => f * halfW(0.5, b), ang, r.range(0, TAU), r.range(36, 50), 1.5, 0.022, 0.065, r.range(0, TAU), 1, 0.5) });
+    }
+    for (let i = 0; i < 4; i++) {
+      const r = rng(o.seed, i, 9), ang = (i / 4) * TAU + 0.6;
+      parts.push({ arm: true, i, pts: strand3(t, (b) => [0.32, 0.1, 0.12, 0.3][i] * b.W * 0.5, ang, ang + 1.2 + r.range(0, TAU), r.range(20, 27), 1, 0.03, 0.06, r.range(0, TAU) + i, 0.4, -1) });
+    }
+    for (const a of parts) a.far = far(...a.pts[Math.min(8, a.pts.length - 1)]);
+    const drawPart = (a) => {
+      const pts = a.pts, n = pts.length, back = a.far;
+      if (a.arm) {
+        for (let k = 1; k < n; k++) {
+          const u = k / (n - 1);
+          q.beam(...pts[k - 1], ...pts[k], lerp(4.4, 1.2, u), (uu, v) => (back ? (v < 0.5 ? C[4] : C[3]) : v < 0.45 ? C[6] : v < 0.8 ? C[5] : C[4]), back ? 0.7 : 0.92);
+        }
+        return;
+      }
+      for (let k = 1; k < n; k++) {
+        const u = k / (n - 1), c = back ? (u < 0.3 ? C[3] : u < 0.7 ? C[2] : C[1]) : u < 0.2 ? C[5] : u < 0.45 ? C[4] : u < 0.78 ? C[3] : C[2];
+        q.line(...pts[k - 1], ...pts[k], c);
+      }
+      // stinging cells glinting along it
+      if (back) return;
+      for (let k = 3; k < n; k += 4) {
+        const tw = Math.sin(wave * 2 - k * 0.5 + a.i * 1.7);
+        if (tw < 0.3) continue;
+        const [x, y, z] = pts[k];
+        q.px(x, y, z, tw > 0.8 ? G[3] : G[2]);
+        q.glow(x, y, z, 3.5, G[2], 0.35 * tw);
+      }
+    };
+    // the little lamps round the margin, twinkling
+    const lamps = [];
+    for (let j = 0; j < 12; j++) {
+      const ang = (j / 12) * TAU + 0.2, rr = halfW(0.5, B) * 0.96, tw = 0.6 + 0.4 * Math.sin(wave * 3 + j * 0.8);
+      lamps.push({ x: P.x + rr * Math.cos(ang), y: P.y + 1, z: P.z + rr * Math.sin(ang), tw });
+    }
+    const drawLamp = (m) => (q.px(m.x, m.y, m.z, m.tw > 0.85 ? G[3] : G[2]), q.glow(m.x, m.y, m.z, 4, G[2], 0.4 * m.tw));
+    for (const a of parts) if (a.far) drawPart(a);
+    for (const m of lamps) if (far(m.x, m.y, m.z)) drawLamp(m);
+    // the bell: the 2D bell's own drawing as an upright billboard (its lamps and glow are done in 3D below)
+    q.at(P.x, P.y, P.z, (pp) => {
+      const quiet = Object.create(pp);
+      quiet.glow = quiet.px = () => {};
+      drawBell(quiet, C, G, { ...B, x: 0, y: 0 }, t);
+    });
+    // its margin as a true ring seen from above or below, and the lit inside of it
+    q.ring(P.x, P.y + 0.5, P.z, halfW(0.5, B) * 0.98, 1.2, C[5], 0.5);
+    for (const a of parts) if (!a.far) drawPart(a);
+    for (const m of lamps) if (!far(m.x, m.y, m.z)) drawLamp(m);
+    q.glow(P.x, cy, P.z, 30 + 6 * B.c, C[4], 0.22 + 0.12 * pulse);
+    q.glow(P.x, cy, P.z, 11, C[6], 0.14 + 0.16 * pulse);
+    // each squeeze shoves a ring of water out under the bell: a swirl of light, plankton caught in it, bubbles squeezed out
+    for (let b = 0; b < 2; b++) {
+      const age = wrap(t - b * BEAT - 0.05, D);
+      if (age > 0.9) continue;
+      const P0 = at3(b * BEAT + 0.05), B0 = bell(b * BEAT + 0.05), e = ease.outCubic(age / 0.9), k = 1 - age / 0.9;
+      const y = P0.y + 3 + 14 * e, rx = B0.W * 0.32 + 9 * e;
+      q.ring(P0.x, y, P0.z, rx, 1.6, C[5], 0.3 * k);
+      for (let j = 0; j < 8; j++) {
+        const a = (j / 8) * TAU + e * 0.8;
+        q.glow(P0.x + Math.cos(a) * rx, y, P0.z + Math.sin(a) * rx, 5 + 3 * e, C[5], 0.14 * k);
+      }
+      for (let j = 0; j < 7; j++) {
+        const a = (j / 7) * TAU + e * 2.4 + b;
+        if (k < 0.15 && j % 2) continue;
+        const x = P0.x + Math.cos(a) * rx * 1.05, z = P0.z + Math.sin(a) * rx * 1.05, yy = y - Math.cos(a * 2) * 0.6 + Math.sin(a * 3) * 1.4;
+        q.dot(x, yy, z, j % 2 ? G[3] : G[2], Math.min(1, k * 2.5));
+        q.glow(x, yy, z, 3, G[2], 0.3 * k);
+      }
+      for (let i = 0; i < 4; i++) {
+        const r = rng(o.seed, b, i, 13), L = r.range(1.4, 2.2), ag = wrap(t - b * BEAT - 0.08 - i * 0.04, D);
+        if (ag > L) continue;
+        const rad = r.range(0.6, 1.5), ang = r.range(0, TAU), reach = B0.W * 0.4 + r.range(0, 4) + ag * r.range(4, 10);
+        const by = P0.y + 2 - (14 + 10 * rad) * ag + 6 * Math.exp(-ag * 4);
+        if (by < TOP) continue;
+        const bx = P0.x + Math.cos(ang) * reach + Math.sin(ag * 5 + i) * 0.8, bz = P0.z + Math.sin(ang) * reach;
+        q.at(bx, by, bz, (pp) => bubble(pp, 0, 0, rad, [G[3], G[3], G[2], G[1]], Math.min(1, ag * 6, (L - ag) * 3, (by - TOP) / 6)));
+      }
+    }
+    // bubbles wobbling up through the volume
+    cycle(t, D, 12, o.seed * 5 + 2, (r) => r.range(1.8, 3), (age, L, r) => {
+      const rad = r.chance(0.6) ? r.range(0.6, 1.4) : r.range(1.6, 2.6), x0 = r.range(-34, 34), z0 = r.range(-34, 34), y0 = r.range(-60, -4), v = 20 + 13 * rad;
+      const end = Math.min(L, (y0 - TOP) / v);
+      if (age > end) return;
+      const ph = r.next() * TAU, w = (4 + 2 / rad) * age + ph, amp = 0.6 + rad * 0.8, y = y0 - v * age;
+      q.at(x0 + Math.sin(w) * amp, y, z0 + Math.cos(w) * amp, (pp) => bubble(pp, 0, 0, rad, [G[3], G[3], G[2], G[1]], Math.min(1, age * 3, (end - age) * 3), 0.1 * Math.sin(age * 9 + ph)));
+    });
+    // a soft cool glow all round
+    q.glow(P.x, P.y + 6, P.z, 58, C[3], 0.14);
+  },
+};

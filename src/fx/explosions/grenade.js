@@ -1,7 +1,7 @@
 // The blast (fire puffs that cool into smoke, sparks, grit, scorch, rings, lights) is adapted from Sprite Fusion's
 // open-source explosion (https://www.spritefusion.com/pixel-art-vfx/explosion), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Bits, Lights, P, PF, B, Rng, fit, band, flare, clamp, smooth, ease, TAU, WHITE, hex, mix, scale, rgb } from "../../core/index.js";
-import { fireRamp, heatRamp, drawPs, cull, fadeEdges, scorch, pool, OUTLINE } from "./_lib.js";
+import { Particles, Bits, Lights, P, PF, B, Rng, fit, band, flare, clamp, smooth, ease, space, lit, TAU, WHITE, hex, mix, scale, rgb } from "../../core/index.js";
+import { fireRamp, heatRamp, drawPs, drawPs3, cull, fadeEdges, scorch, scorch3, pool, pool3, shell3, OUTLINE } from "./_lib.js";
 
 export const meta = {
   name: "Grenade",
@@ -184,3 +184,205 @@ function drawGrenade(p, G, x, y, a) {
     return G[i];
   });
 }
+
+// 3D: a true grenade (a core and a skin of knobs, a cap, a ring pin and a lever) is lobbed in along +x, bounces, rolls
+// and shudders, and blows in a sphere: shrapnel streaks and sparks fly over the whole sky, grit and dust spray out
+// round the floor, the shock is a true circle on the floor plus a shell of light, the scorch a disc.
+const LOB = 0.6; // the lob's x distances in 3D (the bounces keep their timing; it needs less room)
+export const three = {
+  meta: { size: [320, 232], origin: [160, 184], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const F = fit(o.palette, 8), FR = fireRamp(F), HR = heatRamp(FR), G = fit(o.body, 5), R = new Rng(o.seed), floor = () => 0;
+    const [W, H] = meta.size, REACH = 126, TOP = -(184 - 6);
+    const ps = new Particles({ rng: R, ground: floor, sparks: [F[6], F[5], F[3], F[2]] }), lights = new Lights(), bits = new Bits({ ground: floor });
+    const DUST = hex("#7d7280"), METAL = [hex("#3a3c46"), hex("#6a6e7c"), hex("#a8acb8")], SHELL = lit(G);
+    // the grenade: lobbed in on a slant from the front left, it bounces, rolls and settles about x = 0
+    const g = { x: -(140 + 41.6) * LOB, y: -70, z: 0, vx: 168 * LOB, vy: -150, a: 0, va: -9, rest: false };
+    const slant = -0.35;
+    let t = 0, blown = false, bx = 0, bz = 0;
+    // a direction over a whole sphere: a is the elevation (the 2D angle), the turn about the vertical is free
+    const sph = (a, sp) => {
+      const f = R.range(0, TAU), h = Math.cos(a);
+      return [h * Math.cos(f) * sp, Math.sin(a) * sp, h * Math.sin(f) * sp, h * Math.cos(f), Math.sin(a), h * Math.sin(f)];
+    };
+    // knobs of the pineapple skin: [local direction x, y, z] over an ellipsoid, the cap end at y < 0
+    const KNOBS = [];
+    [[0.4, 6], [0.56, 8], [0.73, 8], [0.88, 6]].forEach(([th, n], i) => {
+      for (let j = 0; j < n; j++) {
+        const ph = ((j + (i & 1) * 0.5) / n) * TAU, s = Math.sin(th * Math.PI);
+        KNOBS.push([s * Math.cos(ph), -Math.cos(th * Math.PI), s * Math.sin(ph)]);
+      }
+    });
+    // the grenade's local frame turns about z by its roll a: x' = x cos a - y sin a, y' = x sin a + y cos a
+    const at = (q, gx, gy, gz, a) => {
+      const ca = Math.cos(a), sa = Math.sin(a);
+      return (lx, ly, lz = 0) => [gx + lx * ca - ly * sa, gy + lx * sa + ly * ca, gz + lz];
+    };
+    const fuseTip = (gr) => at(null, gr.x, gr.y, gr.z, gr.a)(0, -10.4);
+    // soft things fade out before the edge of the canvas (round the axis, so every side is safe); the rest go
+    const edges = () => {
+      const L = ps.list;
+      for (let i = L.length - 1; i >= 0; i--) {
+        const e = L[i], r = Math.hypot(e.x, e.z);
+        if (r > REACH + 14 || e.y < TOP + r * 0.3) L.splice(i, 1);
+        else if (e.k === P.SMOKE || e.k === P.DUST || e.k === P.VAPOUR) {
+          const k = (REACH - r - e.size * 1.65) / 24;
+          if (k <= 0) L.splice(i, 1);
+          else if (k < 1) e.life = Math.min(e.life, e.max * 0.42 * k);
+        }
+      }
+      for (let i = bits.list.length - 1; i >= 0; i--) if (Math.hypot(bits.list[i].x, bits.list[i].z) > REACH - 4) bits.list.splice(i, 1);
+    };
+
+    const blast = () => {
+      blown = true;
+      bx = g.x;
+      bz = g.z;
+      const y = -5;
+      lights.add(bx, y - 10, 70, mix(F[3], F[6], 0.45), 0.85, 0.5, bz);
+      lights.add(bx, y, 30, WHITE, 0.7, 0.07, bz);
+      // shrapnel: hot streaks flying straight and far, sparks that fall and bounce
+      for (let i = 0; i < 70; i++) {
+        const [vx, vy, vz] = sph(R.range(-Math.PI + 0.04, -0.04), R.range(380, 640));
+        ps.spawn3(P.MOTE, bx, y, bz, vx, vy, vz, R.range(0.12, 0.26), R.pick([F[7], F[6], F[5]]), R.range(0.6, 0.9));
+      }
+      for (let i = 0; i < 100; i++) {
+        const [vx, vy, vz] = sph(R.range(0, TAU), R.range(140, 360));
+        ps.spawn3(P.SPARK, bx, y, bz, vx, vy - 60, vz, R.range(0.2, 0.55));
+      }
+      // a small fireball that cools into smoke
+      for (let i = 0; i < 4; i++) ps.spawn3(P.FIRE, bx + R.range(-2, 2), y + R.range(-2, 2), bz + R.range(-2, 2), R.range(-15, 15), R.range(-30, -8), R.range(-15, 15), R.range(0.16, 0.26), 0, R.range(6, 8));
+      for (let i = 0; i < 26; i++) {
+        const d = R.range(0, 6), [vx, vy, vz, cx, cy, cz] = sph(R.range(-Math.PI - 0.2, 0.2), R.range(40, 150));
+        ps.spawn3(P.FIRE, bx + cx * d, y + cy * d, bz + cz * d, vx, vy * 0.8 - 30, vz, R.range(0.45, 0.9), 0, R.range(3.5, 7), 0, R.chance(0.5) ? PF.SMOKES : 0);
+      }
+      for (let i = 0; i < 12; i++) {
+        const d = R.range(2, 10), [, , , cx, cy, cz] = sph(R.range(-Math.PI, 0), 1);
+        ps.spawn3(P.SMOKE, bx + cx * d, y + cy * d, bz + cz * d, cx * 25, -R.range(20, 60), cz * 25, R.range(1.4, 2.1), 0, R.range(6, 10), R.range(0.05, 0.3), PF.BIG);
+      }
+      for (let i = 0; i < 44; i++) {
+        const [vx, vy, vz] = sph(R.range(0, TAU), R.range(30, 120));
+        ps.spawn3(P.EMBER, bx, y, bz, vx, vy - 50, vz, R.range(0.8, 1.8), F[3]);
+      }
+      // the casing in pieces, and the floor's grit and dust
+      for (let i = 0; i < 18; i++) {
+        const [vx, vy, vz] = sph(R.range(-Math.PI + 0.2, -0.2), R.range(150, 330));
+        bits.add({ kind: B.SHARD, x: bx, y, z: bz, vx, vy, vz, g: 1, drag: 0.5, bounce: 0.3, life: R.range(1.4, 2.1), a: R.range(0, TAU), va: R.range(-24, 24), s: R.range(2, 3.5), c: R.pick(METAL) });
+      }
+      for (let i = 0; i < 110; i++) {
+        const u = R.range(-1, 1), [vx, vy, vz, cx, , cz] = sph(-Math.PI / 2 + u * 0.8, R.range(100, 300) * (1 - 0.4 * Math.abs(u)));
+        ps.spawn3(P.GRIT, bx + cx * Math.abs(u) * 4, -1, bz + cz * Math.abs(u) * 4, vx, vy, vz, R.range(1, 1.8), R.pick([hex("#5a4f6b"), hex("#3e3650"), hex("#776c88")]), R.chance(0.35) ? 2 : 1);
+      }
+      for (let i = 0; i < 24; i++) {
+        const a = R.range(0, TAU), c = Math.cos(a), s = Math.sin(a), v = R.range(60, 180), d = R.range(0, 6);
+        ps.spawn3(P.SMOKE, bx + c * d, -R.range(1, 4), bz + s * d, c * v, -R.range(2, 10), s * v, R.range(1, 1.7), DUST, R.range(5, 8), R.range(0, 0.05), PF.BIG);
+      }
+    };
+
+    return {
+      update(dt) {
+        t += dt;
+        if (!blown) {
+          // the lob, the bounces, the roll
+          if (!g.rest) {
+            g.vy += 900 * dt;
+            g.x += g.vx * dt;
+            g.y += g.vy * dt;
+            g.z = slant * g.x;
+            if (g.y >= -RB && g.vy > 0) {
+              g.y = -RB;
+              if (g.vy > 90) {
+                // a clink, a puff of dust
+                for (let i = 0; i < 4; i++) {
+                  const a = R.range(0, TAU), v = R.range(10, 40);
+                  ps.spawn3(P.DUST, g.x + R.range(-2, 2), -0.5, g.z + R.range(-2, 2), Math.cos(a) * v, -R.range(4, 16), Math.sin(a) * v, R.range(0.3, 0.6), DUST, R.range(1.5, 2.6));
+                }
+                for (let i = 0; i < 3; i++) ps.spawn3(P.SPARK, g.x, -1, g.z, R.range(-60, 60), -R.range(40, 120), R.range(-60, 60), R.range(0.08, 0.16));
+                g.vy = -g.vy * 0.36;
+                g.vx *= 0.8;
+              } else g.vy = 0;
+            }
+            if (g.y >= -RB - 0.01 && g.vy === 0) {
+              g.vx -= g.vx * 2.4 * dt;
+              g.va = -g.vx / RB;
+              if (Math.abs(g.vx) < 3 * LOB) (g.rest = true), (g.vx = 0);
+            }
+            g.a += g.va * dt;
+          }
+          // the fuse: sparks spitting off its tip, a thread of smoke, faster as it runs down
+          const tip = fuseTip(g), hurry = smooth(BLOW - 0.5, BLOW, t);
+          if (R.chance((24 + 50 * hurry) * dt)) ps.spawn3(P.SPARK, tip[0], tip[1], tip[2], R.range(-50, 50), -R.range(30, 110), R.range(-50, 50), R.range(0.08, 0.2));
+          if (R.chance(9 * dt)) ps.spawn3(P.VAPOUR, tip[0], tip[1] - 1, tip[2], R.range(-4, 4), -R.range(10, 20), R.range(-4, 4), R.range(0.5, 0.9), hex("#8a8494"), R.range(1.2, 2));
+          if (t >= BLOW) blast();
+        }
+        bits.update(dt);
+        ps.update(dt);
+        edges();
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o);
+        if (blown) {
+          const u = t - BLOW;
+          scorch3(q, HR, u, 22, 1.6, 1 - smooth(meta.duration - BLOW - 0.8, meta.duration - BLOW - 0.15, u));
+          const k = u / 0.4;
+          if (k < 1) {
+            const r = 70 * ease.outCubic(k), w = Math.max(1, 3.5 * (1 - k)) + 0.5, al = 1.15 - k;
+            q.plane(bx, 0, bz, null, r, (pu, pv, out) => {
+              const b = (r - Math.hypot(pu, pv)) / w;
+              if (b < 0 || b > 1) return;
+              out.c = b < 0.15 ? F[6] : b < 0.4 ? F[3] : b < 0.7 ? SMOKE2 : SMOKE1;
+              out.a = al * (b < 0.4 ? 1.2 : 1.15 - b);
+            });
+          }
+        } else {
+          // its shadow on the floor, and the grenade itself, shuddering in its last half second
+          const shake = smooth(BLOW - 0.45, BLOW, t), jx = shake * Math.sin(t * 90) * 0.8, h = Math.max(0, -g.y - RB);
+          q.plane(g.x, 0, g.z, null, 9, (pu, pv, out) => {
+            const d = Math.hypot(pu, pv) / 9;
+            if (d > 1) return;
+            out.c = OUTLINE;
+            out.a = 0.55 * (1 - d * d) * (1 - Math.min(0.8, h / 90));
+            out.blend = true;
+          });
+          const m = at(null, g.x + jx, g.y, g.z, g.a);
+          // the skin: a dark core and a ring of knobs over it, lit from the top left
+          const core = m(0, 0.6);
+          q.ball(core[0], core[1], core[2], 4.5, G[1]);
+          for (const [kx, ky, kz] of KNOBS) {
+            const c = m(kx * 4.9, 0.6 + ky * 6.1, kz * 4.9);
+            q.ball(c[0], c[1], c[2], 2.5, SHELL);
+          }
+          // the cap, its ring pin and the lever pressed down the side
+          const a0 = m(0, -4.6), a1 = m(0, -9.4);
+          q.beam(a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], 4.6, (u2, v) => (v > 0.8 ? METAL_[0] : v < 0.3 ? METAL_[3] : METAL_[2]));
+          const rp = m(-3.4, -8);
+          q.ring(rp[0], rp[1], rp[2], 2.2, 1, METAL_[2], 1, [0, 0, 1]);
+          const l0 = m(4.1, -7.6), l1 = m(4.4, 2);
+          q.beam(l0[0], l0[1], l0[2], l1[0], l1[1], l1[2], 1.6, (u2, v) => (v > 0.7 ? METAL_[0] : METAL_[1]));
+          const tip = fuseTip({ ...g, x: g.x + jx });
+          q.px(tip[0], tip[1], tip[2], Math.sin(t * 50) > 0 ? F[6] : F[5]);
+          q.glow(tip[0], tip[1], tip[2], 6 + 3 * shake, F[4], 0.5 + 0.3 * Math.sin(t * 37));
+        }
+        bits.draw(q);
+        drawPs3(q, ps, FR);
+        if (blown) {
+          const u = t - BLOW;
+          // the flash: a hot ball for two frames, a flare, a shell of light
+          if (u < 0.07) {
+            const k2 = 1 - u / 0.07, r = 11 * (0.8 + 0.2 * k2);
+            q.ball(bx, -6, bz, r + 1.2, (nx, ny) => (Math.hypot(nx, ny) > 0.9 ? F[2] : Math.hypot(nx, ny) > 0.6 ? (k2 > 0.45 ? F[6] : F[5]) : k2 > 0.45 ? WHITE : F[6]));
+          }
+          if (u < 0.2) q.at(bx, -6, bz, (pp, k) => flare(pp, 0, 0, 40 * Math.pow(1 - u / 0.2, 1.4) * k, 1 - u / 0.2, F));
+          if (u < 0.3) {
+            const k3 = u / 0.3, e = 1 - Math.pow(1 - k3, 3);
+            shell3(q, bx, -6, bz, 8 + 40 * e, Math.max(1, 2.5 * (1 - k3) + 0.4), F[5], Math.min(1, (1 - k3) * 1.6));
+          }
+          pool3(q, 70, F[3], 0.55 * Math.max(0, 1 - u / 0.6), bx, bz);
+        }
+        lights.draw(q);
+      },
+    };
+  },
+};
+const SMOKE1 = hex("#4a3f69"), SMOKE2 = hex("#6e6390"), METAL_ = [hex("#2a2c36"), hex("#5e6270"), hex("#9a9eac"), hex("#d0d4de")];

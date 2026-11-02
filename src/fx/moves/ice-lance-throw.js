@@ -1,4 +1,5 @@
-import { chain, READY, PAL } from "../../core/index.js";
+import { chain, in3d, READY, PAL } from "../../core/index.js";
+import { recenter } from "./_lib.js";
 import * as charge from "../arcane/spell-charge.js";
 import * as lance from "../ice/ice-lance.js";
 import * as burst from "../ice/snowflake-burst.js";
@@ -45,3 +46,14 @@ export const create = chain([
   { fx: lance, t: THROW, until: HIT, x: (t) => 34 + (t - THROW) * SPEED, y: -24 },
   { fx: burst, t: HIT, x: TX, y: -26 },
 ]);
+
+const MID = 85;
+export const three = {
+  meta: { actor: 0, size: [304, 167], origin: [152, 135], camera: { pitch: 0.3 } },
+  act: recenter(act, MID),
+  create: chain([
+    { fx: in3d(charge), t: 0.06, until: THROW, x: -MID, palette: PAL.ice },
+    { fx: in3d(lance), t: THROW, until: HIT, x: (t) => 34 + (t - THROW) * SPEED - MID, y: -24 },
+    { fx: in3d(burst), t: HIT, x: TX - MID, y: -26 },
+  ]),
+};

@@ -1,8 +1,8 @@
 // The smear that trails the lash (white at its leading edge, cooling down the ramp as it thins), the glint and
 // crack burst at the tip, are adapted from Sprite Fusion's open-source slash (https://www.spritefusion.com/pixel-art-vfx/slash),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, sparkle, clamp, smooth, ease, lerp, TAU, WHITE, rand } from "../../core/index.js";
-import { Drops, drawLeaf, drawRock, stoneShape } from "./_lib.js";
+import { Particles, Bits, Lights, P, B, Rng, fit, space, sparkle, clamp, smooth, ease, lerp, TAU, WHITE, rand } from "../../core/index.js";
+import { Drops, drawLeaf, drawRock, stoneShape, tube, shade3, leaf3, bits3, rock3 } from "./_lib.js";
 
 export const meta = {
   name: "Vine whip",
@@ -208,3 +208,161 @@ export function create(o) {
     },
   };
 }
+
+// ---- 3D: the vine coils back round to the front and whips out across the scene (to +x, a little away from us), so you
+// see the lash from the side and head on; round and thorny all over, its smear a swept sheet of light, its spray and
+// torn leaves flung over a full cone, the hole it comes out of a true circle in the floor.
+const pose3 = (t) => {
+  const pts = pose(t), out = [];
+  const rear = smooth(0.1, LASH, t), relax = smooth(0.82, 1.0, t);
+  for (let i = 0; i <= N; i++) {
+    const [x, y] = pts[i], s = i / N, sp = i === 0 ? 0 : clamp(spring(t - LASH - LAG * i), 0, 1.2);
+    const kz = (-0.45 * rear * (1 - Math.min(1, sp)) - 0.3 * sp) * (1 - relax);
+    out.push([x, y, x * kz + 3 * Math.sin(s * 5 + t * 8) * s * (1 - rear) * (1 - sp)]);
+  }
+  return out;
+};
+
+export const three = {
+  meta: { size: [212, 120], origin: [106, 86], camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), T = fit(o.thorn, 4), S = fit(o.soil, 8), R = new Rng(o.seed), floor = () => 0;
+    const ps = new Particles({ rng: R, ground: floor, sparks: [C[7], C[6], C[5], C[4]] });
+    const drops = new Drops(floor), bits = new Bits({ ground: floor }), lights = new Lights(), torn = [], spots = [];
+    let t = 0, burst = false, cracked = false, sunk = false;
+    const dir = (cone) => {
+      const e = R.range(0, cone), h = R.range(0, TAU);
+      return [Math.sin(e) * Math.cos(h), -Math.cos(e), Math.sin(e) * Math.sin(h)];
+    };
+    const dirt = (n, sp) => {
+      for (let i = 0; i < n; i++) {
+        const d = dir(1.2), v = R.range(60, 200) * sp;
+        bits.add({ kind: B.CHUNK, x: R.range(-3, 3), y: -1, z: R.range(-3, 3), vx: d[0] * v, vy: d[1] * v, vz: d[2] * v, a: R.range(0, TAU), va: R.range(-15, 15), s: R.range(1.4, 2.6), g: 1, drag: 0.1, bounce: 0.3, life: Math.min(R.range(0.6, 0.9), meta.duration - 0.05 - t), ...rock3(R, 8) });
+      }
+      for (let i = 0; i < n * 3; i++) {
+        const d = dir(1), v = R.range(50, 200) * sp;
+        ps.spawn3(P.GRIT, R.range(-3, 3), -1, R.range(-3, 3), d[0] * v, d[1] * v, d[2] * v, Math.min(R.range(0.5, 0.9), meta.duration - 0.05 - t), R.pick([S[5], S[4], S[3]]), R.chance(0.3) ? 2 : 1);
+      }
+      for (let i = 0; i < n; i++) {
+        const a = R.range(0, TAU), v = R.range(15, 60);
+        ps.spawn3(P.DUST, R.range(-4, 4), -R.range(0, 3), R.range(-4, 4), Math.cos(a) * v, -R.range(4, 20), Math.sin(a) * v, Math.min(R.range(0.4, 0.8), meta.duration - 0.05 - t), S[5], R.range(2, 4));
+      }
+    };
+    return {
+      update(dt) {
+        t += dt;
+        if (!burst) (burst = true), dirt(6, 1);
+        if (!cracked && t >= CRACK) {
+          cracked = true;
+          const a = pose3(t), b = pose3(t - 0.01), [x, y, z] = a[N], vx = (x - b[N][0]) / 0.01, vy = (y - b[N][1]) / 0.01, vz = (z - b[N][2]) / 0.01, sp = Math.hypot(vx, vy, vz) || 1;
+          lights.add(x, y, 22, WHITE, 0.5, 0.08, z);
+          lights.add(x, y, 50, C[5], 0.35, 0.4, z);
+          for (let i = 0; i < 18; i++) {
+            // sprayed off the tip's path over a cone round the way it is going
+            const rx = R.range(-0.7, 0.7), rz = R.range(-0.7, 0.7), v = R.range(80, 260);
+            drops.add(x, y, (vx / sp + rx) * v, (vy / sp + R.range(-0.5, 0.5)) * v - R.range(0, 60), R.chance(0.3) ? 2 : 1, 0, z, (vz / sp + rz) * v);
+          }
+          for (let i = 0; i < 4; i++) torn.push({ x, y, z, vx: (vx / sp) * R.range(40, 120) + R.range(-30, 30), vy: R.range(-90, -20), vz: (vz / sp) * R.range(40, 120) + R.range(-30, 30), a: R.range(0, TAU), va: R.range(-12, 12), fl: R.range(0, TAU), vf: R.range(8, 16), b: R.range(0, TAU), life: R.range(0.65, 0.8), max: 0 });
+          for (const l of torn) l.max = l.life;
+          for (let i = 0; i < 8; i++) ps.spawn3(P.STAR, x + R.range(-6, 6), y + R.range(-6, 6), z + R.range(-6, 6), R.range(-20, 20), R.range(-20, 20), R.range(-20, 20), R.range(0.15, 0.35), C[7], R.range(0.6, 1.6));
+        }
+        if (!sunk && t >= 1.08) (sunk = true), dirt(3, 0.5);
+        drops.update(dt, (d) => spots.push({ x: d.x, z: d.z, t0: t, w: d.s * 0.7 + R.range(0.2, 1) }));
+        for (let i = torn.length - 1; i >= 0; i--) {
+          const l = torn[i];
+          if ((l.life -= dt) <= 0) torn.splice(i, 1);
+          l.vy += 160 * dt;
+          l.vx -= l.vx * 2.5 * dt;
+          l.vz -= l.vz * 2.5 * dt;
+          l.vy -= l.vy * 2 * dt;
+          l.x += l.vx * dt + Math.sin(l.fl) * 20 * dt;
+          l.z += l.vz * dt;
+          l.y += l.vy * dt;
+          l.a += l.va * dt;
+          l.fl += l.vf * dt;
+        }
+        bits.update(dt);
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), pts = pose3(t), k = 1 - smooth(1.15, 1.35, t);
+        // a hole torn in the floor where it comes up, sap spots where it sprays
+        q.plane(0, 0, 0, null, 7, (u, v, out) => {
+          const d = Math.hypot(u, v);
+          if (d > 6) return;
+          out.c = d < 3.4 ? S[0] : S[1];
+          out.a = k * (1 - d / 8);
+        });
+        for (const s of spots) {
+          const a = (1 - smooth(0.25, 0.6, t - s.t0)) * (1 - smooth(1.2, 1.35, t));
+          if (a > 0.02) q.ring(s.x, 0, s.z, s.w, s.w, t - s.t0 < 0.1 ? C[6] : C[4], a);
+        }
+        // the smear: the paths the outer vine just swept, the tip's white, the ones further in cooling down the ramp,
+        // with a sheet of light stretched across them
+        if (t > LASH + 0.04 && t < CRACK + 0.1) {
+          const age = clamp((t - CRACK + 0.02) / 0.12), hist = [];
+          for (let j = 0; j < 12; j++) hist.push(pose3(t - j * 0.0045));
+          for (let j = 0; j < 6; j++) for (let i = N - 12; i <= N; i += 3) q.line(...hist[j][i], ...hist[j][Math.min(N, i + 3)], j < 2 ? C[6] : C[5], 0.4 * (1 - j / 6) * (1 - age));
+          for (let i = N - 12; i <= N; i += 2) {
+            const qq = (N - i) / 12, col = qq < 0.1 ? WHITE : qq < 0.3 ? C[7] : qq < 0.55 ? C[6] : qq < 0.8 ? C[5] : C[4], len = Math.round(11 * (1 - qq * 0.6));
+            for (let j = 0; j < len; j++) q.line(...hist[j][i], ...hist[j + 1][i], j < 2 && qq < 0.1 ? WHITE : col, (1 - age) * (j < len * 0.5 ? 1 : 2 * (1 - j / len)));
+          }
+          q.glowLine(...hist[0][N], ...hist[6][N], 14, C[5], 0.35 * (1 - age));
+        }
+        // the vine itself: a round stem, lit on its upper side, dark beneath, bark notches, thorns spiralling up it
+        const grow = ease.outCubic(clamp(t / 0.14)) * (1 - ease.inCubic(clamp((t - 1.0) / 0.3)));
+        if (grow > 0.02) {
+          let L = 0;
+          const cum = pts.map((pt, i) => (i ? (L += Math.hypot(pt[0] - pts[i - 1][0], pt[1] - pts[i - 1][1], pt[2] - pts[i - 1][2])) : 0));
+          tube(q, pts, (u) => width(u) * 0.62 + 0.4, (nx, ny, nz, u) => {
+            if (nz < 0.2) return C[1];
+            if (Math.abs(((u * L) % 5) - 2.5) < 0.45 && width(u) > 3.2) return C[2];
+            return shade3(C.slice(1, 7), nx, ny, nz, 1);
+          }, 0);
+          for (let i = 2; i < N - 1; i += 2) {
+            const A = pts[i], B = pts[i + 1], tx = B[0] - A[0], ty = B[1] - A[1], tz = B[2] - A[2], tl = Math.hypot(tx, ty, tz) || 1;
+            if (A[1] > -1) continue;
+            const ux = tx / tl, uy = ty / tl, uz = tz / tl;
+            // two directions across the stem, turning as the thorns climb
+            let bx = uy * 1 - uz * 0, by = uz * 0 - ux * 1, bz = 0;
+            const bl = Math.hypot(bx, by, bz) || 1;
+            bx /= bl; by /= bl;
+            const cx = uy * bz - uz * by, cy = uz * bx - ux * bz, cz = ux * by - uy * bx, ph = i * 1.9, sx = bx * Math.cos(ph) + cx * Math.sin(ph), sy = by * Math.cos(ph) + cy * Math.sin(ph), sz = bz * Math.cos(ph) + cz * Math.sin(ph);
+            const w = width(i / N) / 2, len = 1.8 + 2.4 * (1 - i / N), x0 = A[0] + sx * (w - 0.5), y0 = A[1] + sy * (w - 0.5), z0 = A[2] + sz * (w - 0.5);
+            const tx2 = x0 + sx * len - ux * len * 0.7, ty2 = y0 + sy * len - uy * len * 0.7, tz2 = z0 + sz * len - uz * len * 0.7;
+            q.beam(x0, y0, z0, (x0 + tx2) / 2, (y0 + ty2) / 2, (z0 + tz2) / 2, 1.8, (uu, v) => (v > 0.5 ? T[1] : T[2]));
+            q.line((x0 + tx2) / 2, (y0 + ty2) / 2, (z0 + tz2) / 2, tx2, ty2, tz2, T[2]);
+            q.px(tx2, ty2, tz2, T[3]);
+          }
+          for (const kk of [7, 13, 18]) {
+            const A = pts[kk], B = pts[kk + 1], side = kk % 2 ? 1 : -1;
+            if (A[1] > -2) continue;
+            const a = Math.atan2(B[1] - A[1], B[0] - A[0]) + side * 1.1 + Math.sin(t * 9 + kk) * 0.2, h = kk * 1.3;
+            leaf3(q, A[0], A[1], A[2], [Math.cos(a) * Math.cos(h), Math.sin(a), Math.cos(a) * Math.sin(h) * 0.6 + 0.3 * side], 7, 2.2, 0.3 + Math.sin(t * 5 + kk) * 0.4, [C[1], C[3], C[5], C[6]]);
+          }
+          const lk = smooth(LASH, CRACK, t) * (1 - smooth(CRACK, CRACK + 0.35, t));
+          if (lk > 0) for (let i = 6; i <= N; i += 6) q.glow(pts[i][0], pts[i][1], pts[i][2], 12, C[5], 0.18 * lk);
+        }
+        // the crack: a white burst of air lines every way and a glint at the tip
+        const e = t - CRACK;
+        if (e >= 0 && e < 0.12) {
+          const [x, y, z] = pts[N], kk = 1 - e / 0.12;
+          for (let j = 0; j < 10; j++) {
+            const a = j * 2.399963, yy = -1 + (2 * (j + 0.5)) / 10, r = Math.sqrt(1 - yy * yy), r0 = 4 + 10 * (1 - kk), r1 = r0 + 5 * kk, dx = Math.cos(a) * r, dz = Math.sin(a) * r;
+            q.line(x + dx * r0, y + yy * r0, z + dz * r0, x + dx * r1, y + yy * r1, z + dz * r1, kk > 0.5 ? WHITE : C[6]);
+          }
+          q.at(x, y, z, (pp) => {
+            pp.ring(0, 0, 3 + 8 * (1 - kk), 1, C[7], kk);
+            sparkle(pp, 0, 0, 7 * kk, C[7], C[5], 0.4);
+          });
+        }
+        bits3(q, bits, S);
+        for (const l of torn) leaf3(q, l.x, l.y, l.z, [Math.cos(l.a) * Math.cos(l.b + l.fl * 0.2), Math.sin(l.a), Math.cos(l.a) * Math.sin(l.b + l.fl * 0.2)], 6, 2, l.fl, [C[1], C[3], C[5], C[6]], Math.min(1, l.life / 0.3));
+        drops.draw3(q, C);
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

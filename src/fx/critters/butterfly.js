@@ -1,5 +1,5 @@
-import { fit, mix, clamp, wrap, lerp, cycle, sparkle, TAU } from "../../core/index.js";
-import { Grid, shift } from "./_lib.js";
+import { fit, mix, clamp, wrap, lerp, cycle, sparkle, space, TAU } from "../../core/index.js";
+import { Grid, shift, floorShadow, floorPool } from "./_lib.js";
 
 export const meta = {
   name: "Butterfly",
@@ -137,3 +137,45 @@ export function draw(p, time, o) {
   p.glow(S.x, S.y, 38, C[4], 0.16 + 0.14 * w);
   p.glow(S.x, S.y, 12, C[5], 0.12 + 0.1 * w);
 }
+
+// ---- 3D: a lissajous wander through the volume (x once, z and the height twice a loop), its dust falling through the air
+function at3(t) {
+  t = wrap(t, D);
+  const a = (t / D) * TAU;
+  let lift = 0;
+  for (const [s, e] of BURSTS) lift += -3 * Math.sin(Math.PI * clamp((t - s) / (e - s)));
+  return { x: 34 * Math.sin(a) + 7 * Math.sin(3 * a), z: 28 * Math.sin(2 * a + 1.1) + 7 * Math.sin(3 * a + 2), y: -42 + 11 * Math.sin(2 * a + 0.4) + lift };
+}
+
+export const three = {
+  meta: { size: [152, 120], origin: [76, 98], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, time, o) {
+    const t = shift(time, D, o.seed), C = fit(o.palette, 7), Sp = fit(o.spots, 4), S = at3(t), w = fold(t), g = GRID, q = space(p, o);
+    // its shadow slips over the floor, wide when the wings are open, and its blue glow pools there
+    const hgt = clamp(-S.y / 48);
+    floorShadow(q, S.x, S.z, 5 + 5 * w, "#000000", 0.9);
+    // the butterfly: its wings face the eye, a billboard
+    butterfly(g, C, Sp, w, t);
+    q.at(S.x, S.y, S.z, (pp) => g.draw(pp, 1, 0, 0));
+    // a trail of glowing dust shaken off the wings, drifting out all round and down through the air, twinkling out
+    const dust = [];
+    cycle(t, D, 130, o.seed * 7 + 1, (r) => r.range(1, 1.8), (age, L, r, i) => {
+      const born = wrap(t - age, D), B = at3(born), k = age / L;
+      if (!flapping(born) && r.chance(0.45)) return;
+      const ang = r.range(0, TAU), rad = r.range(0, 9), ph = Math.sin(age * 3 + i) * 1.5;
+      const x = B.x + Math.cos(ang) * rad + ph, z = B.z + Math.sin(ang) * rad + Math.cos(age * 3 + i) * 1.5;
+      const y = Math.min(-0.5, B.y + r.range(-4, 8) + 7 * age + 3 * age * age);
+      const tw = 0.5 + 0.5 * Math.sin(age * 11 + i * 2.1), a = Math.min(1, k * 8) * (1 - k);
+      dust.push({ x, y, z, tw, a, k, i, c: tw > 0.7 ? C[6] : r.chance(0.3) ? Sp[2] : C[5] });
+    });
+    for (const d of dust) (d.a > 0.7 ? q.px(d.x, d.y, d.z, d.c) : q.dot(d.x, d.y, d.z, d.c, d.a * 1.2));
+    for (const d of dust) {
+      q.glow(d.x, d.y, d.z, 6, C[4], 0.5 * d.a * d.tw);
+      if (d.i % 9 === 0 && d.tw > 0.85 && d.k < 0.5) q.at(d.x, d.y, d.z, (pp) => sparkle(pp, 0, 0, 2, C[6], C[5], 0.3 * d.a));
+    }
+    // the wings shine: a soft blue light round it, brighter when they open
+    q.glow(S.x, S.y, S.z, 38, C[4], 0.16 + 0.14 * w);
+    q.glow(S.x, S.y, S.z, 12, C[5], 0.12 + 0.1 * w);
+    floorPool(q, S.x, S.z, 30, C[4], (0.16 + 0.14 * w) * (1 - hgt * 0.4));
+  },
+};

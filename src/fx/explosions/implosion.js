@@ -1,7 +1,7 @@
 // The gathering streaks, the pulse rings and the release (cross flare, rings, light) are adapted from Sprite Fusion's
 // open-source energy charge (https://www.spritefusion.com/pixel-art-vfx/energy), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, sparkle, clamp, smooth, ease, TAU, WHITE, hex, mix } from "../../core/index.js";
-import { cull } from "./_lib.js";
+import { Particles, Lights, P, Rng, fit, sparkle, clamp, smooth, ease, TAU, WHITE, hex, mix, space } from "../../core/index.js";
+import { cull, pool3 } from "./_lib.js";
 
 export const meta = {
   name: "Implosion",
@@ -110,3 +110,134 @@ export function create(o) {
     },
   };
 }
+
+// ---- 3D: everything is drawn into a point hanging in the air. Streaks, vapour and grit rush in from a full sphere
+// (not a circle), the pulse rings contract as true circles in four planes (flat, and three upright), the void is a
+// real hollow sphere (its far side drawn as a dark bowl, so the streaks and the crushed core show inside it), and the
+// pop is a sphere of rays with three orthogonal shock rings and a billboard ring.
+
+// the far half of a sphere of radius r at (x, y, z), a depth per pixel: a hollow void you can see into
+function bowl(q, x, y, z, r, col) {
+  if (!q.project(x, y, z)) return;
+  const cx = q.x, cy = q.y, d0 = q.d, R = r * q.k, p = q.p, z0 = p.z;
+  p.each(cx - R, cy - R, cx + R, cy + R, (lx, ly, sx, sy) => {
+    const nx = (lx - cx) / R, ny = (ly - cy) / R, d2 = nx * nx + ny * ny;
+    if (d2 > 1) return;
+    const nz = Math.sqrt(1 - d2);
+    p.z = d0 + nz * r;
+    p.put(sx, sy, col(nx, ny, nz), 1);
+  });
+  p.z = z0;
+}
+
+export const three = {
+  meta: { size: [208, 212], origin: [104, 172], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 7), R = new Rng(o.seed), CY = -84, floor = () => 0;
+    const [, H] = three.meta.size, [OX, OY] = three.meta.origin, RX = OX - 4, Y0 = -OY + 3, Y1 = H - OY - 3;
+    const ps = new Particles({ rng: R, ground: floor, sparks: [C[6], C[5], C[4], C[3]] }), lights = new Lights();
+    const dirOf = () => {
+      const y = R.range(-1, 1), r = Math.sqrt(1 - y * y), a = R.range(0, TAU);
+      return [Math.cos(a) * r, y, Math.sin(a) * r];
+    };
+    // grit pulled in: specks that spiral about the vertical on their way to the middle, faster and faster
+    const grit = Array.from({ length: 80 }, () => {
+      const t0 = R.range(0, 0.4), [, y] = dirOf();
+      return { a: R.range(0, TAU), y, d: R.range(40, 86), t0, T: R.range(0.3, SUCK - 0.04 - t0), spin: R.sign() * R.range(0.6, 1.6), c: R.pick([C[2], C[3], C[4], hex("#4a4458"), hex("#6e6880")]) };
+    });
+    // 14 rays of the pop: eight long along the corners of a cube, six short along the axes
+    const long = [], short = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+    for (const a of [-1, 1]) for (const b of [-1, 1]) for (const c of [-1, 1]) long.push([a * 0.5774, b * 0.5774, c * 0.5774]);
+    // the planes the rings lie in: flat, and three upright ones
+    const PLANES = [[0, 1, 0], [0, 0, 1], [1, 0, 0], [0.7071, 0, 0.7071]];
+    let t = 0, popped = false;
+    const keep = () => {
+      const L = ps.list;
+      for (let i = L.length - 1; i >= 0; i--) {
+        const q = L[i];
+        if (q.y < Y0 || q.y > Y1 - 12 || Math.hypot(q.x, q.z) > RX) L.splice(i, 1);
+      }
+    };
+    return {
+      update(dt) {
+        t += dt;
+        if (t < SUCK - 0.26) {
+          // streaks of light rushing in from every side, accelerating, more of them as it goes
+          const k = t / SUCK;
+          for (let n = 0; n < 2 + Math.floor(k * 7); n++) {
+            if (!R.chance(0.9)) continue;
+            const [dx, dy, dz] = dirOf(), D = R.range(34, 82) * (1 - 0.3 * k), T = R.range(0.14, 0.24), v = (D * 3) / (Math.exp(3 * T) - 1);
+            ps.spawn3(P.STREAK, dx * D, CY + dy * D, dz * D, -dx * v, -dy * v, -dz * v, T, R.chance(0.5) ? C[5] : C[4]);
+          }
+          // vapour drawn in along the way
+          if (R.chance(14 * dt)) {
+            const [dx, dy, dz] = dirOf(), D = R.range(50, 80);
+            ps.spawn3(P.VAPOUR, dx * D, CY + dy * D, dz * D, -dx * 90, -dy * 90, -dz * 90, R.range(0.4, 0.6), C[3], R.range(3, 5));
+          }
+        }
+        if (!popped && t >= STILL) {
+          popped = true;
+          lights.add(0, CY, 90, C[4], 1, 0.4, 0);
+          lights.add(0, CY, 30, WHITE, 0.9, 0.08, 0);
+          for (let i = 0; i < 44; i++) {
+            const [dx, dy, dz] = dirOf(), sp = R.range(120, 330);
+            ps.spawn3(R.chance(0.6) ? P.MOTE : P.STAR, 0, CY, 0, dx * sp, dy * sp, dz * sp, R.range(0.2, 0.45), R.pick([C[6], C[5], C[4]]), R.range(0.8, 1.8));
+          }
+        }
+        ps.update(dt);
+        keep();
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), k = clamp(t / SUCK);
+        if (t < STILL) {
+          // the void: a hollow sphere edged with light, growing in a blink and collapsing onto the core
+          const vr = k < 1 ? (64 * (1 - ease.inCubic(k)) + 3) * smooth(0, 0.08, t) : 0;
+          if (vr > 1) {
+            bowl(q, 0, CY, 0, vr, (nx, ny, nz) => (nz < 0.1 ? (k < 0.5 ? C[3] : C[4]) : nz < 0.2 ? C[2] : nz < 0.4 ? C[1] : VOID));
+            // its edge: light round the silhouette, at the sphere's own depth
+            q.at(0, CY, 0, (pp, kk) => pp.glowRing(0, 0, vr * kk, 5, C[4], 0.18 + 0.3 * k));
+          }
+          // the grit, spiralling in
+          for (const g of grit) {
+            const u = (t - g.t0) / g.T;
+            if (u <= 0 || u >= 1) continue;
+            const d = g.d * (1 - ease.inCubic(u)), a = g.a + g.spin * ease.inQuad(u) * 2, d2 = d + 4 * u * u + 0.5, a2 = a - g.spin * 0.1, rho = Math.sqrt(1 - g.y * g.y);
+            q.line(Math.cos(a2) * rho * d2, CY + g.y * d2, Math.sin(a2) * rho * d2, Math.cos(a) * rho * d, CY + g.y * d, Math.sin(a) * rho * d, (v) => (v < 0.5 ? mix(g.c, VOID, 0.4) : g.c));
+          }
+          // the core: growing hotter as it's crushed, then a white point trembling in the stillness
+          const still = t > SUCK, jit = still ? (Math.floor(t * 40) % 2 ? 0.5 : -0.5) : 0, cr = still ? 1.6 : 1 + 3.5 * (1 - k) * k * 4;
+          q.ball(jit, CY, 0, cr + 1.2, (nx, ny, nz) => (nz < 0.6 ? C[4] : WHITE));
+          // rings pulled in after it, one after another, brighter as they go
+          for (let i = 0; i < 4; i++) {
+            const u = (t - i * 0.17) / 0.34;
+            if (u <= 0 || u >= 1) continue;
+            q.ring(0, CY, 0, (70 - i * 8) * (1 - ease.inQuad(u)) + 2, u > 0.7 ? 2 : 1, u > 0.6 ? C[5] : C[3], 0.4 + 0.6 * u, PLANES[i]);
+          }
+          q.glow(0, CY, 0, 10 + 26 * k, C[4], 0.3 + 0.5 * k);
+          if (still) q.glow(0, CY, 0, 8, WHITE, 0.4 + 0.2 * Math.sin(t * 60));
+          pool3(q, 50, C[4], 0.12 * k, 0, 0);
+        } else {
+          // the pop: a white point bursting, a sphere of rays, three orthogonal shock rings and a slower one facing us
+          const u = (t - STILL) / 0.5, e = ease.outCubic(clamp(u));
+          if (u < 0.08) q.ball(0, CY, 0, 6 * (1 - u / 0.08) + 1, WHITE);
+          if (u < 0.35) {
+            const L = (1 - u / 0.35) * 34 + 3;
+            const ray = (d, len, fade) => q.line(0, CY, 0, d[0] * len, CY + d[1] * len, d[2] * len, (v) => (v < 0.4 ? WHITE : C[5]), (v) => (fade ? 1 - v : v < 0.7 ? 1 : 1 - (v - 0.7) / 0.3));
+            for (const d of long) ray(d, L, false);
+            for (const d of short) ray(d, L * 0.45, true);
+          }
+          if (u < 1) {
+            const r = 4 + 74 * e, w = Math.max(1, 2.5 * (1 - u)), c = u < 0.2 ? WHITE : C[5], a = 1.15 - u;
+            for (const n of PLANES.slice(0, 3)) q.ring(0, CY, 0, r, w, c, a, n);
+            q.at(0, CY, 0, (pp, kk) => pp.ring(0, 0, (2 + 40 * ease.outCubic(clamp(u * 1.4))) * kk, 1, C[4], 1 - u));
+            pool3(q, 60, C[4], 0.35 * (1 - u), 0, 0);
+          }
+          if (u < 0.6) q.at(0, CY, 0, (pp, kk) => sparkle(pp, 0, 0, 5 * (1 - u / 0.6) * kk, WHITE, C[5], 0.6));
+        }
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

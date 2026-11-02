@@ -1,7 +1,7 @@
 // The caustic light and the bubbles are adapted from Sprite Fusion's open-source bubbles
 // (https://www.spritefusion.com/pixel-art-vfx/bubbles), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { fit, mix, clamp, wrap, lerp, smooth, ease, rng, cycle, TAU } from "../../core/index.js";
-import { Grid, shift, bubble } from "./_lib.js";
+import { fit, mix, clamp, wrap, lerp, smooth, ease, rng, cycle, space, TAU } from "../../core/index.js";
+import { Grid, shift, bubble, mirrored, floorShadow, floorPool } from "./_lib.js";
 
 export const meta = {
   name: "Fish school",
@@ -112,3 +112,89 @@ export function draw(p, time, o) {
   p.glow(0, -8, 74, C[2], 0.2);
   p.glow(-6, -18, 40, C[3], 0.1);
 }
+
+// ---- 3D: the school winds through the water as a funnel-shaped vortex, wide at the top and narrow near the floor.
+// [where it starts round the funnel (turns), height, size, tail phase]: three loose rings, the smallest fish high up
+const SCHOOL3 = [
+  [0.0, -62, 0.72, 0.1], [0.33, -56, 0.68, 0.55], [0.67, -52, 0.7, 0.3],
+  [0.1, -42, 1, 0.8], [0.35, -38, 1, 0.2], [0.6, -34, 0.95, 0.45], [0.85, -40, 0.96, 0.65],
+  [0.2, -24, 0.85, 0.9], [0.53, -20, 0.8, 0.05], [0.87, -17, 0.9, 0.7],
+];
+const TOP3 = -88;
+
+// the darting fish's push ahead, 1 at the kick and 0 again once it has drifted back (the 2D school's timing)
+function dart3(i, t) {
+  if (i !== 4) return { push: 0, flurry: 0 };
+  const dt = wrap(t - (i * 0.71 * D) % D, D);
+  return { push: dt < 0.25 ? ease.outCubic(dt / 0.25) : dt < 1.6 ? 1 - ease.inOutSine((dt - 0.25) / 1.35) : 0, flurry: dt < 0.6 ? 1 - dt / 0.6 : 0 };
+}
+function at3(i, t) {
+  const [turn, h, , ph] = SCHOOL3[i], a = (t / D) * TAU, d = dart3(i, t);
+  const ang = turn * TAU + a + 0.34 * d.push, r = 16 - h * 0.45 + 3 * Math.sin(a + ph * TAU) + 3 * d.push;
+  return { x: r * Math.cos(ang), y: h + 1.8 * Math.sin(2 * a + ph * 5), z: r * Math.sin(ang), dart: d.flurry };
+}
+// the way a fish is heading: across the vortex, along the circle
+function heading3(i, t) {
+  const A = at3(i, t - 0.02), B = at3(i, t + 0.02);
+  return [B.x - A.x, B.z - A.z];
+}
+
+// the 2D caustics, laid on the floor as a true disc of light
+function causticFloor(q, C, t, R) {
+  const a = (t / D) * TAU;
+  q.plane(0, 0, 0, null, R, (x, y, o) => {
+    const fall = clamp(1 - (x * x + y * y) / (R * R));
+    if (fall <= 0) return;
+    const u = x * 0.14 + 1.9 * Math.sin(y * 0.1 + a), v = y * 0.17 + 1.9 * Math.sin(x * 0.085 - a);
+    const sh = 0.75 + 0.25 * Math.sin(x * 0.05 - y * 0.04 + 2 * a);
+    const f = Math.max(0, 1 - Math.abs(Math.sin(u) + Math.sin(v)) * 4.2) * fall * sh;
+    if (f > 0.45) (o.l = C[4]), (o.k = 0.36);
+    else if (f > 0.2) (o.l = C[3]), (o.k = 0.18);
+  });
+}
+
+// shafts of light slanting down through the water: [x, z, width, phase]
+const SHAFTS = [[-34, 12, 10, 0], [10, -30, 7, 2.1], [38, 22, 12, 4]];
+
+export const three = {
+  meta: { size: [132, 124], origin: [66, 98], bg: "dark", camera: { pitch: 0.3 } },
+  draw(p, time, o) {
+    const t = shift(time, D, o.seed), C = fit(o.palette, 7), Sp = fit(o.stripe, 3), g = GRID, q = space(p, o);
+    const wave = (t / D) * TAU, mid = q.depth(0, -36, 0);
+    // the light on the floor: caustics, and a pool where each shaft lands
+    causticFloor(q, C, t, 58);
+    for (const [x0, z0, w, ph] of SHAFTS) floorPool(q, x0 + Math.sin(wave + ph) * 4 + 8, z0 + 4, w * 2.4, C[4], 0.16);
+    const fishes = SCHOOL3.map((f, i) => ({ f, i, P: at3(i, t) }));
+    for (const { f, P } of fishes) floorShadow(q, P.x, P.z, 4 + 5 * f[2], "#000000", 0.3);
+    // the fish, far to near, each flipped to face the way it swims and dimmed into the water by its depth
+    for (const { f, i, P } of q.sort(fishes, (m) => [m.P.x, m.P.y, m.P.z])) {
+      const [hx, hz] = heading3(i, t), flip = mirrored(q, hx, hz), s = f[2], L = 15 * s;
+      const k = clamp((q.depth(P.x, P.y, P.z) - mid) / 100 + 0.5), step = Math.min(3, Math.floor(k * 4)) / 3;
+      fish(g, C, Sp, s, t, f[3], P.dart);
+      if (step > 0) g.recolor((x, y, c) => mix(c, C[1], 0.42 * step));
+      q.at(P.x, P.y, P.z, (pp) => g.draw(pp, 1, flip ? -L / 2 : L / 2, 0, flip));
+    }
+    // bubbles let go from their mouths now and then, climbing in a wobbling spiral through the volume
+    cycle(t, D, 16, o.seed * 13 + 1, (r) => r.range(1.6, 2.6), (age, L, r, i) => {
+      const n = i % SCHOOL3.length, f = SCHOOL3[n], t0 = wrap(t - age, D), P = at3(n, t0), [hx, hz] = heading3(n, t0), hl = Math.hypot(hx, hz) || 1;
+      const rad = r.range(0.6, 1.6) * f[2], ph = r.next() * TAU, wob = Math.sin(age * (4 + 2 / rad) + ph) * (0.5 + rad * 0.7), wz = Math.cos(age * (4 + 2 / rad) + ph) * (0.5 + rad * 0.7);
+      const x = P.x + (hx / hl) * 7.5 * f[2] + wob, z = P.z + (hz / hl) * 7.5 * f[2] + wz, y = P.y - 1 - (16 + 12 * rad) * age;
+      if (y < TOP3) return;
+      q.at(x, y, z, (pp) => bubble(pp, 0, 0, rad, [C[6], C[5], C[4], C[3]], Math.min(1, age * 4, (L - age) * 3, (y - TOP3) / 4)));
+    });
+    // specks of plankton hang in the water all round, drifting up
+    cycle(t, D, 26, o.seed * 13 + 5, D, (age, L, r) => {
+      const ang = r.range(0, TAU), rad = Math.sqrt(r.next()) * 58, ph = r.next() * TAU;
+      const x = Math.cos(ang) * rad + Math.sin(age * 1.1 + ph) * 2.5, z = Math.sin(ang) * rad, y = r.range(-80, -4) - age * r.range(0.5, 2.5);
+      const tw = Math.sin(age * 2.4 + ph), a = Math.min(1, age * 2, (L - age) * 2) * (0.3 + 0.35 * tw);
+      q.dot(x, y, z, tw > 0.8 ? C[6] : C[4], a);
+    });
+    // the shafts, and the cool glow the whole school swims in
+    for (const [x0, z0, w, ph] of SHAFTS) {
+      const sw = Math.sin(wave + ph) * 4;
+      q.glowLine(x0 + sw - 14, -96, z0 - 6, x0 + sw + 8, 0, z0 + 4, w, C[4], 0.05);
+    }
+    q.glow(0, -38, 0, 74, C[2], 0.2);
+    q.glow(-6, -52, 4, 40, C[3], 0.1);
+  },
+};

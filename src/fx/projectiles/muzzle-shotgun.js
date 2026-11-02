@@ -1,7 +1,7 @@
 // The flash lobes, spark, smoke and casing recipes are adapted from Sprite Fusion's open-source
 // muzzle-flash (https://www.spritefusion.com/pixel-art-vfx/muzzle-flash), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, P, Rng, fit, mix, clamp, WHITE } from "../../core/index.js";
-import { flash, cloud, Smoke, casing } from "./_lib.js";
+import { Particles, P, Rng, fit, mix, clamp, lit, space, TAU, WHITE } from "../../core/index.js";
+import { flash, cloud, Smoke, casing, flash3, Smoke3, cloud3, casing3, tube, cone3 } from "./_lib.js";
 
 export const meta = {
   name: "Shotgun blast",
@@ -104,3 +104,78 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the fan of flame is a cone of tongues round the bore, the pellets are ten hot streaks fanning out of it in space,
+// the smoke is a heavy cloud that rolls out in every direction and lifts, and the red shell is kicked out of the port on the
+// near side a beat later and bounces across the floor.
+export const three = {
+  meta: { size: [224, 108], origin: [112, 82], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const F = fit(o.palette, 9), SM = fit(o.smoke, 7), SH = fit(o.shell, 5), H = o.height, MY = -H, R = new Rng(o.seed);
+    const ps = new Particles({ rng: R, ground: () => 0, sparks: [F[7], F[6], F[4], F[3]] }), smoke = new Smoke3(R);
+    const RIGHT = 88, jit = Array.from({ length: 32 }, () => R.next());
+    // pellets: a tight spray, gone in a few frames, each dragging a hot streak
+    const pellets = Array.from({ length: 10 }, () => {
+      const a = R.range(0, TAU), th = R.range(0.02, 0.13);
+      return { dx: Math.cos(th), dy: Math.sin(th) * Math.cos(a), dz: Math.sin(th) * Math.sin(a), v: R.range(900, 1150), d0: R.range(0, 4) };
+    });
+    // sparks and burning wad, flung wide
+    for (let i = 0; i < 16; i++) {
+      const [vx, vy, vz] = cone3(R.range(0, 0.55), R.range(0, TAU), R.range(180, 460));
+      ps.spawn3(P.SPARK, 4, MY, 0, vx, vy - 20, vz, R.range(0.08, 0.3));
+    }
+    for (let i = 0; i < 7; i++) {
+      const [vx, vy, vz] = cone3(R.range(0, 0.5), R.range(0, TAU), R.range(70, 200));
+      ps.spawn3(P.EMBER, 4, MY, 0, vx, vy, vz, R.range(0.4, 0.9), F[5]);
+    }
+    // the smoke: a heavy shove of gas forward that slows, rolls, swells and lifts; the first of it lit by the blast
+    for (let i = 0; i < 26; i++) {
+      const [vx, vy, vz] = cone3(R.range(0, 0.45), R.range(0, TAU), R.range(60, 230) * (i < 8 ? 1.15 : 0.8));
+      smoke.add({ x: 4 + R.range(0, 4), y: MY + R.range(-1.5, 1.5), z: R.range(-1.5, 1.5), vx, vy, vz, r0: R.range(2.5, 3.5), r1: R.range(7, 12.5), life: R.range(2.1, 2.9), a: R.range(0.55, 0.72), b: R.range(0.9, 1), drag: R.range(2.6, 3.6), rise: R.range(9, 15), grow: R.range(1.8, 2.8), warm: 1, delay: R.range(0, 0.04) });
+    }
+    for (let i = 0; i < 6; i++) smoke.add({ x: 2, y: MY, z: R.range(-2, 2), vx: R.range(15, 50), vy: -R.range(10, 25), vz: R.range(-12, 12), r0: 1.5, r1: R.range(4, 6), life: R.range(1.8, 2.4), a: 0.5, b: 1, drag: 2, rise: 10, curl: -R.range(1.5, 3), warm: 0.6, delay: 0.08 + i * 0.05 });
+    // the pump throws the spent shell a beat later, out of the port on the near side
+    const shell = { t0: 0.42, vx: -R.range(12, 30), vy: -R.range(110, 150), vz: R.range(35, 60), va: R.sign() * R.range(16, 24), a0: R.range(0, 6.28) };
+    const hull = lit([SH[0], SH[1], SH[2], SH[2]]);
+    let t = 0;
+    return {
+      update(dt) {
+        t += dt;
+        ps.update(dt);
+        smoke.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), pop = Math.exp(-(t + 0.008) / 0.05), list = smoke.puffs();
+        for (const s of list) s.w *= 0.25 + pop * 1.2;
+        // the shell: red hull, brass head, tumbling up and back, bouncing, lying a moment
+        if (t > shell.t0 && t < meta.duration - 0.05) {
+          const k = casing3(-9, MY, 4, shell.vx, shell.vy, shell.vz, shell.va, t - shell.t0, 850, -1, 0.35, shell.a0), ca = Math.cos(k.a), dx = k.ux * ca, dy = Math.sin(k.a), dz = k.uz * ca;
+          const fade = clamp((meta.duration - 0.05 - t) / 0.3), y = k.y - 0.6;
+          tube(q, k.x - dx * 1.7, y - dy * 1.7, k.z - dz * 1.7, k.x + dx * 0.7, y + dy * 0.7, k.z + dz * 0.7, 1.3, 1.3, hull, fade);
+          tube(q, k.x + dx * 0.6, y + dy * 0.6, k.z + dz * 0.6, k.x + dx * 1.7, y + dy * 1.7, k.z + dz * 1.7, 1.3, 1.3, (nx, ny) => (ny < -0.2 ? SH[4] : SH[3]), fade);
+          if (k.hit >= 0 && k.hit < 0.07) q.glow(k.x, y, k.z, 5, SH[4], 0.5 * (1 - k.hit / 0.07));
+        }
+        // the flash: a white-hot hero frame, then the fan cooling and spreading as the gas balloons
+        if (t < 3 * F1) {
+          const f = t < F1 ? 1 : t < 2 * F1 ? 2 : 3;
+          flash3(q, 0, MY, 0, 0, fan(jit, f), f === 1 ? [WHITE, F[7], F[6], F[3]] : f === 2 ? [F[7], F[6], F[4], F[2]] : [F[5], F[4], F[3], F[1]], f + 9, f === 1 ? 5 : f === 2 ? 4 : 3);
+        }
+        // the pellets: hot heads with tails that cool to orange, gone past the edge
+        if (t < 0.2)
+          for (const s of pellets) {
+            const head = 6 + s.d0 + s.v * t, tail = Math.max(4, head - 26);
+            if (s.dx * tail > RIGHT) continue;
+            const hd = Math.min(head, RIGHT / s.dx);
+            q.line(s.dx * tail, MY + s.dy * tail, s.dz * tail, s.dx * hd, MY + s.dy * hd, s.dz * hd, (u) => (u > 0.85 ? WHITE : u > 0.5 ? F[6] : F[4]), (u) => (u > 0.3 ? 1 : u / 0.3));
+            if (s.dx * head < RIGHT) q.glow(s.dx * head, MY + s.dy * head, s.dz * head, 4, F[6], 0.5);
+          }
+        ps.draw(q);
+        cloud3(q, list, SM, [SM[0], mix(F[1], SM[1], 0.5), mix(F[2], SM[2], 0.4), F[3], F[4], F[5], F[7]], { dens: 1.4, max: 0.86, lit: 1.4 });
+        // light: a big pop that floods the floor, a white heart
+        q.glow(8, MY, 0, 46, F[4], 0.95 * pop);
+        q.glow(4, MY, 0, 12, WHITE, 0.6 * pop);
+        q.glow(10, 0, 0, 30, F[4], 0.28 * pop);
+      },
+    };
+  },
+};

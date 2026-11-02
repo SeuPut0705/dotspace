@@ -1,7 +1,7 @@
 // The open-sided star, the spark cone off the surface, the chips, dust and smoke are adapted from Sprite Fusion's
 // open-source impact (https://www.spritefusion.com/pixel-art-vfx/impact), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, clamp, smooth, ease, rand, TAU, WHITE, mix } from "../../core/index.js";
-import { stone, spikes, star, SOOT } from "./_lib.js";
+import { Particles, Lights, P, Rng, fit, clamp, smooth, ease, rand, space, TAU, WHITE, mix } from "../../core/index.js";
+import { stone, spikes, star, SOOT, aimed, spikes3, star3 } from "./_lib.js";
 
 export const meta = {
   name: "Bullet impact",
@@ -99,3 +99,95 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the wall is a plane at x = 1 facing -x (a faint brick patch shows where it is), the pock mark and its cracks
+// are laid on it, the star is a spiky half-ball opening away from it, and the shock is a dome of three half rings.
+export const three = {
+  meta: { size: [232, 112], origin: [116, 86], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 7), st = stone(o.stone), R = new Rng(o.seed), Y = -o.height, floor = () => 0, D = meta.duration, WALL = 1;
+    const ps = new Particles({ rng: R, ground: floor, sparks: [C[6], C[5], C[4], C[2]] });
+    const lights = new Lights();
+    const N = Math.PI, IN = 0.08, B = Math.PI - IN;
+    const sp = spikes3(R, 9, B, { len: [7, 10.5], w: [1.6, 2.1], fwd: 1.8, back: 0.4 });
+    for (const s of sp) if (s.d[0] > 0.2) s.len *= 0.3;
+    const cracks = [0, 1, 2].map(() => {
+      const a = R.range(0, TAU), L = R.range(3, 7);
+      return [Math.cos(a) * 2.8, Math.sin(a) * 2.8, Math.cos(a) * (2.8 + L), Math.sin(a) * (2.8 + L)];
+    });
+    const nearSeg = (u, v, [x0, y0, x1, y1]) => {
+      const dx = x1 - x0, dy = y1 - y0, f = clamp(((u - x0) * dx + (v - y0) * dy) / (dx * dx + dy * dy));
+      return Math.hypot(u - x0 - dx * f, v - y0 - dy * f);
+    };
+    lights.add(-4, Y, 40, C[4], 0.6, 0.22);
+    lights.add(-2, Y, 14, WHITE, 0.6, 0.06);
+    // sparks bounce back off the wall in a cone
+    for (let i = 0; i < 18; i++) {
+      const d = aimed(R, B, 0.8), v = R.range(170, 450);
+      ps.spawn3(P.SPARK, -1, Y, 0, d[0] * v, d[1] * v - 30, d[2] * v, R.range(0.12, 0.4), WHITE, 1, i > 13 ? R.range(0.01, 0.04) : 0);
+    }
+    // chips of the wall: flung out, falling, bouncing once and settling
+    for (let i = 0; i < 8; i++) {
+      const d = aimed(R, N - 0.1, 0.75), v = R.range(60, 190);
+      ps.spawn3(P.GRIT, -1, Y + R.range(-1, 1), R.range(-1, 1), d[0] * v, d[1] * v - R.range(20, 70), d[2] * v, R.range(0.9, 1.3), R.pick([st.light, st.body, st.body, st.lip]), i < 3 ? 2 : 1);
+    }
+    // a puff of grit dust and a wisp of smoke drifting off
+    for (let i = 0; i < 9; i++) {
+      const d = aimed(R, N, 1.1), v = R.range(15, 60);
+      ps.spawn3(P.DUST, -2, Y + R.range(-1.5, 1.5), R.range(-1.5, 1.5), d[0] * v, d[1] * v, d[2] * v, R.range(0.3, 0.55), R.chance(0.5) ? st.dust : mix(st.dust, WHITE, 0.25), R.range(1.2, 2.3));
+    }
+    ps.spawn3(P.SMOKE, -4, Y, 0, R.range(-10, -4), R.range(-16, -8), R.range(-3, 3), R.range(0.8, 1.2), st.dust, R.range(1.8, 2.4), 0.05);
+    const half = (f, n = 40) => Array.from({ length: n + 1 }, (_, j) => f(1.32 + ((TAU - 2.64) * j) / n));
+    let t = 0;
+    return {
+      update(dt) {
+        t += dt;
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), fade = 1 - smooth(D - 0.45, D - 0.1, t), heat = Math.pow(clamp(1 - t / 0.9), 1.3);
+        // the wall: a faint patch of brickwork, lit where the round struck
+        q.plane(WALL, Y, 0, [-1, 0, 0], 38, (u, v, out) => {
+          const wy = Y + v, d = Math.hypot(u, v), f = 1 - d / 38;
+          if (wy > 0 || f <= 0) return;
+          const row = Math.floor(-wy / 6), off = (row & 1) * 6, cu = (((u + off) % 12) + 12) % 12, mortar = (-wy) % 6 < 1 || cu < 1;
+          out.c = mortar ? st.light : st.body;
+          out.blend = true;
+          out.a = fade * (mortar ? 0.4 : 0.14) * Math.pow(f, 0.8);
+          out.l = C[4];
+          out.k = 0.3 * Math.exp(-t / 0.3) * Math.max(0, 1 - d / 30);
+        });
+        // the pock mark: a ragged hole with a rim that glows and cools to soot, cracks running off it
+        if (fade > 0)
+          q.plane(WALL - 0.4, Y, 0, [-1, 0, 0], 11, (u, v, out) => {
+            const d = Math.hypot(u, v) + rand(Math.floor(u), Math.floor(v), o.seed) * 0.5, k = d < 2.2 ? 0 : d < 3.6 ? 1 : -1;
+            if (k >= 0) {
+              const h = heat * (k ? 0.85 : 1.15);
+              out.c = k === 0 && h < 0.75 ? SOOT : h > 0.85 ? WHITE : h > 0.6 ? C[5] : h > 0.4 ? C[4] : h > 0.22 ? C[3] : h > 0.1 ? C[2] : st.shade;
+            } else if (cracks.some((c) => nearSeg(u, v, c) < 0.55)) out.c = heat > 0.5 ? C[3] : st.shade;
+            else return;
+            out.a = fade;
+          });
+        if (heat > 0) q.glow(WALL - 2, Y, 0, 6 + 6 * heat, C[3], 0.5 * heat * fade);
+        // a dome of shock opening away from the wall: its rim on the wall, and two half rings standing out of it
+        const u = (t - 0.03) / 0.18;
+        if (u >= 0 && u < 1) {
+          const r = 5 + 12 * ease.outCubic(u), c = u < 0.3 ? C[5] : u < 0.6 ? C[4] : C[3], a = 1.15 - u;
+          q.polyline(half((g) => [Math.cos(g) * r, Y + Math.sin(g) * r, 0]), c, a);
+          q.polyline(half((g) => [Math.cos(g) * r, Y, Math.sin(g) * r]), c, a);
+          q.polyline(Array.from({ length: 41 }, (_, j) => [WALL - 0.8, Y + Math.sin((j / 40) * TAU) * r, Math.cos((j / 40) * TAU) * r]), c, a);
+        }
+        ps.draw(q);
+        if (t < 0.03) star3(q, 0, Y, 0, sp, 1, 1, [C[2], C[5], C[4], WHITE], 1, 2.2);
+        else if (t < 0.06) star3(q, 0, Y, 0, sp, 1.25, 0.55, [C[1], C[4], C[3], C[5]], 1, 2.2);
+        const pop = Math.exp(-t / 0.045);
+        if (pop > 0.02) {
+          q.glow(-2, Y, 0, 22, C[3], 0.6 * pop);
+          q.glow(-1, Y, 0, 8, WHITE, 0.5 * pop);
+        }
+        lights.draw(q);
+      },
+    };
+  },
+};

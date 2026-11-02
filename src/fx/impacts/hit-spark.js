@@ -1,6 +1,7 @@
 // The two-tone spark spray and the light pop are adapted from Sprite Fusion's open-source impact
 // (https://www.spritefusion.com/pixel-art-vfx/impact), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, WHITE } from "../../core/index.js";
+import { Particles, Lights, P, Rng, fit, space, WHITE } from "../../core/index.js";
+import { dir2, aimed } from "./_lib.js";
 
 export const meta = {
   name: "Hit spark",
@@ -96,3 +97,75 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the same cross, standing in space. The long ray runs along the blow (+x), the arms cross it up, down and
+// towards and away from the viewer, the core is a ball, and the cone of sparks and chips opens round the blow.
+function ray3(q, x, y, z, d, L, w, C, from = 0) {
+  const n = Math.max(1, Math.ceil(((1 - from) * L) / 1.6));
+  for (let i = 0; i < n; i++) {
+    const u0 = from + ((1 - from) * i) / n, u1 = from + ((1 - from) * (i + 1)) / n, um = (u0 + u1) / 2, hw = w * Math.pow(1 - um, 1.6);
+    const mid = um < 0.3 ? WHITE : um < 0.62 ? C[5] : um < 0.88 ? C[4] : C[3], side = um < 0.3 ? C[5] : C[4];
+    q.beam(x + d[0] * u0 * L, y + d[1] * u0 * L, z + d[2] * u0 * L, x + d[0] * u1 * L, y + d[1] * u1 * L, z + d[2] * u1 * L, Math.max(1, hw * 2 + 0.4), (u, v) => (v < 0.4 ? mid : side));
+  }
+}
+
+export const three = {
+  meta: { size: [176, 104], origin: [88, 76], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 7), R = new Rng(o.seed), Y = -o.height, A = o.aim, floor = () => 0;
+    const ps = new Particles({ rng: R, ground: floor, sparks: [C[6], C[5], C[4], C[2]] });
+    const lights = new Lights();
+    const tilt = R.range(-0.08, 0.08), up = (a) => dir2(A + a + tilt);
+    const rays = [
+      { d: up(0), L: R.range(33, 37), w: 2.2 },
+      { d: up(Math.PI), L: R.range(8, 10), w: 2.2 },
+      { d: up(-Math.PI / 2), L: R.range(15, 18), w: 2.6 },
+      { d: up(Math.PI / 2), L: R.range(10, 12), w: 2.3 },
+      { d: [0, 0, 1], L: R.range(13, 16), w: 2.4 },
+      { d: [0, 0, -1], L: R.range(9, 11), w: 2.2 },
+      { d: up(-Math.PI / 4), L: R.range(5, 7), w: 1 },
+    ];
+    lights.add(0, Y, 38, C[4], 0.35, 0.18);
+    lights.add(Math.cos(A) * 10, Y + Math.sin(A) * 10, 22, C[5], 0.45, 0.1);
+    lights.add(0, -2, 26, C[3], 0.22, 0.22);
+    // a cone of sparks along the blow: they fall, bounce off the floor and die
+    for (let i = 0; i < 12; i++) {
+      const d = aimed(R, A - 0.15, 0.6), v = R.range(170, 360);
+      ps.spawn3(P.SPARK, 1, Y, 0, d[0] * v, d[1] * v - 40, d[2] * v, R.range(0.25, 0.45), WHITE, 1, i > 8 ? R.range(0.01, 0.03) : 0);
+    }
+    // hot chips knocked off, tumbling down to tick off the floor
+    for (let i = 0; i < 8; i++) {
+      const d = aimed(R, A - 0.3, 0.95), v = R.range(70, 170);
+      ps.spawn3(P.GRIT, 1, Y, 0, d[0] * v, d[1] * v - R.range(30, 80), d[2] * v, R.range(0.35, 0.45), R.pick([C[5], C[4], C[4], C[3]]), 1);
+    }
+    let t = 0;
+    return {
+      update(dt) {
+        t += dt;
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o);
+        if (t < 0.025) {
+          for (const r of rays) ray3(q, 0, Y, 0, r.d, r.L, r.w, C);
+          q.ball(0, Y, 0, 4, (nx, ny) => (Math.hypot(nx, ny) > 0.78 ? C[3] : WHITE));
+        } else if (t < 0.058) {
+          for (const r of rays) ray3(q, 0, Y, 0, r.d, r.L * 1.2, r.w * 0.55, C, 0.12);
+          q.ball(0, Y, 0, 3, (nx, ny) => (Math.hypot(nx, ny) > 0.72 ? C[3] : WHITE));
+        } else if (t < 0.092) {
+          const r = rays[0];
+          ray3(q, 0, Y, 0, r.d, r.L * 1.3, 0.6, [C[0], C[1], C[2], C[3], C[3], C[4]], 0.4);
+        }
+        ps.draw(q);
+        const pop = Math.exp(-t / 0.045);
+        if (pop > 0.02) {
+          q.glow(0, Y, 0, 22, C[4], 0.3 * pop);
+          q.glow(0, Y, 0, 7, WHITE, 0.15 * pop);
+          q.glowLine(0, Y, 0, Math.cos(A) * 26, Y + Math.sin(A) * 26, 0, 4, C[5], 0.25 * pop);
+        }
+        lights.draw(q);
+      },
+    };
+  },
+};

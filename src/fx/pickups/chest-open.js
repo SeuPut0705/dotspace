@@ -1,7 +1,7 @@
 // The collection pop (white squash, a ring snapping out, star sparks) and the glints follow Sprite Fusion's
 // open-source pickup (https://www.spritefusion.com/pixel-art-vfx/pickup), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, flare, clamp, smooth, ease, rand, TAU, WHITE, hex, mix, scale } from "../../core/index.js";
-import { Layer, coin, gemlet, glint, pool, blobShadow } from "./_lib.js";
+import { Particles, Lights, P, Rng, fit, flare, clamp, smooth, ease, rand, space, TAU, WHITE, hex, mix, scale } from "../../core/index.js";
+import { Layer, coin, gemlet, glint, pool, blobShadow, brilliant, trace, sdfHit, convexHit, gemTone, rotY, rotX, rotZ, matMul, toObject, sdBox, sdCyl, glint3, floorShadowOval, floorPool, lightRing } from "./_lib.js";
 
 export const meta = {
   name: "Chest open",
@@ -406,3 +406,347 @@ export function create(o) {
     },
   };
 }
+
+// ---- the same chest in 3D: a real box and a hinged lid, ray-traced; coins and gems that fall, bounce, tumble and settle
+// in every direction on the floor round it; rays that fan out of the open mouth as a cone; and the empty chest
+// dissolving from the lid down.
+const BX = 12, BZ = 6, BH = 9.5, LIDX = BX - 1.1, GEM_SOLID = brilliant({ r: 7.5, crown: 3.2, table: 0.5, pavilion: 9.5, girdle: 0.9 });
+const GOLDEN = 2.39996, REACH = 72;
+const lidTone = (R, l) => R[l > 0.6 ? 5 : l > 0.25 ? 4 : l > -0.1 ? 3 : l > -0.45 ? 2 : 1];
+
+export const three = {
+  meta: { size: [184, 140], origin: [92, 100], camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), W = fit(o.wood, 7), R = new Rng(o.seed), floor = () => 0;
+    const ps = new Particles({ rng: R, ground: floor, sparks: [C[7], C[6], C[5], C[4]], haze: C[4] });
+    const lights = new Lights(), loot = [], rings = [];
+    const dust = new Particles({ rng: R, sparks: [C[5], C[5], C[4], C[3]] });
+    const DUST = hex("#5e5068");
+    // the rays that fan out of the open chest: a cone of them, all round
+    const rays = Array.from({ length: 9 }, (_, i) => {
+      const u = (i / 8) * 2 - 1;
+      return { pol: Math.abs(u) * 1.05 + (i === 4 ? 0 : 0.05), az: i * GOLDEN + R.range(-0.1, 0.1), len: R.range(46, 64) * (1.2 - 0.4 * Math.abs(u)), w: R.range(0.035, 0.08), d: R.range(0, 0.06), f: R.range(5, 10), ph: R.range(0, TAU) };
+    });
+    // the loot: coins and gems, launched in a fan out of the mouth, every way round
+    const n = o.coins;
+    for (let i = 0; i < n + 4; i++) {
+      const gem = i >= n, az = i * GOLDEN + R.range(-0.25, 0.25), a = R.range(0.1, 0.5), sp = R.range(190, 270);
+      loot.push({
+        gem, G: gem ? GEMS[(i - n) % GEMS.length] : null, x: R.range(-7, 7), y: -12, z: R.range(-3, 3), vx: Math.cos(az) * Math.sin(a) * sp, vz: Math.sin(az) * Math.sin(a) * sp, vy: -Math.cos(a) * sp,
+        t0: T_OPEN + 0.03 + R.range(0, 0.2), up: false, rest: false, r: gem ? 2.6 : 3, ax: R.range(0, TAU), spin: R.range(0, TAU), vs: R.sign() * R.range(14, 24),
+        settle: 0, ph: R.next(), pop: 0, gone: false,
+      });
+    }
+    // they get picked up from the outside in
+    [...loot].sort((a, b) => Math.hypot(b.vx, b.vz) - Math.hypot(a.vx, a.vz)).forEach((it, k) => (it.pop = T_COLLECT + k * 0.04 + R.range(0, 0.02)));
+
+    let t = 0, opened = false, poofed = false, acc = 0;
+    const shake = () => {
+      let dx = 0, hop = 0, lid = 0;
+      for (const [t0, s] of RATTLES) {
+        const u = t - t0;
+        if (u < 0 || u > 0.18) continue;
+        const e = 1 - u / 0.18;
+        dx += Math.sin(u * 90) * 1.6 * s * e;
+        if (u < 0.06 && s > 0.5) hop = 1;
+        lid = Math.max(lid, Math.max(0, Math.sin(u * 38)) * 0.13 * s * e);
+      }
+      if (t >= T_OPEN && t < T_OPEN + 0.08) hop = 1;
+      const strain = smooth(T_OPEN - 0.14, T_OPEN, t);
+      if (t < T_OPEN) lid = Math.max(lid, 0.07 * strain), (dx += strain > 0.2 ? (Math.floor(t * 60) % 2 ? 1 : -1) * 0.6 : 0);
+      return { dx: Math.round(dx), hop, lid };
+    };
+    const lidAngle = (lid) => {
+      if (t < T_OPEN) return lid;
+      const u = t - T_OPEN, w = 30, z = 0.55, wd = w * Math.sqrt(1 - z * z);
+      return 1.98 * (1 - Math.exp(-z * w * u) * (Math.cos(wd * u) + ((z * w) / wd) * Math.sin(wd * u)));
+    };
+    const inner = () => {
+      if (t < T_OPEN) {
+        let k = 0.1 + 0.45 * smooth(0, T_OPEN, t) + 0.5 * smooth(T_OPEN - 0.14, T_OPEN, t);
+        for (const [t0, s] of RATTLES) if (t > t0) k += 0.45 * s * Math.exp(-(t - t0) * 9);
+        return k;
+      }
+      return (0.62 + 0.3 * Math.exp(-(t - T_OPEN) * 5)) * (1 - smooth(T_COLLECT - 0.3, T_POOF, t)) + 0.05 * Math.sin(t * 9);
+    };
+    const rayK = (r) => {
+      const u = t - T_OPEN - r.d;
+      if (u < 0) return 0;
+      return ease.outCubic(clamp(u / 0.1)) * (1 - smooth(1.0, 2.1, u)) * (0.72 + 0.28 * Math.sin(t * r.f + r.ph));
+    };
+    // where the dissolve has got to: the height (y, up is negative) above which the chest is gone
+    const cutAt = () => (t < T_POOF ? -40 : -16 + 17 * clamp((t - T_POOF) / 0.32));
+    const ring3 = (a) => [Math.cos(a), Math.sin(a)];
+
+    return {
+      update(dt) {
+        t += dt;
+        const g = inner();
+        for (const [t0, s] of RATTLES)
+          if (s > 0.5 && t - dt < t0 + 0.05 && t >= t0 + 0.05)
+            for (let i = 0; i < 4; i++) {
+              const sd = i % 2 ? 1 : -1, zz = R.range(-BZ, BZ);
+              ps.spawn3(P.DUST, sd * R.range(9, 13), -1, zz, sd * R.range(20, 50), -R.range(2, 8), zz * 2, R.range(0.3, 0.5), DUST, R.range(1.2, 2.2) * s);
+            }
+        // anticipation: motes of light squeeze out of the seam and the keyhole
+        if (t < T_OPEN && R.chance(g * 0.08)) {
+          const x = R.range(-11, 11), z = R.range(-5, 5);
+          ps.spawn3(P.STAR, x, -10, z, x * 1.5, -R.range(8, 30), z * 1.5, R.range(0.3, 0.6), R.chance(0.5) ? C[6] : C[5], R.range(0.4, 1.2));
+        }
+        if (!opened && t >= T_OPEN) {
+          opened = true;
+          lights.add(0, -18, 64, C[5], 0.45, 0.7, 0);
+          lights.add(0, -16, 22, WHITE, 0.35, 0.1, 0);
+          for (let i = 0; i < 7; i++) {
+            const a = R.range(0, 1.1), az = R.range(0, TAU), sp = R.range(120, 260);
+            ps.spawn3(P.SPARK, R.range(-8, 8), -13, R.range(-4, 4), Math.sin(a) * Math.cos(az) * sp, -Math.cos(a) * sp, Math.sin(a) * Math.sin(az) * sp, R.range(0.12, 0.26));
+          }
+          for (let i = 0; i < 8; i++) {
+            const az = R.range(0, TAU), v = R.range(30, 80), r0 = R.range(10, 14);
+            ps.spawn3(P.DUST, Math.cos(az) * r0, -1, Math.sin(az) * r0 * 0.5, Math.cos(az) * v, -R.range(2, 10), Math.sin(az) * v, R.range(0.4, 0.7), DUST, R.range(1.6, 3));
+          }
+        }
+        // the hold: gold dust rising out of the hoard, twinkles in the light
+        if (t > T_OPEN && t < T_COLLECT) {
+          if (R.chance(0.22)) ps.spawn3(P.EMBER, R.range(-9, 9), -13, R.range(-4, 4), R.range(-12, 12), -R.range(25, 60), R.range(-12, 12), R.range(0.8, 1.5), C[5], R.range(0.8, 1.6));
+          if (R.chance(0.12)) {
+            const a = R.range(0, 1), az = R.range(0, TAU), d = R.range(10, 40);
+            ps.spawn3(P.STAR, Math.sin(a) * Math.cos(az) * d, -12 - Math.cos(a) * d, Math.sin(a) * Math.sin(az) * d, 0, -R.range(4, 12), 0, R.range(0.3, 0.7), R.chance(0.5) ? WHITE : C[6], R.range(0.5, 2));
+          }
+        }
+        // the loot flies, bounces and settles
+        for (const it of loot) {
+          if (it.gone || t < it.t0) continue;
+          it.up = true;
+          if (t >= it.pop + 0.13) {
+            it.gone = true;
+            const y = it.y - 6;
+            if (it.gem) rings.push({ x: it.x, y, z: it.z, t0: t });
+            lights.add(it.x, y, 18, it.gem ? it.G[4] : C[5], 0.65, 0.25, it.z);
+            for (let i = 0; i < 4; i++) {
+              const a = R.range(0, TAU), el = R.range(-0.8, 0.8), sp = R.range(25, 55);
+              ps.spawn3(P.STAR, it.x, y, it.z, Math.cos(a) * Math.cos(el) * sp - it.x * 0.25, Math.sin(el) * sp - 20, Math.sin(a) * Math.cos(el) * sp - it.z * 0.25, R.range(0.3, 0.55), i ? (it.gem ? it.G[5] : C[6]) : WHITE, R.range(0.6, 1.5));
+            }
+            continue;
+          }
+          if (it.rest) {
+            it.settle += dt;
+            it.vx -= it.vx * 9 * dt;
+            it.vz -= it.vz * 9 * dt;
+            it.x += it.vx * dt;
+            it.z += it.vz * dt;
+            continue;
+          }
+          it.vy += 950 * dt;
+          it.x += it.vx * dt;
+          it.z += it.vz * dt;
+          // keep the loot on the canvas: the far ones skid back off its edge
+          const rr = Math.hypot(it.x, it.z);
+          if (rr > REACH) {
+            const k = REACH / rr;
+            it.x *= k; it.z *= k;
+            it.vx *= -0.3; it.vz *= -0.3;
+          }
+          it.y += it.vy * dt;
+          it.spin += it.vs * dt;
+          const bottom = it.y + it.r;
+          if (bottom >= -0.5 && it.vy > 0) {
+            it.y = -0.5 - it.r;
+            if (it.vy > 110) {
+              ps.spawn3(P.DUST, it.x, -1, it.z, R.range(-20, 20), -R.range(4, 12), R.range(-20, 20), R.range(0.25, 0.45), DUST, R.range(1, 1.8));
+              if (it.vy > 220) {
+                for (let i = 0; i < 2; i++) ps.spawn3(P.SPARK, it.x, -1, it.z, R.range(-90, 90), -R.range(60, 140), R.range(-90, 90), R.range(0.1, 0.22));
+                lights.add(it.x, -2, 9, C[5], 0.5, 0.12, it.z);
+              }
+              it.vy = -it.vy * 0.42;
+              it.vx *= 0.5;
+              it.vz *= 0.5;
+              it.vs *= 0.55;
+            } else {
+              it.rest = true;
+              it.vy = 0;
+            }
+          }
+        }
+        for (let i = rings.length - 1; i >= 0; i--) if (t - rings[i].t0 > 0.3) rings.splice(i, 1);
+        if (!poofed && t >= T_POOF) {
+          poofed = true;
+          lights.add(0, -12, 40, C[5], 0.5, 0.6, 0);
+        }
+        // the dissolve: gold dust lifts off the surface as it goes
+        if (poofed && t < T_POOF + 0.4)
+          for (acc += dt * 160; acc > 1; acc--)
+            dust.spawn3(P.EMBER, R.range(-BX, BX), cutAt() + R.range(0, 4), R.range(-BZ, BZ), R.range(-28, 28), -R.range(14, 50), R.range(-28, 28), R.range(0.4, 0.8), C[5], R.range(0.5, 1.1));
+        ps.update(dt);
+        dust.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), g = inner(), sh = shake(), th = lidAngle(sh.lid), open = t >= T_OPEN ? 1 : 0, cut = cutAt();
+        if (t < T_POOF + 0.2) floorShadowOval(q, 0, 0, 1, 0, 15, 8.5, 1 - smooth(T_POOF, T_POOF + 0.2, t));
+        floorPool(q, 0, 0, 34 + 10 * g, C[4], (0.1 + 0.18 * open) * g);
+        q.glow(0, -16, 0, 24 + 8 * g, C[4], (0.1 + 0.2 * open) * g);
+        const heat = (k) => C[clamp(Math.round(k + Math.min(1.2, g) * 2.2), 0, 7)];
+        // ---- the chest: a box, a hinged lid, a mound of gold
+        const CYc = -10, ct = Math.cos(th), st = Math.sin(th);
+        const LD = [0, 0, 0, 0, 0];
+        const lidSd = (x, yy, z) => {
+          const zr = z + BZ, yu = -yy - BH, lz = zr * ct + yu * st, ly = -zr * st + yu * ct, a = (lz - LA) / LA, b = ly / LB, e = Math.sqrt(a * a + b * b), ax = x < 0 ? -x : x;
+          LD[0] = Math.max(Math.max((e - 1) * LB, ax - BX), -ly);
+          LD[1] = Math.max((e - 0.82) * LB, ax - LIDX);
+          LD[2] = e; LD[3] = lz; LD[4] = ly;
+          return LD;
+        };
+        const moundSd = (x, yy, z) => { const a = x / 9.5, b = (yy + BH + 0.2) / 3.4, c = z / 4.4; return (Math.sqrt(a * a + b * b + c * c) - 1) * 3; };
+        const bodySd = (x, yy, z) => sdBox(x, yy + BH / 2, z, BX, BH / 2, BZ, 0.5);
+        const f = (x, yr, z) => {
+          const yy = yr + CYc + sh.hop;
+          const L = lidSd(x, yy, z);
+          let d = Math.min(bodySd(x, yy, z), max2(L[0], -L[1]));
+          if (open) d = Math.min(d, moundSd(x, yy, z));
+          // the dissolve: everything above the cut is gone, the edge a little ragged
+          if (cut > -39) d = max2(d, cut + 0.8 * Math.sin(x * 1.9 + z * 2.3) - yy);
+          return d;
+        };
+        if (t < T_POOF + 0.34) {
+          const M = sh.dx;
+          trace(q, M, CYc - sh.hop, 0, th > 0.4 ? 25 : 18, sdfHit((x, yr, z) => f(x - M, yr, z), { grad: 0.3, steps: 48 }), (h) => {
+            const x = h.x, yy = h.y + CYc + sh.hop, z = h.z, hh = -yy, n = [h.nx, h.ny, h.nz], l = n[0] * h.L[0] + n[1] * h.L[1] + n[2] * h.L[2];
+            // a hot edge where it is dissolving
+            if (cut > -39 && yy - cut < 1.4) return yy - cut < 0.6 ? C[6] : C[3];
+            const dB = bodySd(x, yy, z), Ld = lidSd(x, yy, z), dL = max2(Ld[0], -Ld[1]), dM = open ? moundSd(x, yy, z) : 9;
+            const part = dM < dB && dM < dL ? 2 : dL < dB ? 1 : 0;
+            if (part === 2) {
+              const hh2 = rand(Math.floor(x), Math.floor(z), 7);
+              return heat((hh2 < 0.18 ? 5 : hh2 < 0.55 ? 4 : 3) + (hh < BH + 1.5 ? 0 : 1));
+            }
+            if (part === 1) {
+              const e = Ld[2], u = Math.atan2(Ld[4] / LB, (Ld[3] - LA) / LA);
+              const outer = e > 0.92 || Math.abs(x) > LIDX - 0.3;
+              if (!outer) {
+                const kk = g * Math.pow(u / Math.PI, 1.3);
+                if (u < 0.3) return heat(1);
+                return kk > 0.6 ? mix(W[4], C[5], 0.3) : kk > 0.35 ? W[3] : kk > 0.15 ? W[2] : W[1];
+              }
+              const ctr = x >= -2 && x <= 1.2;
+              if (u < 0.3 || (u < 0.55 && ctr)) return lidTone(C, l + (ctr ? 0.25 : 0.2));
+              if (Math.abs(x) > BX - 1) return x < 0 ? IRON[4] : IRON[2];
+              if (STRAPS.some((s) => x >= s - 0.2 && x < s + 2.2)) return lidTone(IRON, l + (x < STRAPS.find((s) => x >= s - 0.2 && x < s + 2.2) + 1 ? 0.3 : -0.3));
+              if (Math.abs(u - Math.PI / 3) < 0.06 || Math.abs(u - (2 * Math.PI) / 3) < 0.06) return W[0];
+              let c = lidTone(W, l + 0.1);
+              if (rand(Math.floor(x / 2), Math.round(u * 6), 11) < 0.2) c = W[Math.max(0, W.indexOf(c) - 1)];
+              return c;
+            }
+            // the body
+            if (n[1] < -0.7 && hh > BH - 0.8) {
+              if (Math.abs(x) < BX - 1.3 && Math.abs(z) < BZ - 1.3) {
+                const hh2 = rand(Math.floor(x), Math.floor(z), 7);
+                return heat(hh2 < 0.18 ? 5 : hh2 < 0.55 ? 4 : 3);
+              }
+              return W[l > 0.3 ? 4 : 3];
+            }
+            if (hh > BH - 1.1) return l > 0.45 ? C[6] : l > 0.05 ? C[5] : C[4];
+            if (Math.abs(x) > BX - 1.1 && Math.abs(z) > BZ - 1.1) return l > 0.4 ? IRON[4] : IRON[2];
+            const side = Math.abs(n[2]) > 0.5;
+            if (side && STRAPS.some((s) => x >= s - 0.2 && x < s + 2.2)) return hh > 4.2 && hh < 4.8 ? IRON[5] : IRON[l > 0.3 ? 4 : 2];
+            if (n[2] > 0.5 && x > -2.4 && x < 2 && hh > 3.6) {
+              if (x > -1.2 && x < 0.8 && hh > 5.4 && hh < 7.6) return g < 0.15 ? W[0] : g < 0.4 ? C[4] : g < 0.7 ? C[6] : WHITE;
+              return x > 1.1 || hh < 4 ? C[3] : x < -1.8 && hh > 8.5 ? C[7] : C[5];
+            }
+            if (hh < 1) return W[1];
+            if (Math.abs(hh - 4.4) < 0.5) return W[0];
+            let c = hh > 4.4 ? W[l > 0.3 ? 4 : 3] : W[l > 0.3 ? 3 : 2];
+            if (rand(Math.floor(x / 2) + Math.floor(z / 2) * 7, Math.floor(hh / 2), 5) < 0.2) c = W[Math.max(0, W.indexOf(c) - 1)];
+            return c;
+          }, { ink: W[0] });
+        }
+        // light leaking from the seam before it opens
+        if (t < T_OPEN) {
+          const dx = sh.dx, y0 = -BH - 0.3 - sh.hop;
+          q.glowLine(dx - 11, y0, BZ, dx + 11, y0, BZ, 5, C[5], 0.22 * g);
+          if (g > 0.35 && sh.lid < 0.015) q.line(dx - 10, y0, BZ + 0.6, dx + 9, y0, BZ + 0.6, (u) => (Math.abs(u - 0.5) < 0.2 ? WHITE : C[6]), (u) => (g - 0.35) * 2.2 * (1 - Math.abs(u - 0.5) * 0.9));
+          q.glow(dx, -7 - sh.hop, BZ, 6, C[6], 0.35 * g);
+          // each bump lifts the lid off the seam and light shoots out of the crack in thin rays
+          if (sh.lid > 0.015)
+            for (let i = 0; i < 8; i++) {
+              const x = -10.5 + i * 3 + dx + (rand(i, 3) - 0.5) * 1.5, a = -Math.PI / 2 + (x / 11) * 1.25, l = (7 + rand(i, Math.floor(t * 30), 1) * 12) * Math.min(1, sh.lid / 0.05);
+              q.line(x, y0, BZ, x + Math.cos(a) * l * 0.4, y0 + Math.sin(a) * l, BZ + Math.cos(a) * l * 0.9, (u) => (u < 0.25 ? WHITE : u < 0.6 ? C[6] : C[5]), (u) => 1.15 - u);
+              q.glowLine(x, y0, BZ, x + Math.cos(a) * l * 0.3, y0 + Math.sin(a) * l * 0.7, BZ + l * 0.6, 3, C[5], 0.25);
+            }
+        }
+        // the rays: wedges of light fanning out of the open chest as a cone
+        for (const r of rays) {
+          const k = rayK(r);
+          if (k <= 0.01) continue;
+          const dx = Math.sin(r.pol) * Math.cos(r.az), dy = -Math.cos(r.pol), dz = Math.sin(r.pol) * Math.sin(r.az), ox = dx * 7, oy = -12, oz = dz * 7;
+          const len = r.len * (0.88 + 0.12 * Math.sin(t * r.f * 0.7 + r.ph)), tw = Math.tan(r.w);
+          for (let j = 0; j < 6; j++) {
+            const d0 = (len * j) / 6, d1 = (len * (j + 1)) / 6, dm = (d0 + d1) / 2, hw = 0.6 + dm * tw, kk = k * 0.55 * Math.pow(1 - dm / len, 1.4) * smooth(5, 14, dm);
+            if (kk <= 0.004) continue;
+            q.glowLine(ox + dx * d0, oy + dy * d0, oz + dz * d0, ox + dx * d1, oy + dy * d1, oz + dz * d1, hw + 1.6, C[5], kk * 0.9);
+            q.glowLine(ox + dx * d0, oy + dy * d0, oz + dz * d0, ox + dx * d1, oy + dy * d1, oz + dz * d1, hw * 0.6 + 0.8, C[6], kk * 0.5);
+          }
+        }
+        // the release: a flare out of the mouth
+        if (t >= T_OPEN && t < T_OPEN + 0.2) {
+          const a = (t - T_OPEN) / 0.2;
+          q.at(0, -14, 0, (pp) => flare(pp, 0, 0, 22 * Math.pow(1 - a, 1.4), 1 - a, C));
+        }
+        // the loot
+        for (const it of loot) {
+          if (!it.up || it.gone) continue;
+          const pu = t - it.pop, lift = pu > 0 ? 6 * ease.outCubic(clamp(pu / 0.1)) : 0, wh = pu > 0.095;
+          let y = it.y - lift, phi = it.spin, M;
+          if (it.gem) {
+            phi = it.rest ? Math.PI : it.spin * 0.7;
+            M = matMul(rotY(it.rest ? 0.4 * Math.sign(it.vs) + it.ph * 3 : it.spin), rotX(it.rest ? Math.PI : it.spin * 0.7));
+            if (it.rest) y = -1.7 - lift;
+          } else {
+            // a coin falls flat with a wobble, then lies there as a lens of gold
+            if (it.rest) {
+              const w = Math.exp(-it.settle * 8);
+              phi = 1.3 * w * Math.cos(it.settle * 22);
+              y = -(it.r * Math.abs(Math.sin(phi)) + 0.6 * Math.cos(phi)) - 0.2 - lift;
+            }
+            M = matMul(rotY(it.ax), rotX(phi));
+          }
+          if (it.y > -10) floorShadowOval(q, it.x, it.z, 1, 0, 3, 3, 0.7 * (1 - clamp(-it.y / 30)));
+          const sc = it.r / 7.5;
+          if (it.gem) {
+            const G8 = [it.G[0], it.G[0], it.G[1], it.G[2], it.G[3], it.G[4], it.G[5], WHITE];
+            trace(q, it.x, y, it.z, 5, convexHit(GEM_SOLID, M, sc), (h) => (wh ? WHITE : gemTone(h, G8)), { ink: it.G[0] });
+          } else {
+            const rr = it.r, hh = 0.6;
+            const cf = (x, yy, z) => {
+              const ox = M[0] * x + M[3] * yy + M[6] * z, oy = M[1] * x + M[4] * yy + M[7] * z, oz = M[2] * x + M[5] * yy + M[8] * z;
+              return sdCyl(ox, oy, oz, rr, hh, 0.3);
+            };
+            trace(q, it.x, y, it.z, rr + 2, sdfHit(cf, { grad: 0.3, steps: 24 }), (h) => {
+              if (wh) return WHITE;
+              const [ox, oy, oz] = toObject(M, h), l = h.nx * h.L[0] + h.ny * h.L[1] + h.nz * h.L[2], d = Math.hypot(ox, oz) / rr;
+              if (Math.abs(oy) > hh - 0.35 && d < 0.95) return d > 0.72 ? C[l > 0.3 ? 6 : 5] : d > 0.4 ? C[l > 0.2 ? 4 : 5] : C[l > 0.5 ? 6 : 5];
+              return C[Math.max(2, Math.min(5, Math.round(3 + l * 2)))];
+            }, { ink: C[1] });
+          }
+          q.glow(it.x, y, it.z, 9, it.gem ? it.G[4] : C[5], it.rest ? 0.26 : 0.18);
+          q.glow(it.x, y, it.z, 3, WHITE, 0.12);
+          // resting loot glints in turn
+          if (it.rest && t < it.pop) {
+            const u = (t * 0.9 + it.ph) % 1;
+            if (u < 0.16) glint3(q, it.x - 1, y - 1.5, it.z + 2, 2.6 * Math.sin((u / 0.16) * Math.PI), it.gem ? it.G[5] : C[6], 0.5);
+          }
+        }
+        for (const r of rings) {
+          const k = (t - r.t0) / 0.3, e = ease.outCubic(k);
+          lightRing(q, r.x, r.y, r.z, 2 + 5 * e, 1, k < 0.3 ? WHITE : C[6], 1.15 - k, C[5], 0, 1);
+          q.glow(r.x, r.y, r.z, 12, C[5], 0.45 * (1 - k));
+          if (k < 0.5) glint3(q, r.x, r.y, r.z + 3, 3.4 * (1 - k / 0.5), C[6], 0.55);
+        }
+        ps.draw(q);
+        dust.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};
+const max2 = Math.max;

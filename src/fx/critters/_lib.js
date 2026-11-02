@@ -214,16 +214,19 @@ export class Grid {
       this.c[i] = fn(this.x0 + (i % this.w), this.y0 + ((i / this.w) | 0), this.c[i], this.a[i], this.tag[i]) || 0;
     }
   }
-  /** Put the grid on the painter, moved by (dx, dy): opaque cells dithered by fade, translucent ones blended. */
-  draw(p, fade = 1, dx = 0, dy = 0) {
-    const X = this.x0 + Math.round(dx), Y = this.y0 + Math.round(dy);
+  /**
+   * Put the grid on the painter, moved by (dx, dy): opaque cells dithered by fade, translucent ones blended.
+   * flip mirrors it about its local x = 0 (a creature drawn facing right, turned to face left).
+   */
+  draw(p, fade = 1, dx = 0, dy = 0, flip = false) {
+    const X = this.x0 + Math.round(dx), Y = this.y0 + Math.round(dy), R = Math.round(dx);
     for (let y = 0; y < this.h; y++)
       for (let x = 0; x < this.w; x++) {
         const i = y * this.w + x, c = this.c[i];
         if (!c) continue;
-        const a = this.a[i];
-        if (a >= 0.999) p.dot(X + x, Y + y, c, fade);
-        else p.blend(X + x, Y + y, c, a * fade);
+        const a = this.a[i], px = flip ? R - 1 - (this.x0 + x) : X + x;
+        if (a >= 0.999) p.dot(px, Y + y, c, fade);
+        else p.blend(px, Y + y, c, a * fade);
       }
   }
   clear() {
@@ -254,6 +257,11 @@ export class Swarm {
   }
   draw(p, layer) {
     this.ps.draw(p, layer);
+  }
+  /** add() for a swarm in 3D (drawn through a Space: ps.draw(q)): a position and a velocity with z. */
+  add3(k, x, y, z, vx, vy, vz, age, life, col = WHITE, size = 1, flag = 0, seed = 0) {
+    if (age < 0 || age >= life) return;
+    this.ps.list.push({ k, x, y, z, vx, vy, vz, life: life - age, max: life, col: col ? hex(col) : 0, size, seed, delay: 0, flag });
   }
 }
 
@@ -353,4 +361,43 @@ export function bounce(x, y, vx, vy, age, g, floor = 0, e = 0.45) {
     if (Math.abs(vy) < 25) break;
   }
   return { x, y: floor - 0.25, vx: 0, vy: 0, hops, rest: true };
+}
+
+// ---- 3D: critters are pixel sprites standing as billboards on paths through space
+
+/**
+ * True when a sprite drawn facing right must be mirrored to face a world heading (dx, dz) as this camera sees it:
+ * towards the left of the screen. Straight at or away from the camera it keeps its facing (heading dx decides).
+ */
+export function mirrored(q, dx, dz) {
+  const s = dx * q.cy - dz * q.sy;
+  return Math.abs(s) < 1e-3 ? dx < 0 : s < 0;
+}
+
+/** A grid as an upright billboard standing at a world point (the grid's (0, 0) lands there). */
+export function stand(q, x, y, z, grid, fade = 1, flip = false, dx = 0, dy = 0) {
+  q.at(x, y, z, (p) => grid.draw(p, fade, dx, dy, flip));
+}
+
+/** A soft round shadow on the floor under a flyer at (x, z): a true circle of radius r, alpha a at the center. */
+export function floorShadow(q, x, z, r, c, a) {
+  if (r <= 0 || a <= 0) return;
+  q.plane(x, 0, z, null, r, (u, v, o) => {
+    const d = Math.hypot(u, v) / r;
+    if (d >= 1) return;
+    o.c = c;
+    o.a = a * (1 - d) ** 0.7;
+    o.blend = true;
+  });
+}
+
+/** A pool of light on the floor round (x, z): r wide, strength k at the middle. */
+export function floorPool(q, x, z, r, c, k) {
+  if (r <= 0 || k <= 0) return;
+  q.plane(x, 0, z, null, r, (u, v, o) => {
+    const f = 1 - Math.hypot(u, v) / r;
+    if (f <= 0) return;
+    o.l = c;
+    o.k = f * f * k;
+  });
 }

@@ -208,3 +208,124 @@ export function along(pts, len, fn) {
   }
 }
 
+
+// ---- 3D: the same swings, laid on real planes ------------------------------------------------------------------
+// A 2D swing (centre, squash sy, turn rot) is a circle on a tilted plane seen from the front: lay() finds that
+// plane, so at yaw 0 the 3D smear lands where the 2D one did and from every other side it stays a true ring in
+// space, going behind the body and back in front. The functions below mirror the 2D ones (smear, trace,
+// glowAlong, slash, travel, shavings) one for one, taking a Space q and a laid swing.
+
+const vlen = (v) => Math.hypot(v[0], v[1], v[2]) || 1;
+const vnorm = (v) => { const l = vlen(v); return [v[0] / l, v[1] / l, v[2] / l]; };
+const vcross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const vdot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+/**
+ * Lay swing s on a plane: through (s.cx, s.cy, z), its u axis along the swing's turn on screen, its v axis leaning
+ * sy across the screen and the rest towards the viewer (the far side of the ring is the top). yaw turns the plane
+ * about the vertical through its centre (so a slash can lean in depth, not only on screen); lean tips it flatter
+ * (added to the angle it already leans from the screen). Returns the swing plus { c, U, V, n, m } for the functions below.
+ */
+export function lay(s, o = {}) {
+  const sy = clamp(s.sy ?? 1, 0.04, 1), lean = Math.acos(sy) + (o.lean ?? 0), cs = Math.cos(s.rot), sn = Math.sin(s.rot), cl = Math.cos(lean), sl = Math.sin(lean);
+  let U = [cs, sn, 0], V = [-sn * cl, cs * cl, sl];
+  if (o.yaw) {
+    const c = Math.cos(o.yaw), si = Math.sin(o.yaw), turn = (v) => [v[0] * c + v[2] * si, v[1], -v[0] * si + v[2] * c];
+    U = turn(U); V = turn(V);
+  }
+  const n = vcross(U, V), c = [s.cx, s.cy, o.z ?? 0];
+  // Space.plane's own axes for this normal, and how mine sit on them
+  const e1 = Math.abs(n[1]) > 0.9 ? vnorm(vcross(vcross(n, [1, 0, 0]), n)) : vnorm(vcross(n, [0, -1, 0])), e2 = vcross(n, e1);
+  return { ...s, c, U, V, n, m: [vdot(e1, U), vdot(e2, U), vdot(e1, V), vdot(e2, V)] };
+}
+
+/** The world point at plane radius r, u radians along a laid swing. */
+export function onSwing3(S, r, u) {
+  const a = S.a0 + S.dir * u, x = Math.cos(a) * r, y = Math.sin(a) * r;
+  return [S.c[0] + S.U[0] * x + S.V[0] * y, S.c[1] + S.U[1] * x + S.V[1] * y, S.c[2] + S.U[2] * x + S.V[2] * y];
+}
+
+/** Where a laid swing is at u (on radius S.R) and the unit direction it travels there. */
+export function travel3(S, u, r = S.R) {
+  const [x, y, z] = onSwing3(S, r, u), [x1, y1, z1] = onSwing3(S, r, u + 0.01), d = vnorm([x1 - x, y1 - y, z1 - z]);
+  return { x, y, z, dx: d[0], dy: d[1], dz: d[2], a: S.a0 + S.dir * u };
+}
+
+/** Where a laid slash's edge ends up, and which way it is travelling. */
+export const slashEnd3 = (S) => travel3(S, S.span, S.R - S.W * 0.3);
+
+/** Shade a laid swing's band from u0 to u1, radius R + pad down to R - wMax - 1; fn(u, r, out, a) as smear's. */
+export function smear3(q, S, u0, u1, wMax, fn, pad = 1) {
+  if (u1 - u0 < 0.005) return;
+  const rIn = S.R - wMax - 1, [m0, m1, m2, m3] = S.m;
+  q.plane(S.c[0], S.c[1], S.c[2], S.n, S.R + pad + 0.5, (pu, pv, out) => {
+    const x = m0 * pu + m1 * pv, y = m2 * pu + m3 * pv, r = Math.hypot(x, y);
+    if (r > S.R + pad || r < rIn) return;
+    const a = Math.atan2(y, x);
+    let u = (S.dir * (a - S.a0)) % TAU;
+    if (u < 0) u += TAU;
+    while (u < u0) u += TAU;
+    if (u > u1) return;
+    return fn(u, r, out, a);
+  });
+}
+
+/** Dots along a laid swing at radius r from u0 to u1 (a dotted trace in space, with depth). */
+export function trace3(q, S, r, u0, u1, c, a, step = 0.6) {
+  const du = step / Math.max(4, r);
+  for (let u = u0; u <= u1; u += du) {
+    const k = typeof a === "function" ? a(u) : a;
+    if (k <= 0) continue;
+    const [x, y, z] = onSwing3(S, r, u);
+    q.dot(x, y, z, typeof c === "function" ? c(u) : c, k);
+  }
+}
+
+/** Light riding a laid swing from u0 to u1. */
+export function glowAlong3(q, S, r, u0, u1, rad, c, k, step = 0.35) {
+  for (let u = u0; u <= u1; u += step) {
+    const kk = typeof k === "function" ? k(u) : k;
+    if (kk <= 0.004) continue;
+    const [x, y, z] = onSwing3(S, r, u);
+    q.glow(x, y, z, rad, c, kk);
+  }
+}
+
+/** slash() on a laid swing: the same crescent, its glow and its dotted trace, as a ring segment in space. */
+export function slash3(q, S, t) {
+  const u = t - S.t0;
+  if (u < 0) return;
+  const R = S.ramp, n = R.length, life = S.sweep + S.hold + S.trail, hot = S.hot ?? 0;
+  const head = ease.outExpo(clamp(u / S.sweep)), tail = smooth(S.sweep + S.hold, life, u), age = clamp(u / life);
+  const U = S.span * head, T = S.span * tail, W = S.W * (1 - tail * 0.55);
+  if (tail < 1 && U - T > 0.01) {
+    smear3(q, S, T, U, W, (uu, r, out) => {
+      const v = (uu - T) / (U - T), w = W * Math.pow(Math.sin(Math.PI * Math.pow(v, S.lens ? 1 : 2.2)), S.lens ? 0.75 : 0.6);
+      if (w < 0.35) return;
+      const f = (S.R - r) / w;
+      if (f < 0 || f > 1) return;
+      const ci = (f < 0.22 && age < 0.5) || f < hot * 0.7 ? 0 : Math.round(f * (n - 1) * 0.75 + age * 2.4 - v * 0.8 + 0.4 - hot * 3);
+      out.c = R[n - 1 - clamp(ci, 0, n - 1)];
+      out.a = Math.min(1, v / (S.lens ? 0.1 : 0.4));
+    });
+    glowAlong3(q, S, S.R - W * 0.4, T, U, 5 + W, R[n - 3], (uu) => (0.22 + hot * 0.3) * (1 - age) * ((uu - T) / (U - T)), 0.3);
+  }
+  const th = 0.7 * (1 - clamp((u - S.sweep - S.hold) / (S.trail + 0.2)));
+  if (tail > 0.02 && th > 0) trace3(q, S, S.R - 0.5, 0, T, R[2], (uu) => th * (0.4 + 0.6 * uu / S.span));
+}
+
+/** A random velocity within `spread` radians of the unit direction d, with length sp. */
+export function spray(R, d, spread, sp) {
+  const a = vnorm(vcross(d, Math.abs(d[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0])), b = vcross(d, a), th = R.range(0, spread), ph = R.range(0, TAU);
+  const s = Math.sin(th), c = Math.cos(th), pc = Math.cos(ph) * s, ps = Math.sin(ph) * s;
+  return [(d[0] * c + a[0] * pc + b[0] * ps) * sp, (d[1] * c + a[1] * pc + b[1] * ps) * sp, (d[2] * c + a[2] * pc + b[2] * ps) * sp];
+}
+
+/** shavings() for a laid swing: flung outward from its circle, with a little out of the plane. */
+export function shavings3(ps, R, S, n, colors, from = 0.3) {
+  for (let i = 0; i < n; i++) {
+    const u = S.span * R.range(from, 1), [x, y, z] = onSwing3(S, S.R, u), a = S.a0 + S.dir * u, sp = R.range(30, 100);
+    const d = [Math.cos(a) * S.U[0] + Math.sin(a) * S.V[0], Math.cos(a) * S.U[1] + Math.sin(a) * S.V[1], Math.cos(a) * S.U[2] + Math.sin(a) * S.V[2]], o = R.range(-0.7, 0.7) * sp;
+    ps.spawn3(P.MOTE, x, y, z, d[0] * sp + S.n[0] * o, Math.min(25, d[1] * sp + S.n[1] * o) - 10, d[2] * sp + S.n[2] * o, R.range(0.25, 0.55), R.pick(colors), 0.6);
+  }
+}

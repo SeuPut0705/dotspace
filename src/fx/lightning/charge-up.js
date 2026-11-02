@@ -1,8 +1,8 @@
 // The charge (streaks spiralling in, a core that swells with an accelerating pulse, little arcs spitting off
 // it) and the release (flash, rings, a spray of motes and stars) follow Sprite Fusion's open-source energy charge
 // (https://www.spritefusion.com/pixel-art-vfx/energy), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, flare, sparkle, clamp, smooth, ease, rng, TAU, WHITE, hex, mix, READY } from "../../core/index.js";
-import { VOLT, PLASMA, zigzag, stroke, crackle } from "./_lib.js";
+import { Particles, Lights, P, Rng, fit, flare, sparkle, clamp, smooth, ease, rng, space, TAU, WHITE, hex, mix, READY } from "../../core/index.js";
+import { VOLT, PLASMA, zigzag, stroke, crackle, zigzag3, stroke3, crackle3, screenAt, screenAtCam, nearer, pool } from "./_lib.js";
 
 export const meta = {
   name: "Charge up",
@@ -173,3 +173,155 @@ export function create(o) {
     },
   };
 }
+
+// ---- 3D: the charge gathers from a full sphere round the hand (streaks spiralling in, arcs whipping out of the air),
+// the core is a real ball with arcs racing over its skin and rings falling in across it, and the release throws bolts
+// every way: the ones that point down stab the floor, a shock ring races out along it, sparks fly in every direction.
+const sphere = (R, up = true) => {
+  const a = R.range(0, TAU), c = R.range(up ? -0.55 : -1, 1), s = Math.sqrt(1 - c * c);
+  return [Math.cos(a) * s, -c, Math.sin(a) * s];
+};
+
+export const three = {
+  meta: { size: [264, 196], origin: [120, 160], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), R = new Rng(o.seed), REL = o.charge, floor = () => 0;
+    const ps = new Particles({ rng: R, ground: floor, sparks: o.sparks }), lights = new Lights();
+    const hand = () => screenAtCam(o.camera)(CX, CY, 3);
+    // eight bolts, spread over the sphere; the ones that point down end on the floor
+    const bolts = Array.from({ length: 8 }, (_, i) => {
+      const c = 1 - ((i + 0.5) / 8) * 2, s = Math.sqrt(1 - c * c), a = i * 2.4 + R.range(-0.3, 0.3);
+      return { d: [Math.cos(a) * s, -c * 0.85, Math.sin(a) * s], L: R.range(44, 72), t0: REL + R.range(0, 0.05) };
+    });
+    const endOf = (b, H) => {
+      let e = [H[0] + b.d[0] * b.L, H[1] + b.d[1] * b.L, H[2] + b.d[2] * b.L];
+      if (e[1] > -1) {
+        const u = (-1 - H[1]) / (e[1] - H[1]);
+        e = [H[0] + (e[0] - H[0]) * u, -1, H[2] + (e[2] - H[2]) * u];
+      }
+      return e;
+    };
+    const arcs = [];
+    let t = 0, released = false, phase = 0, beats = [];
+    const level = () => clamp(t / REL);
+    return {
+      update(dt) {
+        t += dt;
+        const k = level(), e = k * k, H = hand();
+        if (t < REL) {
+          // energy rushes in: long streaks spiralling in from all round, more and more of them
+          for (let acc = (60 + 360 * e) * dt; acc > 0; acc--) {
+            if (acc < 1 && !R.chance(acc)) break;
+            const dir = sphere(R, false), d = R.range(30, 72) * (1 - 0.35 * k), life = R.range(0.16, 0.26), sp = (d / life) * 0.95, ty = Math.hypot(dir[0], dir[2]) || 1;
+            const y = H[1] + dir[1] * d, pull = y > -2 ? (H[1] - -2) / (dir[1] * d || 1) : 1;
+            ps.spawn3(P.MOTE, H[0] + dir[0] * d * (pull > 0 && pull < 1 ? pull : 1), Math.min(-2, y), H[2] + dir[2] * d * (pull > 0 && pull < 1 ? pull : 1), -dir[0] * sp - (dir[2] / ty) * sp * 0.4, -dir[1] * sp, -dir[2] * sp + (dir[0] / ty) * sp * 0.4, life, R.pick([C[7], C[6], C[5]]), 1);
+          }
+          // arcs whip in from the air, more and more of them
+          if (k > 0.2 && R.chance((2 + 16 * e) * dt)) {
+            const dir = sphere(R, false), d = R.range(20, 40);
+            arcs.push({ off: [dir[0] * d, Math.min(-3 - H[1], dir[1] * d), dir[2] * d], t, seed: R.int(0, 1e6) });
+          }
+          // the pulse quickens
+          phase += (1.5 + 11 * e) * dt;
+          if (phase >= 1) (phase -= 1), beats.push(t);
+          if (R.chance(4 * e * dt)) ps.spawn3(P.STAR, H[0] + R.range(-14, 14), H[1] + R.range(-14, 10), H[2] + R.range(-14, 14), 0, -4, 0, R.range(0.2, 0.35), C[6], R.range(1, 2));
+        } else if (!released) {
+          released = true;
+          lights.add(H[0], H[1], 110, C[4], 0.8, 0.5, H[2]);
+          lights.add(H[0], H[1], 28, WHITE, 0.6, 0.08, H[2]);
+          for (let i = 0; i < 70; i++) {
+            const d = sphere(R, false), sp = R.range(140, 330) * (d[1] > 0.4 ? 0.55 : 1);
+            ps.spawn3(d[1] < -0.2 && R.chance(0.35) ? P.MOTE : P.SPARK, H[0], H[1], H[2], d[0] * sp, d[1] * sp, d[2] * sp, R.range(0.25, 0.55), R.pick([C[7], C[6], C[5]]), R.range(0.8, 1.4));
+          }
+          for (let i = 0; i < 10; i++) {
+            const d = sphere(R, false), sp = R.range(60, 160);
+            ps.spawn3(P.STAR, H[0], H[1], H[2], d[0] * sp, d[1] * sp, d[2] * sp, R.range(0.4, 0.8), R.chance(0.5) ? C[6] : C[5], R.range(1.2, 2.4));
+          }
+          for (let i = 0; i < 4; i++) ps.spawn3(P.SMOKE, H[0] + R.range(-5, 5), H[1] + R.range(-4, 4), H[2] + R.range(-5, 5), R.range(-12, 12), -R.range(8, 18), R.range(-12, 12), R.range(0.6, 0.85), mix(ASH, C[4], 0.3), R.range(3, 5), R.range(0.05, 0.15));
+        }
+        beats = beats.filter((b) => t - b < 0.22);
+        for (let i = arcs.length - 1; i >= 0; i--) if (t - arcs[i].t > 0.07) arcs.splice(i, 1);
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), k = level(), e = k * k, f = Math.floor(t * 30 + 1e-4), A = o.actor, H0 = hand();
+        if (t < REL) {
+          const jit = k > 0.85 ? (f % 2 ? 1 : -1) * ((k - 0.85) / 0.15) : 0, H = screenAtCam(o.camera)(CX + jit, CY, 3), pr = 0.5 + 0.5 * Math.sin(phase * TAU);
+          // the body catches the core's light along its near edge
+          for (const [ex, ey] of edgeOf(A)) {
+            const d = Math.hypot(ex + 0.5 - (CX + jit), ey + 0.5 - CY);
+            if (d < 6 + 10 * k && e > 0.08) p.px(ex, ey, d < 4 + 6 * k && e > 0.4 ? C[6] : C[4]);
+          }
+          // the core: swelling, layered, with arcs racing round its skin
+          const r = 1.2 + 6.5 * e + pr * (0.5 + 1.2 * k), K = (r + 1.3) / r, [x, y, z] = nearer(q, ...H, r + 4);
+          q.ball(x, y, z, r + 1.3, (nx, ny) => {
+            const sx = nx * K, sy = ny * K;
+            if (sx * sx + sy * sy > 1) return C[2];
+            const d = Math.hypot(sx + 0.12, sy + 0.12);
+            return d < 0.38 ? WHITE : d < 0.7 ? C[5] : C[4];
+          });
+          if (r > 3)
+            for (const s0 of [0, Math.PI])
+              for (let a = 0; a < 1.3; a += 0.12) {
+                const ang = t * 10 + s0 + a, rr = r * (0.9 + 0.08 * Math.sin(a * 3)), i0 = 0.9 + 0.5 * Math.sin(t * 2 + s0);
+                q.dot(x + Math.cos(ang) * rr, y + Math.sin(ang) * Math.cos(i0) * rr, z + Math.sin(ang) * Math.sin(i0) * rr, a < 0.5 ? WHITE : C[6]);
+              }
+          // rings fall inward to the core on every beat, true circles round it
+          for (const b of beats) {
+            const u = (t - b) / 0.22;
+            q.ring(...H, 4 + 20 * (1 - ease.inQuad(u)) * (0.5 + k), 1, u > 0.6 ? C[6] : C[4], 0.4 + 0.6 * u);
+          }
+          // arcs whipping in to the core
+          for (const a of arcs) crackle3(q, zigzag3(rng(a.seed, f), [H[0] + a.off[0], H[1] + a.off[1], H[2] + a.off[2]], H, 0.35, 0.4), 0.85, C, 0.4);
+          if (k > 0.35) {
+            const g = rng(o.seed, 5, f), d = sphere(g, false), l = g.range(3, 6) * (0.5 + k), a2 = sphere(g, false);
+            crackle3(q, zigzag3(g, [H[0] + d[0] * r, H[1] + d[1] * r, H[2] + d[2] * r], [H[0] + d[0] * (r + l) + a2[0], H[1] + d[1] * (r + l) + a2[1], H[2] + d[2] * (r + l) + a2[2]], 0.4, 0.3), 0.7, C, 0.3);
+          }
+          q.glow(...H, 12 + 30 * k, C[4], 0.35 + 0.45 * k);
+          q.glow(...H, 6 + 6 * k, C[6], 0.25 + 0.3 * k);
+          pool(q, H[0], H[2], 40, C[3], 0.3 * k * k);
+        } else {
+          const a = t - REL, H = H0;
+          // the release: the caster flashed white, a flare, a white core blown open
+          if (a < 0.07) p.mask(A.mask, A.x, A.y, a < 0.035 ? WHITE : C[6]);
+          if (a < 0.22) {
+            const u = a / 0.22;
+            q.at(...nearer(q, ...H, 30), (pp) => {
+              flare(pp, 0, 0, 46 * Math.pow(1 - u, 1.4), 1 - u, C);
+              if (u < 0.3) pp.circle(0, 0, 12 * (1 - u * 2.5) + 1.5, WHITE);
+            });
+            if (u < 0.3) q.ball(...nearer(q, ...H, 14), 6 * (1 - u * 2.5) + 1, WHITE);
+          }
+          // bolts every way, struck and flickering; the ones that reach the floor stab it
+          for (const [i, b] of bolts.entries()) {
+            const ba = Math.floor((t - b.t0) * 30 + 1e-4);
+            if (t < b.t0 || ba >= BK.length) continue;
+            const end = endOf(b, H);
+            stroke3(q, zigzag3(rng(o.seed, 3, i, ba >> 1), H, end, 0.25, 0.75), BK[ba], C, ba === 0 ? 0.95 : 0.75, { hero: ba === 0 });
+            if (end[1] > -1.5) {
+              q.plane(end[0], -0.5, end[2], null, 2.5 * BK[ba] + 1, (u, v) => (Math.hypot(u, v) < 1 ? WHITE : C[5]));
+              q.glow(end[0], -3, end[2], 18, C[5], 0.5 * BK[ba]);
+            }
+          }
+          // a ring bursting out with a fainter echo inside it: one round the hand, one racing along the floor
+          const u = a / 0.45;
+          if (u < 1) {
+            const r = 8 + 80 * ease.outCubic(u), r2 = 6 + 56 * ease.outCubic(Math.min(1, u * 1.3));
+            q.ring(...H, r, Math.max(1, 3 * (1 - u)), u < 0.25 ? WHITE : C[5], 1.1 - u);
+            q.ring(...H, r2, 1, C[4], 0.8 - u);
+            q.ring(H[0], 0, H[2], r * 0.92, Math.max(1, 3 * (1 - u)), u < 0.25 ? C[6] : C[4], 1.1 - u);
+            q.glow(H[0], -3, H[2], Math.min(r * 0.9, 46), C[3], 0.42 * (1 - u) * (1 - u));
+          }
+          // the charge bleeds off in a few last crackles at the hand
+          if (a > 0.15 && a < 0.5) {
+            const g = rng(o.seed, 8, f), d = sphere(g, false), l = g.range(5, 10);
+            crackle3(q, zigzag3(g, H, [H[0] + d[0] * l, H[1] + d[1] * l, H[2] + d[2] * l], 0.45, 0.3), 0.8 * (1 - (a - 0.15) / 0.35) + 0.15, C, 0.3);
+          }
+        }
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

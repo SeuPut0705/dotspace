@@ -1,7 +1,7 @@
 // The flame-puff, smoke and spark recipe is adapted from Sprite Fusion's open-source explosion
 // (https://www.spritefusion.com/pixel-art-vfx/explosion), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { fit, mix, hex, clamp, WHITE, TAU } from "../../core/index.js";
-import { noiseFor, pnoise, hotFirst, flameBlade, firePuff, smokePuff, spark, ember, drift, looped, LAYERS } from "./_lib.js";
+import { fit, mix, hex, clamp, space, WHITE, TAU } from "../../core/index.js";
+import { noiseFor, pnoise, hotFirst, flameBlade, firePuff, smokePuff, spark, ember, drift, looped, LAYERS, floorGlow, spark3, drift3, flameBlade3 } from "./_lib.js";
 
 export const meta = {
   name: "Fireball",
@@ -106,3 +106,90 @@ export function draw(p, t, o) {
   p.glow(hx - 2, hy, 42, GLOW, 0.42 * fl);
   p.glow(hx, hy, 13, H[1], 0.3 * fl);
 }
+
+// 3D: a true ball for the head (the heat swirls round the flight axis as a spiral on its skin, white where it
+// faces you), corona licks and the comet's body as blades radiating round the axis, the tail a cone of puffs behind
+// it, motes, embers and sparks thrown out in every direction round the axis.
+const MY = -34; // the head, above the floor
+const CORONA3 = CORONA.concat([[1.55, 7, 1.2], [-2.0, 6, 1.1]]);
+// the body's tongues: [azimuth, radius round the axis, length, half-width]
+const BODY3 = [[0, 0, 34, 5.2], [1.1, 1.6, 26, 5.4], [3.3, 1.6, 25, 5.4], [5.3, 1.0, 17, 5.6], [2.2, 1.4, 27, 5], [4.3, 1.4, 22, 5], [0.2, 1.2, 20, 5]];
+
+export const three = {
+  meta: { size: [250, 160], origin: [125, 120], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const q = space(p, o), F = fit(o.palette, 9), H = hotFirst(F), S = o.seed, R0 = o.radius, V = o.speed, ph = t / D;
+    const N = (rate, seed = 0, off = 0) => NL(t, rate, seed, off);
+    const GLOW = mix(mix(H[3], H[4], 0.5), WHITE, 0.25), SMOKE = mix(SMOKE1, H[6], 0.3), SPARKS = [H[1], H[2], H[4], H[5]], EMB = [H[1], H[2], H[4], H[6]];
+    const hx = N(3, S + 50) * 0.5, hy = MY + N(2.5, S + 51) * 0.7, hz = N(2.2, S + 52) * 0.7;
+
+    // the head: a ball. Its skin's world normal gives the swirl (round the flight axis, swept back); where the skin
+    // faces the viewer it is white-hot, the leading rim is a crisp hot edge
+    const RH = R0 * 1.5, { cy: cyw, sy: syw, cp, sp } = q;
+    const skin = (nx, ny, nz) => {
+      const wy = ny * cp - nz * sp, m = ny * sp + nz * cp, wx = nx * cyw + m * syw, wz = -nx * syw + m * cyw;
+      const back = Math.max(0, -wx), a = Math.atan2(wy, wz) / TAU, d = Math.sqrt(Math.max(0, 1 - nz * nz));
+      const swirl = pnoise(a * 5 - ph * 10 + (1 - wx) * RH * 0.45, 5, S + 2);
+      const h = 1 - d * 0.8 + 0.26 * swirl + 0.1 * (1 - back);
+      if (d > 0.88 && back < 0.3) return h > 0.3 ? H[3] : H[5];
+      return h > 0.74 ? H[0] : h > 0.58 ? H[1] : h > 0.42 ? H[2] : h > 0.27 ? H[4] : h > 0.13 ? H[5] : H[6];
+    };
+    q.ball(hx, hy, hz, RH, skin);
+
+    // the tail: puffs thrown off the back that the head leaves behind, spread in a cone with real depth
+    const fire = [], smoke = [];
+    looped(t, D, 190, S + 100, (r) => {
+      const fl = r.range(0.22, 0.55), sm = r.chance(0.55), x = -r.range(2, 24);
+      return { x, y: r.range(-1, 1) * (R0 - 0.1 * -x), v: V * r.range(0.3, 0.6), vy: r.range(-16, 16), fl, sm, sl: r.range(0.25, 0.45), s: r.range(1.3, 2.9), f: r.next() * 0.5 + 0.5 * (-x / 24), life: fl + (sm ? 0.45 : 0), az: r.range(0, TAU), amp: R0 - 0.1 * -x };
+    }, (c, age) => {
+      const ta = Math.min(age, c.fl), sa = Math.sin(c.az), ca = Math.cos(c.az), lat = Math.sqrt(Math.abs(c.y) * c.amp * 1.8);
+      const [wx, y, z, wvx, vy, vz] = drift3([0, sa * lat, ca * lat], [c.v, c.vy * sa * 1.6, c.vy * ca * 1.6], ta, [0, -70, 0], 4.5, 3);
+      const x = c.x + wx - V * ta;
+      if (age < c.fl) return fire.push([age, hx + x, hy + y, hz + z, c]);
+      if (!c.sm || age - c.fl > c.sl) return;
+      const s2 = age - c.fl, [sx, sy, sz] = drift3([x, y, z], [wvx - V, vy * 0.6 - 6, vz * 0.6], s2, [V * 2, -30, 0], 2, 1.2);
+      smoke.push([s2, hx + sx, hy + sy, hz + sz, c]);
+    });
+    // the body: tongues rooted in the head streaming back round the axis, and the corona licking round it
+    BODY3.forEach(([az, rad, len, w], i) => {
+      const n = (S * 5 + i) * 17, L = len * (0.82 + 0.25 * N(4, n)) * (1 + 0.3 * Math.max(0, N(2.4, n + 3))), sa = Math.sin(az), ca = Math.cos(az);
+      flameBlade3(q, hx + 1, hy + sa * rad * 0.5, hz + ca * rad * 0.5, -1, sa * rad * 0.02, ca * rad * 0.02, L, w * R0 / 5, [0, N(3, n + 5) * 3 + sa * rad, N(2.7, n + 6) * 3 + ca * rad], N, n, H, LAYERS, 0.5, 1.1 + L * 0.05);
+    });
+    CORONA3.forEach(([a, len, w], i) => {
+      const n = (S * 5 + i + 20) * 17, L = len * (0.7 + 0.4 * (0.5 + 0.5 * N(6, n))), b = Math.abs(a), az = i * 2.4 + 0.5, sa = Math.sin(az), ca = Math.cos(az);
+      const sb = Math.sin(b), dx = Math.cos(b) * 0.55 - 1, dy = sb * 0.55 * sa, dz = sb * 0.55 * ca, l = Math.hypot(dx, dy, dz), tw = -Math.sign(a) * 1.5;
+      flameBlade3(q, hx + Math.cos(b) * R0 * 0.85, hy + sb * R0 * 0.85 * sa, hz + sb * R0 * 0.85 * ca, dx / l, dy / l, dz / l, L, w, [0, ca * tw, -sa * tw], N, n, H, LAYERS);
+    });
+    // the puffs, nearest first (opaque)
+    fire.map((f) => [q.depth(f[1], f[2], f[3]), f]).sort((a, b) => a[0] - b[0]).forEach(([, [age, x, y, z, c]]) => {
+      const u = age / c.fl;
+      q.at(x, y, z, (pp) => firePuff(pp, 0, 0, 1 - u, c.s * 1.25 * (1 + 1.3 * u), c.f * 0.6, H, 0.07, -0.86, -0.5));
+    });
+
+    // motes flicked off the head's skin in every direction: short hot streaks that die at once
+    looped(t, D, 26, S + 200, (r) => ({ a: r.range(-2.4, 2.4), v: r.range(30, 70), life: r.range(0.08, 0.18), az: r.range(0, TAU) }), (c, age) => {
+      const b = Math.abs(c.a), ux = Math.cos(b), uy = Math.sin(b) * Math.sin(c.az), uz = Math.sin(b) * Math.cos(c.az), d = R0 * 0.9 + c.v * age;
+      const x = hx + ux * d - V * 0.4 * age, y = hy + uy * d, z = hz + uz * d, k = 1 - age / c.life, L = 1 + 2 * k;
+      q.line(x - ux * L + V * 0.02, y - uy * L, z - uz * L, x, y, z, k > 0.5 ? H[1] : H[3]);
+      q.glow(x, y, z, 3, H[2], 0.4 * k);
+    });
+    // embers left behind: streaks that the head outruns, falling as they cool
+    looped(t, D, 30, S + 300, (r) => ({ x: -r.range(2, 16), y: r.range(-3, 3), v: V * r.range(0.3, 0.8), vy: r.range(-20, 20), life: r.range(0.25, 0.55), big: r.chance(0.25), ph: r.range(0, 6.3), az: r.range(0, TAU) }), (c, age) => {
+      const sa = Math.sin(c.az), ca = Math.cos(c.az);
+      const [wx, y, z, wvx, vy, vz] = drift3([0, c.y * sa, c.y * ca], [c.v, c.vy * sa, c.vy * ca], age, [0, 50, 0], 3, 2);
+      const x = hx + c.x + wx - V * age, k = 1 - age / c.life;
+      if (c.big) q.at(x, hy + y, hz + z, (pp) => ember(pp, 0, 0, k, 2, EMB, age * 40 + c.ph));
+      else spark3(q, x, hy + y, hz + z, wvx - V, vy, vz, k, SPARKS);
+    });
+
+    // light: a hot heart, a warm halo, light running down the tail, a pool on the floor beneath
+    const fl = 0.85 + 0.15 * N(9, S + 7);
+    q.glowLine(hx - 6, hy, hz, hx - 56, MY - 2, 0, 14, GLOW, 0.26 * fl);
+    q.glow(hx - 2, hy, hz, 52, GLOW, 0.55 * fl);
+    q.glow(hx, hy, hz, 15, H[1], 0.4 * fl);
+    q.glow(hx, hy, hz, 8, H[0], 0.35 * fl);
+    floorGlow(q, hx - 12, 0, 58, GLOW, 0.26 * fl);
+    // smoke, far to near, over everything
+    for (const [sa, x, y, z, c] of q.sort(smoke, (e) => [e[1], e[2], e[3]])) q.at(x, y, z, (pp) => smokePuff(pp, 0, 0, 1 - sa / c.sl, c.s * 0.9, SMOKE));
+  },
+};

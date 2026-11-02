@@ -1,7 +1,7 @@
 // The tongue, lick, flame-puff, smoke, ember and spark recipe is adapted from Sprite Fusion's open-source fire
 // (https://www.spritefusion.com/pixel-art-vfx/fire), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { fit, mix, rand, clamp, WHITE } from "../../core/index.js";
-import { noiseFor, hotFirst, burn, looped, drift, spark, ember, floorLight } from "./_lib.js";
+import { fit, mix, rand, clamp, space, lit, TAU, WHITE } from "../../core/index.js";
+import { noiseFor, hotFirst, burn, burn3, looped, drift, spark, spark3, ember, floorLight, floorGlow, torus } from "./_lib.js";
 
 export const meta = {
   name: "Brazier",
@@ -111,3 +111,69 @@ export function draw(p, t, o) {
     else ember(p, x + wob, y, k, q.big ? 2 : 1, EMB, age * 40 + q.a);
   });
 }
+
+// 3D: the same bowl turned on a lathe, a true tripod, heaped coals; the fire stands round the axis and the sparks leave in a
+// full circle.
+const HEAT = (H, g) => (g > 0.72 ? H[2] : g > 0.5 ? H[3] : g > 0.3 ? H[4] : g > 0.15 ? H[5] : H[6]);
+// the bowl's radius going down from the rim: rounds in, then draws down to a point
+const bowlR = (v) => RX * Math.sqrt(Math.max(0, 1 - v * v * 0.9)) - (v > 0.5 ? (v - 0.5) * 6 : 0);
+const LEG = [0.5, 2.6, 4.7];
+
+export const three = {
+  meta: { size: [120, 156], origin: [60, 140], bg: "ground", camera: { pitch: 0.28 } },
+  draw(p, t, o) {
+    const F = fit(o.palette, 9), H = hotFirst(F), I = fit(o.iron, 5), S = o.seed, q = space(p, o);
+    const fl = 0.74 + 0.16 * NL(t, 7.3, S + 1) + 0.1 * NL(t, 19, S + 2), SPARKS = [H[1], H[2], H[4], H[5]], EMB = [H[1], H[2], H[4], H[6]];
+    const side = (g) => -0.45 * Math.cos(g) + 0.66 * Math.sin(g); // how far a point of the wall faces the light (top left, in front)
+    // the tripod: three legs splayed out from under the bowl, curled feet, a ring holding them, a post up the middle
+    const leg = (a) => ({ x: Math.cos(a), z: Math.sin(a) });
+    const legs = LEG.map(leg);
+    for (const { x, z } of legs) {
+      q.beam(x * 7, RIM + 8, z * 7, x * 14, -1.2, z * 14, 3.2, (u, v) => (v > 0.8 ? I[0] : v < 0.4 ? mix(I[4], H[4], 0.2 * fl) : I[3]));
+      q.beam(x * 14, -1, z * 14, x * 18, -0.8, z * 18, 2.2, (u, v) => (v > 0.7 ? I[0] : I[3]));
+      q.ball(x * 18.5, -1.2, z * 18.5, 1.3, I[3]);
+    }
+    q.beam(0, RIM + 9, 0, 0, -1, 0, 3.4, (u, v) => (v > 0.75 ? I[0] : v < 0.4 ? mix(I[4], H[4], 0.2 * fl) : I[2]));
+    q.ring(0, -9, 0, 10.8, 1.8, (v, g) => (v > 0.7 ? I[0] : side(g) > 0 ? I[4] : I[3]));
+    // the bowl, from the rim down: a band of rivets, the lit side the fire's, a dark belly
+    for (let y = 0; y <= 9.5; y += 0.4) {
+      const v = y / 9, r = bowlR(Math.min(1, v));
+      if (r < 0.8) continue;
+      q.ring(0, RIM + y, 0, r + 0.6, 2.4, (w, g) => {
+        if (y < 0.8) return mix(I[3], H[4], 0.5 * fl);
+        if (y < 1.8) return I[2];
+        if (y < 3.2) return Math.round((g * r) / 2.4) % 2 === 0 ? mix(I[4], H[4], 0.25 * fl) : I[0];
+        const d = side(g);
+        return y > 7 ? I[0] : d > 0.3 ? I[3] : d > -0.2 ? I[2] : I[1];
+      });
+    }
+    torus(q, 0, RIM + 0.6, 0, RX + 0.2, 2.2, (g, v) => (v > 0.85 ? I[0] : mix(side(g) > -0.1 ? I[4] : I[3], H[4], 0.45 * fl)), 32);
+    q.ring(0, RIM, 0, RX + 0.8, 2.4, (w, g) => (w > 0.85 ? I[0] : mix(side(g) > -0.1 ? I[4] : I[3], H[4], 0.45 * fl))); // the lip
+    // coals heaped in the bowl, breathing in the heat: a bed, and lumps standing proud of the rim
+    q.plane(0, RIM + 0.5, 0, null, RX - 0.6, (u, v, out) => {
+      const lump = rand(Math.floor((u + Math.floor(v) * 1.5) / 3), Math.floor(v / 2), S + 20);
+      if (rand(Math.floor(u), Math.floor(v), S + 21) < 0.16) return I[0];
+      const g = (0.5 + 0.5 * Math.sin((t / D) * Math.PI * 4 + lump * 40)) * (1 - Math.hypot(u, v) / (RX + 4));
+      out.k = 0.3 * g;
+      return HEAT(H, g);
+    });
+    for (let i = 0; i < 11; i++) {
+      const a = i * 2.399963, d = Math.sqrt((i + 0.5) / 11) * (RX - 5), x = Math.cos(a) * d, z = Math.sin(a) * d;
+      const lump = rand(i, S + 22), g = 0.5 + 0.5 * Math.sin((t / D) * Math.PI * 4 + lump * 40), top = RIM - 1.4 - 3.4 * Math.max(0, 1 - (d / (RX - 2)) ** 2);
+      q.ball(x, top + 1.2, z, 2.5 + lump * 0.9, (nx, ny, nz) => (nz < 0.3 ? I[0] : HEAT(H, g * (0.7 + 0.3 * -ny + 0.15 * -nx))));
+    }
+    // the fire, round the axis
+    burn3(q, t, TONGUES, { H, D, NL, S, x: 0, y: RIM, z: 0, height: 32, lean: 0.1, spread: 7, puffs: 8, licks: 4, smoke: 14, smokeSize: 3, smokeLife: [1.6, 2.4], embers: 10, glowR: 58, glow: 1.4, wind: 3, floor: 46 });
+    // sparks streaming up in the draught: fast streaks that slow, wander and cool to embers high above
+    looped(t, D, 60, S + 600, (r) => {
+      const a = r.range(0, TAU), rad = r.range(0, 1), v = r.range(10, 40);
+      return { x: Math.cos(a) * rad * 8, z: Math.sin(a) * rad * 8, y: RIM - r.range(4, 18), vx: Math.cos(a) * rad * v, vz: Math.sin(a) * rad * v, vy: -r.range(70, 150), life: r.range(0.7, 1.7), a: r.range(0, 6.3), w: r.range(1.8, 3.2), m: r.range(3, 8), big: r.chance(0.12) };
+    }, (s, age) => {
+      const [x, y, vx, vy] = drift(s.x, s.y, s.vx, s.vy, age, 0, -22, 1.9, 1.9), [z, , vz] = drift(s.z, 0, s.vz, 0, age, 0, 0, 1.9, 1.9), k = 1 - age / s.life, f = Math.min(1, age * 1.5);
+      const wob = s.m * (Math.sin(age * s.w + s.a) - Math.sin(s.a)) * f, wv = s.m * s.w * Math.cos(age * s.w + s.a) * f;
+      const wobz = s.m * (Math.cos(age * s.w + s.a) - Math.cos(s.a)) * f, wvz = -s.m * s.w * Math.sin(age * s.w + s.a) * f;
+      if (Math.hypot(vx + wv, vy, vz + wvz) > 40) spark3(q, x + wob, y, z + wobz, vx + wv, vy, vz + wvz, k, SPARKS);
+      else q.at(x + wob, y, z + wobz, (pp) => ember(pp, 0, 0, k, s.big ? 2 : 1, EMB, age * 40 + s.a));
+    });
+  },
+};

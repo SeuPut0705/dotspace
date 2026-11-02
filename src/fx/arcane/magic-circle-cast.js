@@ -1,8 +1,8 @@
 // The column of light (banded across, strands wandering in it, pulses and halos climbing it, stars thrown off,
 // rings shocking out across the floor) is adapted from Sprite Fusion's open-source holy light
 // (https://www.spritefusion.com/pixel-art-vfx/holy-light), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, PAL, fit, band, flare, sparkle, clamp, smooth, ease, noise2, fract, TAU, WHITE } from "../../core/index.js";
-import { floorRing, bayer, glyph } from "./_lib.js";
+import { Particles, Lights, P, Rng, PAL, fit, band, flare, sparkle, clamp, smooth, ease, noise2, fract, space, TAU, WHITE } from "../../core/index.js";
+import { floorRing, bayer, glyph, facing } from "./_lib.js";
 
 // the circle on the floor (plane px; the floor squashes depth by SY), the column, the beats
 const R = 40, R2 = 35, RI = 24, RR = 30, SY = 0.3, TOP = 192, W = 11, NRUNE = 8;
@@ -283,3 +283,274 @@ export function create(o) {
     },
   };
 }
+
+// ---- 3D: the circle is drawn on the floor as true circles, runes stand on it, the column is a cylinder of light that
+// breaks into glints, halos of light climb it as true rings, and everything thrown off goes out in a full circle.
+export const three = {
+  meta: { size: [200, 224], origin: [100, 196], bg: "ground", camera: { pitch: 0.32 } },
+  create(o) {
+    const C = fit(o.palette, 8), S = o.seed, Rg = new Rng(S);
+    const ps = new Particles({ rng: Rg, ground: () => 0, sparks: [WHITE, C[6], C[5], C[4]] }), lights = new Lights();
+    const COL = [WHITE, C[6], C[5], C[4], C[3]];
+    const strands = Array.from({ length: 9 }, () => ({ o: Rg.range(-0.85, 0.85), w: Rg.range(0.04, 0.1), f: Rg.range(1, 3) }));
+    // the hexagram: two triangles inside the inner ring, each drawn edge by edge, as points (x, z) on the floor
+    const tri = (a0) => [0, 1, 2].map((k) => a0 + (k * TAU) / 3).map((a) => [Math.cos(a) * RI, Math.sin(a) * RI]);
+    const A = tri(-Math.PI / 2), Bt = tri(Math.PI / 2), edges = [];
+    for (let k = 0; k < 3; k++)
+      for (const T of [A, Bt]) edges.push({ p0: T[k], p1: T[(k + 1) % 3], t0: STAR[0] + (k * (STAR[1] - STAR[0])) / 3, dur: (STAR[1] - STAR[0]) / 3 });
+    let t = 0, flashed = false, broke = false;
+    const out = new Array(NRUNE).fill(false);
+    const lineCol = (lvl, age) => (age < 0.05 ? WHITE : age < 0.16 ? C[6] : lvl > 1 ? WHITE : lvl > 0.8 ? C[6] : lvl > 0.45 ? C[5] : lvl > 0.28 ? C[4] : C[3]);
+    const lineA = (lvl) => clamp(lvl / 0.3);
+    const ringAt = (g, r, y = 0) => [Math.cos(g) * r, y, Math.sin(g) * r];
+
+    // the circle as one flat drawing: pen-written rings, ticks between the outer two, the hexagram
+    function flat(pp) {
+      const lvl = level(t), a = lineA(lvl);
+      const ring = (r, when, chase) => floorRing(pp, 0, 0, r, 1, (g) => (chase && chase(g) ? WHITE : lineCol(lvl, t - when(g))), (g) => (t < when(g) ? 0 : a));
+      const run = t > RUNES[0] && t < BREAK ? (t - RUNES[0]) * 5 + (t - RUNES[0]) ** 2 * 4 : null;
+      const chase = run === null ? null : (g) => [0, Math.PI].some((q0) => Math.abs(Math.atan2(Math.sin(g - run - q0), Math.cos(g - run - q0))) < 0.22);
+      ring(R, (g) => outerAt(g, PEN), chase);
+      ring(R2, (g) => outerAt(g, PEN2));
+      ring(RI, innerAt);
+      for (let j = 0; j < 32; j++) {
+        const g = ((j + 0.5) * TAU) / 32, when = outerAt(g, PEN2) + 0.03;
+        if (t < when) continue;
+        pp.line(Math.cos(g) * R2, Math.sin(g) * R2, Math.cos(g) * R, Math.sin(g) * R, lineCol(lvl, t - when), a * (j % 2 ? 0.6 : 1));
+      }
+      for (const e of edges) {
+        const s = clamp((t - e.t0) / e.dur);
+        if (s <= 0) continue;
+        pp.line(e.p0[0], e.p0[1], e.p0[0] + (e.p1[0] - e.p0[0]) * s, e.p0[1] + (e.p1[1] - e.p0[1]) * s, (u) => lineCol(lvl, t - (e.t0 + u * s * e.dur)), a);
+      }
+    }
+
+    // the column: a cylinder of light, each pixel's depth following its round
+    function column(pp) {
+      if (t < FLASH - 0.22 || t > BREAK + 0.6) return;
+      const z0 = pp.z;
+      if (t < FLASH) {
+        const a = smooth(FLASH - 0.22, FLASH - 0.04, t), top = -(TOP - 10) * ease.outCubic(a);
+        for (let y = -1; y >= top; y--) pp.dot(0, y, y > top + 6 ? C[6] : WHITE, a * (0.35 + 0.65 * (1 + y / TOP)));
+        return;
+      }
+      const u = t - FLASH, brk = clamp((t - BREAK) / 0.45), top = -TOP * ease.outExpo(clamp(u / 0.09));
+      const w = t < BREAK ? W * (1 + 0.38 * Math.exp(-u * 9)) : W * (1 - ease.outCubic(brk) * 0.85);
+      const fade = 1 - smooth(BREAK + 0.25, BREAK + 0.55, t), white = u < 0.067;
+      if (fade <= 0) return;
+      for (let y = 3; y >= Math.ceil(top); y--) {
+        const h = -y, ww = w * (1 + 0.5 * Math.exp(-Math.max(0, h) / 6)), pulse = fract(h * 0.022 - u * 2.6) < 0.07 ? 1 : 0;
+        for (let x = Math.floor(-ww * 1.3); x <= Math.ceil(ww * 1.3); x++) {
+          const q = Math.abs(x + 0.5) / ww;
+          if (brk > 0 && noise2(x * 0.32, h * 0.11 - (t - BREAK) * 6, S) * 0.5 + 0.5 < brk * 1.25 - 0.1) continue;
+          let lv = q < 0.2 ? 0 : q < 0.42 ? 1 : q < 0.66 ? 2 : q < 0.88 ? 3 : 4;
+          for (const s of strands) if (Math.abs((x + 0.5) / ww - s.o - 0.05 * Math.sin(t * s.f + s.o * 9)) < s.w) lv = Math.max(0, lv - 1);
+          lv = white ? 0 : Math.max(0, lv - pulse);
+          const a = (q < 0.88 ? 1 : (1.3 - q) / 0.42) * fade;
+          if (a <= bayer(x, y) * (q < 0.66 ? 0.2 : 1)) continue;
+          pp.z = z0 - Math.sqrt(Math.max(0, 1 - Math.min(1, q) ** 2)) * ww;
+          pp.px(x, y, COL[lv]);
+        }
+      }
+      pp.z = z0;
+    }
+
+    return {
+      update(dt) {
+        t += dt;
+        // the pens shed glitter as they write
+        if (t > PEN[0] && t < STAR[1] && Rg.chance(0.5)) {
+          let x, z;
+          if (t < PEN[1]) {
+            const g = Math.PI / 2 + Rg.sign() * ((t - PEN[0]) / (PEN[1] - PEN[0])) * Math.PI;
+            (x = Math.cos(g) * R), (z = Math.sin(g) * R);
+          } else if (t < INNER[1]) {
+            const g = -Math.PI / 2 + ((t - INNER[0]) / (INNER[1] - INNER[0])) * TAU;
+            (x = Math.cos(g) * RI), (z = Math.sin(g) * RI);
+          } else {
+            const e = Rg.pick(edges.filter((e) => t >= e.t0 && t < e.t0 + e.dur)) ?? edges[0], s = clamp((t - e.t0) / e.dur);
+            (x = e.p0[0] + (e.p1[0] - e.p0[0]) * s), (z = e.p0[1] + (e.p1[1] - e.p0[1]) * s);
+          }
+          ps.spawn3(P.EMBER, x, -1, z, Rg.range(-12, 12), Rg.range(-30, -8), Rg.range(-12, 12), Rg.range(0.25, 0.55), C[6], 1);
+        }
+        // gathering: light rushes in along the floor to the heart of the circle, from every side
+        if (t > RUNES[1] - 0.1 && t < FLASH - 0.05 && Rg.chance(0.7)) {
+          const g = Rg.range(0, TAU), D = Rg.range(R * 0.7, R * 1.1), T = Rg.range(0.16, 0.24), v = (D * 3) / (Math.exp(3 * T) - 1);
+          const x = Math.cos(g) * D, z = Math.sin(g) * D, l = Math.hypot(x, z, 1) || 1;
+          ps.spawn3(P.STREAK, x, -1, z, (-x / l) * v, (-1 / l) * v, (-z / l) * v, T, Rg.chance(0.5) ? C[6] : C[5]);
+        }
+        if (!flashed && t >= FLASH) {
+          flashed = true;
+          lights.add(0, -56, 104, C[5], 0.9, 0.6);
+          lights.add(0, -5, 36, WHITE, 0.8, 0.14);
+          for (let i = 0; i < 40; i++) {
+            const g = Rg.range(0, TAU), r0 = Rg.range(0, R * 0.5), sp = Rg.range(80, 175);
+            ps.spawn3(P.SPARK, Math.cos(g) * r0, -1, Math.sin(g) * r0, Math.cos(g) * sp, -Rg.range(30, 180), Math.sin(g) * sp, Rg.range(0.25, 0.7));
+          }
+          for (let i = 0; i < 26; i++) {
+            const g = Rg.range(0, TAU), r0 = Math.sqrt(Rg.next()) * R;
+            ps.spawn3(P.STAR, Math.cos(g) * r0, -Rg.range(1, 6), Math.sin(g) * r0, Rg.range(-20, 20), -Rg.range(40, 130), Rg.range(-20, 20), Rg.range(0.5, 1.1), Rg.pick([WHITE, C[6], C[5]]), Rg.range(0.8, 2.3));
+          }
+          // and a spray of twinkles flung out low across the floor, all round
+          for (let i = 0; i < 40; i++) {
+            const g = Rg.range(0, TAU), r0 = Rg.range(0, 14), sp = Rg.range(50, 140);
+            ps.spawn3(P.STAR, Math.cos(g) * r0, -Rg.range(1, 4), Math.sin(g) * r0, Math.cos(g) * sp, -Rg.range(10, 90), Math.sin(g) * sp, Rg.range(0.4, 0.95), Rg.pick([WHITE, C[6], C[6], C[5]]), Rg.range(0.7, 2.2));
+          }
+        }
+        // glints pop along the burning circle
+        if (t > RUNES[0] && t < BREAK + 0.2 && Rg.chance(0.12)) {
+          const g = Rg.range(0, TAU), r = Rg.pick([R, R2, RI]);
+          ps.spawn3(P.STAR, Math.cos(g) * r, -0.5, Math.sin(g) * r, 0, -Rg.range(2, 8), 0, Rg.range(0.25, 0.45), Rg.pick([WHITE, C[6]]), Rg.range(0.8, 2));
+        }
+        // the column throws off stars, and light streams up inside it
+        const inCol = (k) => {
+          const a = Rg.range(0, TAU), d = Math.sqrt(Rg.next()) * W * k;
+          return [Math.cos(a) * d, Math.sin(a) * d];
+        };
+        if (t > FLASH && t < BREAK) {
+          if (Rg.chance(0.5)) {
+            const [x, z] = inCol(1.5);
+            ps.spawn3(P.STAR, x, -Rg.range(0, 120), z, Rg.range(-10, 10) + x * 1.5, -Rg.range(30, 85), Rg.range(-10, 10) + z * 1.5, Rg.range(0.5, 1.1), Rg.pick([WHITE, C[6], C[5]]), Rg.range(0.7, 2));
+          }
+          if (Rg.chance(0.35)) {
+            const [x, z] = inCol(0.8);
+            ps.spawn3(P.MOTE, x, -Rg.range(0, 50), z, 0, -Rg.range(160, 300), 0, Rg.range(0.2, 0.35), Rg.chance(0.5) ? WHITE : C[6], 0.8);
+          }
+        }
+        // it breaks apart into glints that twinkle as they drift up
+        if (!broke && t >= BREAK) {
+          broke = true;
+          for (let i = 0; i < 46; i++) {
+            const [x, z] = inCol(0.9);
+            ps.spawn3(P.STAR, x, -Rg.range(2, TOP * 0.8), z, Rg.range(-12, 12), -Rg.range(8, 40), Rg.range(-12, 12), Rg.range(0.5, 1.15), Rg.pick([WHITE, WHITE, C[6], C[5]]), Rg.range(0.6, 2.4));
+          }
+        }
+        if (t > BREAK && t < BREAK + 0.4 && Rg.chance(0.8)) {
+          const [x, z] = inCol(0.7);
+          ps.spawn3(P.STAR, x, -Rg.range(2, TOP * 0.78), z, Rg.range(-8, 8), -Rg.range(10, 50), Rg.range(-8, 8), Rg.range(0.4, 0.9), Rg.pick([WHITE, C[6], C[5]]), Rg.range(0.6, 1.8));
+          if (Rg.chance(0.4)) {
+            const [mx, mz] = inCol(0.5);
+            ps.spawn3(P.MOTE, mx, -Rg.range(2, TOP * 0.7), mz, 0, -Rg.range(60, 140), 0, Rg.range(0.2, 0.4), C[6], 0.7);
+          }
+        }
+        // the runes go out one by one, each in a little puff of glints
+        for (let k = 0; k < NRUNE; k++)
+          if (!out[k] && t >= runeOut(k)) {
+            out[k] = true;
+            const [x, y, z] = ringAt(runeAngle(k), RR, -5);
+            for (let i = 0; i < 4; i++) ps.spawn3(P.STAR, x + Rg.range(-2, 2), y + Rg.range(-2, 2), z + Rg.range(-2, 2), Rg.range(-14, 14), -Rg.range(10, 40), Rg.range(-14, 14), Rg.range(0.3, 0.55), Rg.pick([WHITE, C[6]]), Rg.range(0.6, 1.6));
+          }
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), lvl = level(t);
+        // the circle, laid on the floor
+        if (t < GONE) q.decal(0, 0, 0, null, R + 4, flat);
+        // the runes stand on the circle; dim when the inner pen passes, lit one by one, out one by one
+        for (let k = 0; k < NRUNE; k++) {
+          const g = runeAngle(k), x = Math.cos(g) * RR, z = Math.sin(g) * RR, lit = t - runeLit(k), gone = clamp((t - runeOut(k)) / 0.25);
+          if (t < innerAt(g) || gone >= 1) continue;
+          if (lit < 0) {
+            q.at(x, -1, z, (pp) => glyph(pp, k, 0, 0, C[3]));
+            continue;
+          }
+          const rise = 3 * ease.outBack(clamp(lit / 0.2), 2.4), bob = lit > 0.2 ? Math.sin(t * 5 + k) * 0.5 : 0, hot = lit < 0.07 || (t > FLASH && t < FLASH + 0.07);
+          q.at(x, -1 - rise + bob, z, (pp) => {
+            glyph(pp, k, 0, 0, hot ? WHITE : lvl > 0.8 ? WHITE : C[6], 1 - gone, hot ? C[6] : C[4]);
+            if (lit < 0.1) sparkle(pp, 0, -2, 4 * (1 - lit / 0.1) + 1, C[6], C[5], 0.5);
+          });
+        }
+        // the pens: white points running round, writing light
+        const pen = (x, z) => {
+          q.at(x, -1, z, (pp) => sparkle(pp, 0, 0, 2, C[6], C[5], 0.5));
+          q.glow(x, -1, z, 7, C[6], 0.45);
+        };
+        if (t > PEN[0] && t < PEN[1]) for (const s of [-1, 1]) {
+          const g = Math.PI / 2 + s * ((t - PEN[0]) / (PEN[1] - PEN[0])) * Math.PI;
+          pen(Math.cos(g) * R, Math.sin(g) * R);
+        }
+        if (t > INNER[0] && t < INNER[1]) {
+          const g = -Math.PI / 2 + ((t - INNER[0]) / (INNER[1] - INNER[0])) * TAU;
+          pen(Math.cos(g) * RI, Math.sin(g) * RI);
+        }
+        for (const e of edges)
+          if (t > e.t0 && t < e.t0 + e.dur) {
+            const s = (t - e.t0) / e.dur;
+            pen(e.p0[0] + (e.p1[0] - e.p0[0]) * s, e.p0[1] + (e.p1[1] - e.p0[1]) * s);
+          }
+        // the column of light
+        q.at(0, 0, 0, column);
+        // strands of light twisting round it: they come round the front, bright, and go behind it
+        if (t > FLASH && t < BREAK + 0.45) {
+          const u = t - FLASH, brk = clamp((t - BREAK) / 0.45), w = (t < BREAK ? W * (1 + 0.38 * Math.exp(-u * 9)) : W * (1 - ease.outCubic(brk) * 0.85)) * 1.12;
+          const fade = 1 - smooth(BREAK + 0.25, BREAK + 0.55, t), top = TOP * ease.outExpo(clamp(u / 0.09));
+          for (let s = 0; s < 3; s++)
+            for (let h = 2; h < top; h += 1.5) {
+              const a = h * 0.075 - u * 9 + (s * TAU) / 3, ww = w * (1 + 0.5 * Math.exp(-h / 6)), hole = brk > 0 && noise2(h * 0.2, s * 9, S) * 0.5 + 0.5 < brk * 1.1;
+              if (hole) continue;
+              q.dot(Math.cos(a) * ww, -h, Math.sin(a) * ww, Math.abs(Math.cos(a)) > 0.75 ? WHITE : C[4], fade * (1.1 - h / TOP * 0.6));
+            }
+        }
+        // shock rings across the floor, true circles
+        for (const [d, r0, r1, th, dur] of [[0, R * 0.6, R * 2, 6, 0.5], [0.08, R * 0.4, R * 1.4, 3, 0.4]]) {
+          const k = (t - FLASH - d) / dur;
+          if (k < 0 || k >= 1) continue;
+          const r = r0 + (r1 - r0) * ease.outCubic(k), w = Math.max(1, th * (1 - k));
+          q.decal(0, 0, 0, null, r + 2, (pp) => pp.ring(0, 0, r, w, k < 0.2 ? WHITE : k < 0.5 ? C[6] : C[5], 1.15 - k));
+        }
+        // halos climbing the column, true circles in the air
+        if (t > FLASH) {
+          const fade = 1 - smooth(BREAK + 0.25, BREAK + 0.55, t), w = t < BREAK ? W * (1 + 0.38 * Math.exp(-(t - FLASH) * 9)) : W * (1 - ease.outCubic(clamp((t - BREAK) / 0.45)) * 0.85);
+          for (let i = 0; i < 6; i++) {
+            const k = (t - (FLASH + 0.08 + i * 0.16)) / 0.8;
+            if (k < 0 || k > 1 || fade <= 0) continue;
+            const rr = w * 1.4 * (1 + k * 0.35), yc = -3 - ease.outQuad(k) * 120;
+            q.decal(0, yc, 0, null, rr + 2, (pp) => floorRing(pp, 0, 0, rr, 1, k < 0.3 ? WHITE : C[6], (g) => (1 - k) * fade * (facing(q, g) < 0 ? 0.6 : 1)));
+          }
+        }
+        // the flash
+        if (t >= FLASH && t < FLASH + 0.24) {
+          const a = (t - FLASH) / 0.24;
+          q.at(0, -8, 0, (pp) => flare(pp, 0, 0, 34 * Math.pow(1 - a, 1.5), 1 - a, C));
+          q.ball(0, -8, 0, 5 * (1 - a), WHITE);
+          q.glow(0, -26, 0, 56, WHITE, 0.5 * (1 - a));
+        }
+        ps.draw(q);
+        lights.draw(q);
+        // light: the floor under the circle, a heart of white where the column meets it, the column's own light
+        if (t < GONE) {
+          const k = lvl * smooth(PEN[0], PEN[1] + 0.2, t);
+          q.plane(0, 0, 0, null, R * 1.3, (u, v, o2) => {
+            const f = 1 - Math.hypot(u, v) / (R * 1.3);
+            if (f <= 0) return;
+            o2.l = C[4];
+            o2.k = f * f * 0.5 * k;
+          });
+          for (let k2 = 0; k2 < NRUNE; k2++) {
+            const g = runeAngle(k2), lit = t - runeLit(k2), gone = clamp((t - runeOut(k2)) / 0.25);
+            if (t < innerAt(g) || gone >= 1) continue;
+            const [x, , z] = ringAt(g, RR);
+            if (lit < 0) continue;
+            q.glow(x, -3, z, 8, C[5], (0.3 + 0.3 * lvl) * (1 - gone));
+            q.glow(x, 0, z, 6, C[4], 0.2 * (1 - gone));
+          }
+        }
+        if (t >= FLASH - 0.22 && t <= BREAK + 0.6) {
+          if (t < FLASH) {
+            const a = smooth(FLASH - 0.22, FLASH - 0.04, t), top = -(TOP - 10) * ease.outCubic(a);
+            q.glow(0, top, 0, 9, C[6], 0.5 * a);
+            q.glow(0, -6, 0, 24, C[5], 0.4 * a);
+          } else {
+            const u = t - FLASH, brk = clamp((t - BREAK) / 0.45), w = t < BREAK ? W * (1 + 0.38 * Math.exp(-u * 9)) : W * (1 - ease.outCubic(brk) * 0.85), fade = 1 - smooth(BREAK + 0.25, BREAK + 0.55, t), top = -TOP * ease.outExpo(clamp(u / 0.09));
+            if (fade > 0) {
+              for (let y = 0; y >= Math.ceil(top); y -= 8) q.glow(0, y, 0, Math.min(w * 2.4 + 6, 34), C[5], 0.3 * fade);
+              q.glow(0, -4, 0, 34, C[6], 0.45 * fade);
+              q.glow(0, -60, 0, 70, C[4], 0.25 * fade);
+            }
+          }
+        }
+      },
+    };
+  },
+};

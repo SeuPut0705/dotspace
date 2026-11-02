@@ -308,3 +308,109 @@ export function crown(q, x, z, age, size, c, h) {
   }
   return true;
 }
+
+/**
+ * A raindrop's splash on the floor in 3D (q is a Space), age seconds after it lands at (x, z): a white point and a
+ * little crown of droplets, a true ring spreading over the floor, droplets thrown up that fall back along their own
+ * x and z. size 0..1 (far to near), c = { hot, cool } colors, h a number unique to the drop, a an alpha for
+ * fading it out at the edge of the volume, scale how big it is in world units (1 = the 2D splash's size). Returns
+ * false once it's over.
+ */
+export function splash3(q, x, z, age, size, c, h, a = 1, scale = 1.1) {
+  const L = 0.3 + 0.12 * size, u = age / L;
+  if (u >= 1 || a <= 0.02) return false;
+  if (age < 0.07) {
+    q.px(x, -1, z, c.hot);
+    if (size > 0.3)
+      for (let j = 0; j < 4; j++) {
+        const g = (j / 4) * TAU + h * 9;
+        q.px(x + Math.cos(g) * 1.3, -1 - (age > 0.035 ? 1.4 : 0.6), z + Math.sin(g) * 1.3, c.hot);
+      }
+  }
+  const rx = (1 + (1.2 + 3.6 * size) * Math.sqrt(u)) * scale, n = Math.ceil(rx * 7);
+  for (let j = 0; j < n; j++) {
+    const g = (j / n) * TAU;
+    q.dot(x + Math.cos(g) * rx, -0.5, z + Math.sin(g) * rx, u < 0.14 ? c.hot : c.cool, a * (u < 0.35 ? 0.75 : (1 - u) * 1.1));
+  }
+  const nd = size > 0.55 ? 3 : 2, H = Math.floor(h * 1e6);
+  for (let d = 0; d < nd; d++) {
+    const g = rand(H, d, 3) * TAU, v = (0.4 + rand(H, d, 1) * 0.6) * (25 + 35 * size), vy = -(55 + rand(H, d, 2) * 70 * (0.5 + size)), y = -1 + vy * age + 475 * age * age;
+    if (y > -0.5 || age > 0.34) continue;
+    q.px(x + Math.cos(g) * v * age, y, z + Math.sin(g) * v * age, age < 0.12 ? c.hot : c.cool);
+  }
+  return true;
+}
+
+// ---- 3D falling things (snow, leaves, petals): a baked floor, and flat shapes tumbling in the air
+
+const FLOOR_TEX = new Map();
+/**
+ * A static floor texture for a floor disc of radius R, baked once per key: paint(set) calls set(x, z, color) for
+ * every pixel to plant (x, z in -R..R world px, 0 for none; later calls win). It never changes, so lay it with layFloor3.
+ */
+export function bakeFloor3(key, R, paint) {
+  let f = FLOOR_TEX.get(key);
+  if (!f) {
+    const S = Math.ceil(R) * 2 + 1, c = new Uint32Array(S * S);
+    paint((x, z, col) => {
+      const i = Math.floor(x + R), j = Math.floor(z + R);
+      if (i >= 0 && j >= 0 && i < S && j < S) c[j * S + i] = col;
+    });
+    FLOOR_TEX.set(key, (f = { R, S, c }));
+  }
+  return f;
+}
+/** Lay a baked floor on the floor at height y; it thins out (dithered) towards its rim from `fade` of R. */
+export function layFloor3(q, f, y = 0, fade = 0.8) {
+  const { R, S, c } = f;
+  q.plane(0, y, 0, null, R, (u, v, out) => {
+    const i = Math.floor(u + R), j = Math.floor(v + R);
+    if (i < 0 || j < 0 || i >= S || j >= S) return;
+    const col = c[j * S + i];
+    if (!col) return;
+    out.c = col;
+    out.a = 1 - Math.max(0, (Math.sqrt(u * u + v * v) / R - fade) / (1 - fade));
+  });
+}
+
+/**
+ * The orientation of a thing that flips about its long axis and swings: heading (azimuth of its long axis, rad),
+ * flip (rad about that axis; 0 face up), tilt (rad about the horizontal axis at azimuth `swing` + 90 deg).
+ * Returns { N, U }: its face normal (up is -y) and its long axis, for tumble3.
+ */
+export function orient3(heading, flip, tilt, swing) {
+  const U0 = [Math.cos(heading), 0, Math.sin(heading)], V0 = [-Math.sin(heading), 0, Math.cos(heading)];
+  const c = Math.cos(flip), s = Math.sin(flip);
+  const N1 = [V0[0] * s, -c, V0[2] * s];
+  // Rodrigues about the horizontal axis A perpendicular to the swing
+  const A = [-Math.sin(swing), 0, Math.cos(swing)], ct = Math.cos(tilt), st = Math.sin(tilt);
+  const rot = (v) => {
+    const d = A[0] * v[0] + A[1] * v[1] + A[2] * v[2], x = [A[1] * v[2] - A[2] * v[1], A[2] * v[0] - A[0] * v[2], A[0] * v[1] - A[1] * v[0]];
+    return [0, 1, 2].map((i) => v[i] * ct + x[i] * st + A[i] * d * (1 - ct));
+  };
+  return { N: rot(N1), U: rot(U0) };
+}
+
+const unit3 = (v) => {
+  const l = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / l, v[1] / l, v[2] / l];
+};
+const cross3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+/**
+ * A flat shape in the air: a shader over the plane through (x, y, z) with face normal N, its own axes u along U
+ * (any vector, taken into the plane) and v across, in world px. fn(lu, lv, out, face) shades it like p.shade;
+ * face is the cosine of the angle between N and the camera, so its sign says which side shows. Seen edge on it
+ * is a line along U of half length edge.len in edge.c (alpha edge.a), so a thin thing never drops out.
+ * Returns face, or 0 when it was too thin to shade.
+ */
+export function tumble3(q, x, y, z, N, U, R, fn, edge) {
+  N = unit3(N);
+  const e1 = Math.abs(N[1]) > 0.9 ? unit3(cross3(cross3(N, [1, 0, 0]), N)) : unit3(cross3(N, [0, -1, 0])), e2 = cross3(N, e1);
+  const d = U[0] * N[0] + U[1] * N[1] + U[2] * N[2], U1 = unit3([U[0] - d * N[0], U[1] - d * N[1], U[2] - d * N[2]]);
+  const ca = U1[0] * e1[0] + U1[1] * e1[1] + U1[2] * e1[2], sa = U1[0] * e2[0] + U1[1] * e2[1] + U1[2] * e2[2];
+  const face = q.view(N[0], N[1], N[2])[2];
+  if (edge && Math.abs(face) < 0.22) q.line(x - U1[0] * edge.len, y - U1[1] * edge.len, z - U1[2] * edge.len, x + U1[0] * edge.len, y + U1[1] * edge.len, z + U1[2] * edge.len, edge.c, edge.a ?? 1);
+  if (Math.abs(face) < 0.08) return 0;
+  q.plane(x, y, z, N, R, (u, v, out) => fn(u * ca + v * sa, -u * sa + v * ca, out, face));
+  return face;
+}

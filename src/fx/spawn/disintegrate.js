@@ -1,8 +1,8 @@
 // The flickering outline, the white silhouette flash and the body's own pixels flying off as bits of light are
 // adapted from Sprite Fusion's open-source movement (https://www.spritefusion.com/pixel-art-vfx/movement),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, band, sparkle, clamp, smooth, ease, rand, noise, noise2, TAU, WHITE, mix, scale, READY } from "../../core/index.js";
-import { bodyOf, rimOf } from "./_lib.js";
+import { Particles, Lights, P, Rng, fit, band, sparkle, clamp, smooth, ease, rand, noise, noise2, space, TAU, WHITE, mix, scale, READY } from "../../core/index.js";
+import { bodyOf, rimOf, floorBand, sphere, toward } from "./_lib.js";
 
 export const meta = {
   name: "Disintegrate",
@@ -203,3 +203,178 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the body is the stock character, a flat sprite at depth 0, peeled away exactly as in 2D. What leaves it
+// has a place in space: every pixel is let go with a depth in the body's thickness, popped out round the axis and
+// carried off by a wind that blows toward +x with a swirl across z, so the stream reads from every side. The charge
+// is drawn in from a whole sphere, the peel front is a ring of light running down the body, the flash ring is a
+// true circle on the floor.
+export const three = {
+  meta: { size: [216, 124], origin: [108, 104], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), A = fit(o.accent, 3), R = new Rng(o.seed), W = o.wind, floor = () => 0;
+    const COOL = [[C[6], C[5], C[5], C[4]], [A[2], A[1], A[1], A[0]], [WHITE, C[6], C[5], C[5]]];
+    const body = bodyOf(o.actor, C), rim = rimOf(body), top = body.y, H = body.h;
+    const ps = new Particles({ rng: R, ground: floor, sparks: [C[7], C[6], C[5], C[3]] }), lights = new Lights();
+    for (const b of body.list) {
+      const u = (b.y - top) / H;
+      b.key = u + 0.14 * (rand(b.mx, b.my, 3) - 0.5) + 0.05 * noise(b.mx * 0.45, 7) - (b.edge ? 0.03 : 0);
+      b.gone = false;
+    }
+    const front = (t) => -0.06 + 1.14 * ease.inOutSine(clamp((t - P0) / PEEL));
+    const motes = [];
+    const gust = (t) => 0.7 + 0.5 * (noise(t * 1.6, 11) * 0.5 + 0.5);
+    let t = 0, flashed = false;
+
+    function letGo(b) {
+      b.gone = true;
+      const lo = b.y > -9 && R.chance(0.22), kind = lo ? 2 : R.chance(0.42) ? 1 : R.chance(0.07) ? 3 : 0;
+      // the body is a flat sprite; let each pixel go from somewhere in its thickness
+      const z0 = R.range(-1, 1) * 4 * Math.sqrt(Math.max(0, 1 - (b.x / 13) ** 2));
+      if (kind === 3) {
+        ps.spawn3(P.STAR, b.x, b.y, z0, R.range(-6, 14) * W, R.range(-26, -8), R.range(-12, 12), R.range(0.6, 1.1), R.chance(0.5) ? C[6] : WHITE, R.range(1, 2.2));
+        return;
+      }
+      const life = kind === 2 ? R.range(0.7, 1.2) : kind === 1 ? R.range(0.25, 0.5) : R.range(0.9, 1.7);
+      // a pop off the body, outward from its axis and up, before the wind takes it
+      const out = (b.x + 0.5) * R.range(2, 6), outZ = z0 * R.range(3, 7) + R.range(-8, 8), slow = kind === 2 ? 0.4 : 1;
+      motes.push({
+        x: b.x + 0.5, y: b.y + 0.5, z: z0, vx: (out + R.range(-6, 16)) * slow, vy: kind === 2 ? R.range(-30, -8) : R.range(-46, -8), vz: outZ * slow,
+        life, max: life, c: b.c, kind, lift: R.range(0.4, 1.4), cool: COOL[R.chance(0.3) ? 1 : R.chance(0.3) ? 2 : 0], own: R.chance(0.2), rest: false, seed: R.range(0, 100),
+      });
+    }
+
+    return {
+      update(dt) {
+        t += dt;
+        // the charge: light gathers into the body in streaks from all round
+        if (t < FLASH - 0.05 && R.chance(0.55)) {
+          const [dx, up, dz] = sphere(R.int(0, 64), 64, 1, R.range(0, 1)), D = R.range(22, 44), T = R.range(0.16, 0.26), v = (D * 3) / (Math.exp(3 * T) - 1);
+          const x = dx * D, y = Math.min(CORE_Y - up * D * 0.9, -3), z = dz * D, l = Math.hypot(x, y - CORE_Y, z) || 1;
+          ps.spawn3(P.STREAK, x, y, z, (-x / l) * v, ((CORE_Y - y) / l) * v, (-z / l) * v, T, R.chance(0.5) ? C[6] : C[5]);
+        }
+        if (!flashed && t >= FLASH) {
+          flashed = true;
+          lights.add(0, CORE_Y, 64, C[4], 0.85, 0.6, 0);
+          lights.add(0, CORE_Y, 30, WHITE, 0.8, 0.14, 0);
+          for (let i = 0; i < 14; i++) {
+            const [dx, up, dz] = sphere(i, 14, 1, R.range(0, 1)), sp = R.range(50, 150);
+            ps.spawn3(P.STAR, dx * 6, CORE_Y - up * 10, dz * 6, dx * sp, -up * sp * 0.7 - 25, dz * sp, R.range(0.35, 0.8), R.pick([WHITE, C[6], C[5]]), R.range(0.6, 1.8));
+          }
+        }
+        if (t >= P0) {
+          const f = front(t);
+          for (const b of body.list) if (!b.gone && b.key < f) letGo(b);
+        }
+        const g = gust(t) * (1 - 0.55 * smooth(P0 + PEEL, P0 + PEEL + 1.2, t));
+        for (let i = motes.length - 1; i >= 0; i--) {
+          const m = motes[i];
+          if ((m.life -= dt) <= 0) {
+            motes.splice(i, 1);
+            continue;
+          }
+          if (m.kind === 2) {
+            // heavier ash: drifts a little, falls, settles on the floor and glows out
+            if (m.rest) continue;
+            m.vx += (W * 30 * g - m.vx * 1.2) * dt;
+            m.vz -= m.vz * 1.2 * dt;
+            m.vy += 260 * dt - m.vy * 1.2 * dt;
+            m.x += m.vx * dt;
+            m.z += m.vz * dt;
+            const ny = m.y + m.vy * dt;
+            if (m.vy > 0 && ny >= -0.5) {
+              if (m.vy > 50) (m.vy *= -0.35), (m.vx *= 0.6), (m.vz *= 0.6), (m.y = -0.6);
+              else (m.rest = true), (m.y = -0.5);
+            } else m.y = ny;
+            continue;
+          }
+          const age = m.max - m.life, k = Math.min(1, age / 0.15);
+          const fx = W * (100 * g + 30 * noise2(m.x * 0.07, m.y * 0.07 - t * 0.8, 3)) * k;
+          const fy = (-30 * m.lift + 42 * noise2(m.x * 0.06 + 40, m.y * 0.06 - t * 1.1, 5)) * k;
+          const fz = W * 46 * noise2(m.z * 0.07 + 23, m.y * 0.07 - t * 0.9, 8) * k;
+          const drag = m.kind === 1 ? 3 : 1.5;
+          m.vx += (fx - m.vx * drag) * dt;
+          m.vy += (fy - m.vy * drag) * dt;
+          m.vz += (fz - m.vz * drag) * dt;
+          m.x += m.vx * dt;
+          m.y += m.vy * dt;
+          m.z += m.vz * dt;
+        }
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), f = front(t);
+        // charge: a crackling outline that thickens, the rim of the body catching light
+        if (t < FLASH) {
+          const k = t / FLASH, fr = Math.floor(t * 30);
+          for (const c of rim) {
+            const h = rand(c.mx * 61 + c.my, fr, 7);
+            if (h < 0.12 + 0.62 * k * k) p.px(c.x, c.y, k > 0.72 && rand(c.mx, c.my, fr) < 0.5 ? WHITE : h < 0.2 ? C[6] : C[5]);
+          }
+        }
+        // the body: drawn by us from the shudder on, flashing white, then charged, glowing hot at the front
+        if (t >= FLASH - 0.1) {
+          const shake = t < FLASH ? (Math.floor(t * 60) % 2 ? 1 : -1) * 0.6 : 0, white = t >= FLASH && t < P0;
+          for (const b of body.list) {
+            if (b.gone) continue;
+            let c;
+            if (white) c = b.edge ? C[6] : WHITE;
+            else if (t < FLASH) c = b.edge ? mix(b.c, C[6], 0.7) : mix(b.c, C[5], 0.25);
+            else {
+              const d = b.key - f, above = !body.on(b.mx, b.my - 1) || body.cell(b.mx, b.my - 1).gone;
+              c = above && d < 0.06 ? WHITE : d < 0.03 ? mix(b.c, C[6], 0.7) : d < 0.1 ? mix(b.c, C[5], 0.4) : b.edge ? mix(b.c, C[5], 0.5) : mix(b.c, C[4], 0.16);
+            }
+            p.px(b.x + shake, b.y, c);
+          }
+          if (white) q.at(...toward(q, 4), (pp) => sparkle(pp, 0, CORE_Y - 3, 9, C[6], C[4], 0.5));
+        }
+        // the flash ring on the floor, a true circle: the far half goes behind the body, the near half in front
+        const rk = (t - FLASH) / 0.5;
+        if (rk > 0 && rk < 1) floorBand(q, 6 + 30 * ease.outCubic(rk), Math.max(1, 3.5 * (1 - rk)), 1.15 - rk, C, rk < 0.12);
+        // the motes: flare white, cool down the ramp, leave a short tail, dither out
+        for (const m of motes) {
+          const age = m.max - m.life, k2 = m.life / m.max, a = k2 < 0.35 ? k2 / 0.35 : 1;
+          let c;
+          if (age < 0.034) c = mix(m.c, WHITE, 0.55);
+          else if (age < 0.06) c = WHITE;
+          else if (age < 0.15) c = m.cool[0];
+          else {
+            const u = (age - 0.15) / Math.max(0.05, m.max - 0.15), cc = m.cool[1 + Math.min(2, Math.floor(u * 3))];
+            c = m.own && u < 0.5 ? mix(m.c, cc, 0.55) : cc;
+            if (m.kind === 0 && Math.sin(t * 21 + m.seed) > 0.8) c = m.cool[0];
+          }
+          if (m.kind === 2) {
+            q.dot(m.x, m.y, m.z, c, a);
+            q.glow(m.x, m.y, m.z, 3, C[5], 0.3 * k2);
+            continue;
+          }
+          const sp = Math.hypot(m.vx, m.vy, m.vz) || 1, ux = m.vx / sp, uy = m.vy / sp, uz = m.vz / sp;
+          if (sp > 30 && m.kind === 0) q.dot(m.x - ux * 1.2, m.y - uy * 1.2, m.z - uz * 1.2, scale(c, 0.6), a * 0.85);
+          if (sp > 85 && m.kind === 0) q.dot(m.x - ux * 2.4, m.y - uy * 2.4, m.z - uz * 2.4, scale(c, 0.4), a * 0.6);
+          q.dot(m.x, m.y, m.z, c, a);
+          if (k2 > 0.15) q.glow(m.x, m.y, m.z, 2.5, c, (m.kind === 1 ? 0.16 : 0.11) * k2);
+        }
+        ps.draw(q);
+        // light: round the core while it charges, a cold pool on the floor, and a ring of light riding the peel down the body
+        if (t < FLASH) {
+          const k = t / FLASH;
+          q.glow(0, CORE_Y, 0, 26, C[4], 0.42 * k);
+          q.glow(0, CORE_Y, 0, 12, C[6], 0.25 * k * k);
+        }
+        if (t >= FLASH - 0.1 && t >= FLASH && t < P0) {
+          q.glow(0, CORE_Y, 0, 34, C[5], 0.7);
+        }
+        const pool = smooth(0.1, FLASH, t) * (1 - smooth(P0 + PEEL * 0.8, P0 + PEEL + 0.6, t));
+        if (pool > 0) q.glow(0, -1, 0, 30, C[4], 0.22 * pool);
+        if (t >= P0 && f < 1.05) {
+          const fy = top + clamp(f) * H, k = 1 - smooth(0.85, 1.05, f);
+          q.ring(0, fy, 0, 12, 1.5, (v) => (v > 0.6 ? C[6] : C[5]), 0.7 * k);
+          q.glow(0, fy, 0, 9, C[5], 0.32 * k);
+          q.glow(0, fy, 0, 22, C[4], 0.2 * k);
+        }
+        lights.draw(q);
+      },
+    };
+  },
+};

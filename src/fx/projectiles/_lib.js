@@ -4,7 +4,7 @@
 // muzzle-flash and explosion (https://www.spritefusion.com/pixel-art-vfx/muzzle-flash),
 // MIT License, Copyright (c) 2026 Hugo Duprez. Files starting with _ are helpers, not effects.
 
-import { clamp, mix, rand, rng, wrap, WHITE } from "../../core/index.js";
+import { clamp, hex, mix, rand, rng, wrap, WHITE } from "../../core/index.js";
 
 /**
  * Like cycle(), but particle i is born exactly at i * period / n: an emitter with a steady beat, so a trail
@@ -48,12 +48,14 @@ export function puff(p, x, y, r, a, c, cap = 1, warm = 0, wc = 0, wa = 0) {
  */
 export function cloud(p, list, R, WR, { dens = 1.5, max = 0.86, clip, lit = 1 } = {}) {
   if (!list.length) return;
+  // puffs that carry a depth d (cloud3) make the merged volume sit at its density-weighted depth
+  const deep = list[0].d !== undefined, z0 = p.z;
   let X0 = Infinity, Y0 = Infinity, X1 = -Infinity, Y1 = -Infinity;
   for (const q of list) {
     X0 = Math.min(X0, Math.floor(q.x - q.r)); X1 = Math.max(X1, Math.ceil(q.x + q.r));
     Y0 = Math.min(Y0, Math.floor(q.y - q.r)); Y1 = Math.max(Y1, Math.ceil(q.y + q.r));
   }
-  const W = X1 - X0 + 3, H = Y1 - Y0 + 3, D = new Float32Array(W * H), L = new Float32Array(W * H), F = new Float32Array(W * H);
+  const W = X1 - X0 + 3, H = Y1 - Y0 + 3, D = new Float32Array(W * H), L = new Float32Array(W * H), F = new Float32Array(W * H), Z = deep ? new Float32Array(W * H) : null;
   X0--, Y0--;
   for (const q of list) {
     const r = q.r, r2 = r * r;
@@ -67,6 +69,7 @@ export function cloud(p, list, R, WR, { dens = 1.5, max = 0.86, clip, lit = 1 } 
         D[i] += k;
         L[i] += k * q.b;
         F[i] += k * q.w * (0.5 + 0.5 * clamp(0.5 + dx / r));
+        if (deep) Z[i] += k * q.d;
       }
     }
   }
@@ -82,8 +85,10 @@ export function cloud(p, list, R, WR, { dens = 1.5, max = 0.86, clip, lit = 1 } 
     if (a < 0.15) return;
     const gy = B[i + W] - B[i - W], gx = B[i + 1] - B[i - 1], up = clamp(0.5 + Math.atan((gy * 0.9 + gx * 0.35) / (B[i] * 0.16 + 0.03)) * 0.42 * lit);
     const w = F[i] / d, j = clamp(Math.round((L[i] / d) * (0.3 + 0.7 * up) * (n - 1) + 0.25 + w * 1.5), 0, n - 1);
+    if (deep) p.z = Z[i] / d;
     p.blendPx(sx, sy, w > 0.03 ? mix(R[j], WR[j], Math.min(0.9, Math.ceil(w * 10) / 10)) : R[j], a);
   });
+  if (deep) p.z = z0;
 }
 
 /**
@@ -302,3 +307,190 @@ export function pixelShape(x0, y0, w, h, build) {
   return { rows: g.map((r) => r.join("")), x0, y0 };
 }
 
+
+// ---------------------------------------------------------------------------------------------------------------
+// 3D: the same recipes with a z. Everything below draws through a Space (src/core/space.js); the 2D helpers above are
+// untouched.
+
+/** A velocity of speed sp in a cone about +x (tilted up by `tilt` about z): th off the axis, round it by the azimuth ph. */
+export function cone3(th, ph, sp, tilt = 0) {
+  const s = Math.sin(th), c = Math.cos(th), ca = Math.cos(tilt), sa = Math.sin(tilt);
+  return [(ca * c - sa * s * Math.cos(ph)) * sp, (sa * c + ca * s * Math.cos(ph)) * sp, Math.sin(ph) * s * sp];
+}
+
+/** Two unit vectors perpendicular to the unit direction (dx, dy, dz) and to each other. */
+export function frame3(dx, dy, dz) {
+  const a = Math.abs(dx) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+  let ux = dy * a[2] - dz * a[1], uy = dz * a[0] - dx * a[2], uz = dx * a[1] - dy * a[0];
+  const l = Math.hypot(ux, uy, uz) || 1;
+  ux /= l; uy /= l; uz /= l;
+  return [[ux, uy, uz], [dy * uz - dz * uy, dz * ux - dx * uz, dx * uy - dy * ux]];
+}
+
+/** wake() with a z: returns [x, y, z, vx, vy, vz]. */
+export function wake3(x, y, z, vx, vy, vz, age, V, k, g = 0) {
+  const e = Math.exp(-k * age), f = (1 - e) / k, vt = g / k;
+  return [x + vx * f - V * age, y + vt * age + (vy - vt) * f, z + vz * f, vx * e - V, vt + (vy - vt) * e, vz * e];
+}
+
+/** spark() in space: a two-tone streak stretched along its velocity (world units), cooling with k, a point of light. */
+export function spark3(q, x, y, z, vx, vy, vz, k, S, glow = 0.45, stretch = 0.022, max = 9) {
+  const sp = Math.hypot(vx, vy, vz) || 1, ux = vx / sp, uy = vy / sp, uz = vz / sp, len = Math.min(max, 1 + sp * stretch);
+  const head = k > 0.6 ? S[0] : k > 0.3 ? S[1] : S[2];
+  q.line(x - ux * len, y - uy * len, z - uz * len, x - ux * len * 0.4, y - uy * len * 0.4, z - uz * len * 0.4, k > 0.5 ? head : S[3]);
+  q.line(x - ux * len * 0.45, y - uy * len * 0.45, z - uz * len * 0.45, x, y, z, head);
+  q.glow(x, y, z, 3, head, glow * k);
+}
+
+/** Smoke with a z: add({ ..., z, vz }) as Smoke does; puffs() carries z for cloud3(). */
+export class Smoke3 extends Smoke {
+  add(q) {
+    super.add({ z: 0, vz: 0, ...q });
+  }
+  update(dt) {
+    this.t += dt;
+    for (let i = this.list.length - 1; i >= 0; i--) {
+      const q = this.list[i];
+      if (q.delay > 0) {
+        q.delay -= dt;
+        continue;
+      }
+      if ((q.age += dt) >= q.life) {
+        this.list.splice(i, 1);
+        continue;
+      }
+      if (q.curl) {
+        const c = Math.cos(q.curl * dt), s = Math.sin(q.curl * dt), vx = q.vx;
+        q.vx = vx * c - q.vy * s;
+        q.vy = vx * s + q.vy * c;
+      }
+      q.vy -= q.rise * dt;
+      q.vx += Math.sin(this.t * 1.3 + q.seed) * 8 * dt;
+      q.vz += Math.cos(this.t * 1.1 + q.seed) * 8 * dt;
+      q.vx -= q.vx * q.drag * dt;
+      q.vy -= q.vy * q.drag * dt;
+      q.vz -= q.vz * q.drag * dt;
+      q.x += q.vx * dt;
+      q.y += q.vy * dt;
+      q.z += q.vz * dt;
+    }
+  }
+  puffs() {
+    const out = super.puffs(), live = this.list.filter((q) => q.delay <= 0);
+    out.forEach((o, i) => (o.z = live[i].z));
+    return out;
+  }
+}
+
+/** cloud() in space: puffs { x, y, z, r, a, b, w } are projected and merged into one translucent volume. */
+export function cloud3(q, list, R, WR, opts) {
+  const flat = [];
+  for (const s of list) if (q.project(s.x, s.y, s.z)) flat.push({ x: q.x, y: q.y, r: s.r * q.k, a: s.a, b: s.b, w: s.w, d: q.d });
+  cloud(q.p, flat, R, WR, opts);
+}
+
+/** A filled triangle in space with a depth per pixel. fn(wa, wb, wc) (barycentric weights) returns a color, or 0 to skip. */
+export function tri3(q, A, B, C, fn, a = 1) {
+  const P = [A, B, C], S = [];
+  for (const v of P) {
+    if (!q.project(v[0], v[1], v[2])) return;
+    S.push([q.x, q.y, q.d]);
+  }
+  const [[ax, ay, ad], [bx, by, bd], [cx, cy, cd]] = S, area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+  if (Math.abs(area) < 1e-4) return;
+  const p = q.p, z0 = p.z, e = -0.02;
+  p.each(Math.min(ax, bx, cx) - 1, Math.min(ay, by, cy) - 1, Math.max(ax, bx, cx) + 1, Math.max(ay, by, cy) + 1, (lx, ly, sx, sy) => {
+    const wa = ((bx - lx) * (cy - ly) - (by - ly) * (cx - lx)) / area, wb = ((cx - lx) * (ay - ly) - (cy - ly) * (ax - lx)) / area, wc = 1 - wa - wb;
+    if (wa < e || wb < e || wc < e) return;
+    const c = fn(wa, wb, wc);
+    if (!c) return;
+    p.z = wa * ad + wb * bd + wc * cd;
+    p.put(sx, sy, c, a);
+  });
+  p.z = z0;
+}
+
+/** A quad (a, b, c, d in order round it) as two triangles. fn(u, v): u from edge ab to dc... u along a to b, v along a to d. */
+export function quad3(q, A, B, C, D, fn, a = 1) {
+  tri3(q, A, B, C, (wa, wb, wc) => fn(wb + wc, wc), a);
+  tri3(q, A, C, D, (wa, wb, wc) => fn(wb, wb + wc), a);
+}
+
+/**
+ * A rounded tube or cone from (x0, y0, z0) to (x1, y1, z1), radius r0 to r1, shaded as a solid: c(nx, ny, nz, u) takes
+ * the surface normal as the screen sees it (lit(ramp) works) and u (0..1 along it), a depth per pixel.
+ */
+export function tube(q, x0, y0, z0, x1, y1, z1, r0, r1, c, a = 1) {
+  if (!q.project(x0, y0, z0)) return;
+  const ax = q.x, ay = q.y, ad = q.d, ka = q.k;
+  if (!q.project(x1, y1, z1)) return;
+  const bx = q.x, by = q.y, bd = q.d, kb = q.k, ra = r0 * ka, rb = r1 * kb, R = Math.max(ra, rb), p = q.p, zp = p.z;
+  const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy, flat = L2 < 1e-6;
+  p.each(Math.min(ax, bx) - R, Math.min(ay, by) - R, Math.max(ax, bx) + R, Math.max(ay, by) + R, (lx, ly, sx, sy) => {
+    const f = flat ? 0.5 : clamp(((lx - ax) * dx + (ly - ay) * dy) / L2), ex = lx - (ax + dx * f), ey = ly - (ay + dy * f);
+    const rr = ra + (rb - ra) * f, e2 = ex * ex + ey * ey;
+    if (rr <= 0 || e2 > rr * rr) return;
+    const nx = ex / rr, ny = ey / rr, nz = Math.sqrt(1 - e2 / (rr * rr)), col = c(nx, ny, nz, f);
+    if (!col) return;
+    p.z = ad + (bd - ad) * f - nz * (r0 + (r1 - r0) * f);
+    p.put(sx, sy, col, a);
+  });
+  p.z = zp;
+}
+
+/** A soft blob shadow on the floor (y = 0) centered on (cx, cz), hx wide along x and hz along z. */
+export function shadow3(q, cx, cz, hx, hz, a = 0.3) {
+  const R = Math.max(hx, hz), K = hex("#0a0812");
+  q.plane(cx, 0, cz, null, R, (u, v, out) => {
+    const e = Math.hypot(u / hx, v / hz);
+    if (e >= 1) return;
+    out.c = K;
+    out.a = a * (1 - e * e);
+    out.blend = true;
+  });
+}
+
+/**
+ * One lobe of a muzzle flash in space: a spike from (x, y, z) along the unit direction d, wid the half width at its
+ * root, tapering to a point. cf(u, v) colors it (u along it, v 0 on the axis to 1 at the rim).
+ */
+export function spike3(q, x, y, z, dx, dy, dz, len, wid, cf) {
+  const n = Math.max(3, Math.ceil(len / 2.5));
+  for (let i = 0; i < n; i++) {
+    const u0 = i / n, u1 = (i + 1) / n, um = (u0 + u1) / 2, w = 2 * profile({ len: 1, wid }, um);
+    q.beam(x + dx * len * u0, y + dy * len * u0, z + dz * len * u0, x + dx * len * u1, y + dy * len * u1, z + dz * len * u1, Math.max(0.9, w), (u, v) => cf(u0 + (u1 - u0) * u, v));
+  }
+}
+
+/**
+ * flash() in space: the lobes L of flashShape(), each turned about the muzzle's axis to its own azimuth (golden
+ * angle), so the star bursts out in every direction. The muzzle points along +x, tilted by a about z. C: [core, inner,
+ * body, rim]. ball is the radius of the fireball at its heart (0 for none).
+ */
+export function flash3(q, x, y, z, a, L, C, seed = 0, ball = 3.4) {
+  const ca = Math.cos(a), sa = Math.sin(a);
+  L.forEach((l, i) => {
+    const th = Math.abs(l.a), ph = i * 2.39996 + seed * 0.9, rx = Math.cos(th), ry = Math.sin(th) * Math.cos(ph), rz = Math.sin(th) * Math.sin(ph);
+    const dx = rx * ca - ry * sa, dy = rx * sa + ry * ca, dz = rz;
+    spike3(q, x + dx * l.off, y + dy * l.off, z + dz * l.off, dx, dy, dz, l.len, l.wid * 1.3, (u, v) => (v > 0.82 ? C[3] : v < 0.5 && u < l.core ? C[0] : v < 0.7 ? C[1] : C[2]));
+  });
+  if (ball > 0) q.ball(x + 0.8 * ca, y + 0.8 * sa, z, ball, (nx, ny, nz) => (nz > 0.6 ? C[0] : nz > 0.32 ? C[1] : nz > 0.12 ? C[2] : C[3]));
+}
+
+/** casing() in space: it leaves (x, y, z) at (vx, vy, vz); returns { x, y, z, a, ux, uz, rest, hit }. */
+export function casing3(x, y, z, vx, vy, vz, va, age, g, floor, bounce = 0.42, a0 = 0) {
+  const vh = Math.hypot(vx, vz) || 1e-6, ux = vx / vh, uz = vz / vh, k = casing(0, y, vh, vy, va, age, g, floor, bounce, a0);
+  return { x: x + ux * k.x, y: k.y, z: z + uz * k.x, a: k.a, ux, uz, rest: k.rest, hit: k.hit };
+}
+
+/** A casing from casing3(): a 3 px brass slug tumbling in the vertical plane of its flight, lit on one end. */
+export function drawCasing3(q, k, B, fade = 1) {
+  const ca = Math.cos(k.a), sa = Math.sin(k.a), dx = k.ux * ca, dy = sa, dz = k.uz * ca, y = k.y - 0.5;
+  q.dot(k.x - dx, y - dy, k.z - dz, B[1], fade);
+  q.dot(k.x, y, k.z, B[2], fade);
+  q.dot(k.x + dx, y + dy, k.z + dz, B[3], fade);
+  if (k.hit >= 0 && k.hit < 0.07) {
+    q.px(k.x + dx * 0.5, y - 1, k.z + dz * 0.5, WHITE);
+    q.glow(k.x, y, k.z, 5, B[3], 0.55 * (1 - k.hit / 0.07));
+  }
+}

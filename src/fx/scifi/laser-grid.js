@@ -1,7 +1,7 @@
 // The beam's build (the ramp across it, a hot core, light along it) is adapted from Sprite Fusion's open-source
 // energy beam (https://www.spritefusion.com/pixel-art-vfx/energy), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { P, Rng, fit, sparkle, tileFbm, clamp, lerp, rand, hex, mix, TAU, WHITE } from "../../core/index.js";
-import { Ghosts } from "./_lib.js";
+import { P, Rng, fit, sparkle, tileFbm, space, clamp, lerp, rand, hex, mix, TAU, WHITE } from "../../core/index.js";
+import { Ghosts, cone } from "./_lib.js";
 
 export const meta = {
   name: "Laser grid",
@@ -158,3 +158,145 @@ export function draw(p, t, o) {
   }
   ghosts(o, C).at(t).draw(p);
 }
+
+// 3D: four steel posts round a square of floor. Beams slide across between the posts on the front and the back, the four
+// floor sweepers run from their post heads to spots that wander over the floor, haze and dust light up only where a
+// beam cuts them, beams meet where they pass close.
+const PZ = 24;
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]], dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+// distance from a point to a segment
+function segPt(p, a, b) {
+  const d = sub(b, a), u = clamp(dot(sub(p, a), d) / (dot(d, d) || 1)), e = [a[0] + d[0] * u - p[0], a[1] + d[1] * u - p[1], a[2] + d[2] * u - p[2]];
+  return Math.hypot(...e);
+}
+// the closest approach of two segments: [distance, midpoint]
+function segSeg(a, b, c, d) {
+  const u = sub(b, a), v = sub(d, c), w = sub(a, c), A = dot(u, u), B = dot(u, v), Cc = dot(v, v), Dd = dot(u, w), E = dot(v, w), den = A * Cc - B * B;
+  let s = den > 1e-9 ? clamp((B * E - Cc * Dd) / den) : 0, t = clamp((A * E - B * Dd) / (den > 1e-9 ? den : 1e9) + 0);
+  t = Cc > 1e-9 ? clamp((B * s + E) / Cc) : 0;
+  s = A > 1e-9 ? clamp((B * t - Dd) / A) : 0;
+  const p = [a[0] + u[0] * s, a[1] + u[1] * s, a[2] + u[2] * s], r = [c[0] + v[0] * t, c[1] + v[1] * t, c[2] + v[2] * t];
+  return [Math.hypot(...sub(p, r)), [(p[0] + r[0]) / 2, (p[1] + r[1]) / 2, (p[2] + r[2]) / 2]];
+}
+const POSTS = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
+// a sweeper's spot on the floor
+const spot = (t, i) => {
+  const [sx, sz] = POSTS[i], ph = t / D;
+  return [sweepX(t, sx) * 0.95 + (i > 1 ? 0 : 0), 0, sz * PZ * 0.85 * Math.sin(TAU * ph + i * 1.1) * 0.9 + sz * 2];
+};
+function beams3(t) {
+  const out = [];
+  for (const zs of [-1, 1])
+    SLIDE.forEach((b, i) => {
+      const y = slideY(t, [b[0], b[1], b[2], b[3] + (zs > 0 ? 1.7 + i : 0)]);
+      out.push({ a: [-IN, y, zs * PZ], b: [IN, y, zs * PZ], slide: true });
+    });
+  POSTS.forEach(([sx, sz], i) => out.push({ a: [sx * IN, TOP + 6, sz * PZ], b: spot(t, i), sweep: true }));
+  return out;
+}
+
+const ghost3 = new Map();
+function ghosts3(o, C) {
+  const key = `${o.seed}:${o.palette.join()}`;
+  if (ghost3.has(key)) return ghost3.get(key);
+  const rn = new Rng(o.seed + 3), g = new Ghosts(D, { ground: () => 0, sparks: [WHITE, C[6], C[4], C[3]], box: [-90, -80, 90, 7] });
+  for (let i = 0; i < 64; i++) {
+    const tb = (i / 64) * D + rn.range(0, 0.04), k = i % 4, [x, , z] = spot(tb, k), [x2, , z2] = spot(tb + 0.02, k);
+    const phi = Math.atan2(z2 - z, x2 - x) + Math.PI + rn.range(-1.2, 1.2), a = -Math.PI / 2 + rn.range(-1.1, 1.1);
+    g.add(tb, P.SPARK, 0, -1, Math.abs(Math.sin(a)) * rn.range(50, 140), -Math.abs(Math.cos(a)) * rn.range(50, 140), rn.range(0.2, 0.45), WHITE, 1, 0, phi, x, z);
+    if (i % 4 === 0) g.add(tb, P.SMOKE, 0, -2, rn.range(0, 4), -rn.range(6, 14), rn.range(0.8, 1.2), hex("#3a2a30"), rn.range(1.6, 2.4), 0, rn.range(0, TAU), x, z);
+  }
+  ghost3.set(key, g);
+  return g;
+}
+
+export const three = {
+  meta: { size: [148, 112], origin: [74, 92], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const C = fit(o.palette, 8), H = fit(o.metal, 6), B = beams3(t), S = o.seed, ph = t / D, q = space(p, o);
+    const metal = (h, out, band) => {
+      const l = -h.vx * 0.7 - h.vy * 0.5, e = 1 - h.vz * h.vz;
+      out.c = e > 0.8 ? H[0] : l > 0.5 ? H[5] : l > 0.15 ? H[4] : l > -0.25 ? H[3] : l > -0.6 ? H[2] : H[1];
+    };
+    // the posts: a steel column with a head and a foot plate, a groove the carriages ride in, the lens at the head
+    const slides = SLIDE.map((b) => b[0]);
+    for (const [sx, sz] of POSTS) {
+      const x = sx * PX, z = sz * PZ;
+      cone(q, x, z, TOP + 10, -2, 3.6, 3.6, (h, out) => h.front && metal(h, out));
+      cone(q, x, z, TOP, TOP + 10, 5.5, 5.5, (h, out) => {
+        if (!h.front) return;
+        metal(h, out);
+        if (h.y < TOP + 1.2) out.c = H[5];
+      });
+      q.plane(x, TOP, z, null, 5.5, (u, v, out) => (out.c = Math.hypot(u, v) > 4.6 ? H[0] : (-u * 0.4 - v * 0.5) > 0.5 ? H[5] : H[4]));
+      cone(q, x, z, -3, 0, 8, 8, (h, out) => h.front && metal(h, out));
+      q.plane(x, -3, z, null, 8, (u, v, out) => (out.c = Math.hypot(u, v) > 7 ? H[0] : (-u * 0.4 - v * 0.5) > 0.9 ? H[5] : H[3]));
+      for (let y = TOP + 14; y < -6; y += 9) q.ball(x - sx * 0, y, z + sz * 3.3, 0.7, H[5]);
+      // the lens, facing the middle
+      q.ball(x - sx * 4, TOP + 6, z - sz * 3, 1.5, (nx, ny, nz) => (nz > 0.7 ? WHITE : nz > 0.4 ? C[5] : C[4]));
+      q.glow(x - sx * 4, TOP + 6, z - sz * 3, 8, C[4], 0.55);
+    }
+    // a carriage for each sliding beam, riding the groove
+    for (const b of B)
+      if (b.slide)
+        for (const e of [b.a, b.b]) {
+          q.ball(e[0], e[1], e[2], 2.1, (nx, ny, nz) => (ny < -0.4 ? H[5] : nz > 0.5 ? H[3] : H[2]));
+          q.glow(e[0], e[1], e[2], 7, C[4], 0.55);
+        }
+    // the lasers: a white-hot core in a red body, a pulse running along, haze scattering their light
+    for (const b of B) {
+      const L = Math.hypot(...sub(b.b, b.a));
+      q.beam(...b.a, ...b.b, 3, (u, v) => (v < 0.35 ? (((u * 5 - t * 3) % 1 + 1) % 1 < 0.12 ? C[6] : WHITE) : v < 0.7 ? C[4] : C[3]));
+      for (let d = 0; d <= L; d += 5) {
+        const f = d / L, x = lerp(b.a[0], b.b[0], f), y = lerp(b.a[1], b.b[1], f), z = lerp(b.a[2], b.b[2], f), h = 0.5 + 0.5 * tileFbm(x / 14 + ph * 4, y / 10 + z / 14, 4, 0, S, 2);
+        q.glow(x, y, z, 6 + 4 * h, C[3], 0.14 + 0.3 * h * h);
+      }
+    }
+    // the floor where the sweepers have just been: a scorch that cools from white to deep red
+    for (let i = 0; i < 4; i++)
+      for (let k = 0; k < 14; k++) {
+        const [x, , z] = spot(t - k * 0.025, i), c = k < 2 ? WHITE : k < 5 ? C[6] : k < 9 ? C[4] : C[3];
+        q.dot(x, 0, z, c, 1 - k / 14);
+        q.dot(x, 0.6, z + 0.6, C[3], 0.6 - k / 24);
+      }
+    // haze hanging in the air, thickest low down, seen only where a beam passes through it and lights it red
+    const puffs = [];
+    B.forEach((b, i) => {
+      const L = Math.hypot(...sub(b.b, b.a));
+      for (let d = 0; d < L; d += 7) {
+        const f = (d + 3 * rand(S, i, d)) / L, x = lerp(b.a[0], b.b[0], f) + (rand(S, i, d, 1) - 0.5) * 9, y = lerp(b.a[1], b.b[1], f) + (rand(S, i, d, 2) - 0.5) * 9, z = lerp(b.a[2], b.b[2], f) + (rand(S, i, d, 3) - 0.5) * 9;
+        const low = 0.35 + 0.65 * clamp((y + 60) / 50), n = 0.5 + 0.5 * tileFbm(x / 18 + ph * 3, y / 7 + z / 12 + 0.4 * Math.sin(TAU * ph), 3, 0, S + 7, 2), dens = clamp((n - 0.42) * 2.2) * low;
+        if (dens > 0.05 && y < -1) puffs.push([x, y, z, dens]);
+      }
+    });
+    for (const [x, y, z, dens] of q.sort(puffs, (e) => e)) q.disc(x, y, z, 5, C[3], dens * 0.22);
+    // dust and haze motes, invisible until a beam catches them
+    for (let i = 0; i < 120; i++) {
+      const x = (rand(S, i) * 2 - 1) * (IN - 3) + 4 * Math.sin(TAU * ph + i), z = (rand(S, i, 2) * 2 - 1) * (PZ - 2) + 3 * Math.cos(TAU * ph + i * 1.3), y = -2 - rand(S, i, 1) * 62 + 3 * Math.sin(TAU * 2 * ph + i * 1.7), pt = [x, y, z];
+      let d = 9;
+      for (const b of B) d = Math.min(d, segPt(pt, b.a, b.b));
+      if (d < 1.6) {
+        q.px(x, y, z, d < 0.9 ? WHITE : C[6]);
+        q.glow(x, y, z, 3, C[5], 0.45);
+      }
+    }
+    // where beams pass close, the haze between them flares
+    for (let i = 0; i < B.length; i++)
+      for (let j = i + 1; j < B.length; j++) {
+        if (B[i].sweep && B[j].sweep && 0) continue;
+        const [d, m] = segSeg(B[i].a, B[i].b, B[j].a, B[j].b);
+        if (d > 3.5 || m[1] > -0.5) continue;
+        q.glow(...m, 9, C[5], 0.4 * (1 - d / 3.5));
+        q.at(...m, (pp) => sparkle(pp, 0, 0, 2, C[6], C[5], 0.3));
+      }
+    // the sweepers' hot spots on the floor
+    for (let i = 0; i < 4; i++) {
+      const [x, , z] = spot(t, i);
+      q.ball(x, -1.2, z, 1.3, WHITE);
+      q.glow(x, -1, z, 10, C[4], 0.55);
+      q.glow(x, -1, z, 4, WHITE, 0.35);
+    }
+    for (const [x, z] of [[-30, 0], [0, 0], [30, 0], [0, -PZ], [0, PZ]]) q.glow(x, -2, z, 20, C[3], 0.12);
+    ghosts3(o, C).at3(t).draw(q);
+  },
+};

@@ -1,7 +1,7 @@
 // Tongues built from nested layers, each narrower and shorter than the last, are adapted from Sprite Fusion's
 // open-source fire (https://www.spritefusion.com/pixel-art-vfx/fire), MIT License, Copyright (c) 2026 Hugo Duprez.
 // Here the layers run the other way: a pale skin outside, violet within, a black heart at the core.
-import { cycle, fit, noise2, TAU, WHITE, mix } from "../../core/index.js";
+import { cycle, fit, noise2, space, TAU, WHITE, mix } from "../../core/index.js";
 import { VOID } from "./_lib.js";
 
 export const meta = {
@@ -100,3 +100,114 @@ export function draw(p, t, o) {
       if (sx >= 0 && sy >= 0 && sx < p.w && sy < p.h) p.L[sy * p.w + sx] = 0;
     }
 }
+
+// ---- 3D: seven tongues stand on the floor, the tallest in the middle and six round it in a circle. Each is the same
+// layered raster as the 2D flame (pale skin, violet, a black heart) laid on two or three crossed upright planes, so
+// the volume reads from every side; its sway is one vector in the floor, seen along each plane. The scorch is a true
+// circle on the floor; smoke, licks and embers drift off in every direction.
+const GXL = 16, GYL = 48, GW = GXL * 2;
+// tongues: x, z, base height, width, noise seed, planes (the first turned phi from facing the viewer)
+const TONGUES3 = [[0, 0, 44, 6.6, 5, 3, 0.3]];
+for (let i = 0; i < 6; i++) {
+  const a = (i / 6) * TAU + 0.4, [H, w, n] = [[31, 5.4, 3], [29, 5.2, 4], [22, 4.4, 1], [20, 4.2, 2], [26, 4.8, 6], [24, 4.6, 7]][i];
+  TONGUES3.push([Math.cos(a) * 13, Math.sin(a) * 13, H, w, n, 2, a + 1.1]);
+}
+
+// the 2D rasterization of one tongue into its own grid (cells of tone 0 skin, 1 violet, 2 deep, 3 the heart): the
+// height is shared by all of a tongue's planes, the sway is what this plane sees of it, off decouples the jag
+function raster3(t, T, h, sway, off, ln) {
+  const grid = new Int8Array(GW * GYL).fill(-1), [, , , w, n] = T;
+  for (const [lw, lh, tone] of LAYERS) {
+    const Hl = h * lh;
+    for (let r = 0; r <= Hl; r++) {
+      const u = r / Math.max(1, Hl);
+      const half = w * lw * Math.pow(1 - u, 0.85) * Math.min(1, (r + 1.5) / 3.5) + ln(r * 0.45 + n, n + 20 + off, 6) * 1.1 + ln(r * 1.3 + n * 5, n + 50 + off, 9) * 0.6;
+      const cx = sway * u * u * lh + ln(r * 0.2 + n * 2, n + 30 + off, 5) * u * 1.4;
+      if (half < 0.3) continue;
+      const j = GYL - r;
+      if (j < 0 || j >= GYL) continue;
+      for (let x = Math.round(cx - half); x <= Math.round(cx + half); x++) {
+        if (tone === 0 && u > 0.45 && ln(x * 0.9 + r * 0.7 + n, n + 60 + off, 8) > 0.35) continue;
+        const i = x + GXL;
+        if (i >= 0 && i < GW) grid[j * GW + i] = tone;
+      }
+    }
+  }
+  return grid;
+}
+
+export const three = {
+  meta: { size: [100, 124], origin: [50, 108], camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const C = fit(o.palette, 8), S = o.seed, HEART = (C[0] ^ 1) >>> 0, TONE = [C[6], C[4], C[2], HEART], q = space(p, o);
+    const ct = Math.cos((TAU * t) / D), st = Math.sin((TAU * t) / D), ln = (v, seed, speed) => noise2(ct * speed + v, st * speed, seed);
+    // the scorched floor: a dark burn, a true circle, violet light pooled on it
+    const fl = 0.85 + 0.15 * lnoise(t, 0, 77, 6);
+    q.decal(0, 0, 0, null, 26, (pp) =>
+      pp.shade(-26, -26, 26, 26, (x, y, out) => {
+        const d = Math.hypot(x, y) / 24;
+        if (d > 1) return;
+        out.a = d < 0.85 ? 1 : (1 - d) * 6;
+        if (d > 0.5 && noise2(x * 0.9, y * 0.9, 11) > 0.62) return C[3];
+        return d < 0.5 || noise2(x * 0.35, y * 0.35, 5) < -0.2 ? C[0] : C[1];
+      }),
+    );
+    q.plane(0, 0, 0, null, 48, (u, v, out) => {
+      const f = 1 - Math.hypot(u, v) / 48;
+      if (f <= 0) return;
+      out.l = C[4];
+      out.k = f * f * 0.22 * fl;
+    });
+    // the tongues, each on its crossed planes
+    for (const T of TONGUES3) {
+      const [tx, tz, H0, , n, np, phi0] = T, h = H0 * (0.78 + 0.22 * ln(n * 3, n, 4)), swayX = ln(n * 7, n + 9, 3) * 3, swayZ = ln(n * 7 + 31, n + 19, 3) * 3;
+      const cyMid = -(h * 0.5 + 1), R = Math.hypot(h * 0.5 + 2, 13);
+      for (let k = 0; k < np; k++) {
+        const phi = phi0 + (k * Math.PI) / np, grid = raster3(t, T, h, swayX * Math.cos(phi) + swayZ * Math.sin(phi), k * 131, ln);
+        q.plane(tx, cyMid, tz, [-Math.sin(phi), 0, Math.cos(phi)], R, (u, v) => {
+          const i = Math.floor(u) + GXL, y = Math.floor(v + cyMid), j = y + GYL;
+          if (i < 0 || i >= GW || j < 0 || j >= GYL) return;
+          const c = grid[j * GW + i];
+          if (c < 0) return;
+          // the pale skin whitens to its tips
+          if (c === 0 && y < -24 && (j === 0 || grid[(j - 1) * GW + i] < 0)) return y < -32 ? WHITE : C[7];
+          return TONE[c];
+        });
+      }
+    }
+    // licks of pale flame breaking off the tips: balls with a lit heart
+    cycle(t, D, 34, S, (r) => r.range(0.25, 0.5), (age, L, r) => {
+      const u = age / L, [tx, tz, H0] = TONGUES3[r.int(0, TONGUES3.length - 1)], x = tx + r.range(-4, 4) + u * r.range(-5, 5), z = tz + r.range(-4, 4) + u * r.range(-5, 5);
+      const y = -H0 * r.range(0.45, 0.85) - u * r.range(10, 20), rad = r.range(1, 2.2) * (1 - u) + 0.3, outer = u < 0.5 ? C[6] : C[4], inner = u < 0.5 ? C[7] : C[5];
+      q.ball(x, y, z, rad + 0.6, (nx, ny, nz) => (rad > 1 && nz > 0.85 ? inner : outer));
+    });
+    // embers drifting up, flickering, cooling to violet
+    const glints = [];
+    cycle(t, D, 30, S + 2, (r) => r.range(1, 1.8), (age, L, r) => {
+      const u = age / L, a = r.range(0, TAU), d = r.range(0, 12), ph = r.range(0, 6), wob = Math.sin(u * 6 + ph) * 5 * u, y = -10 - u * r.range(40, 70);
+      const x = Math.cos(a) * d + wob, z = Math.sin(a) * d + Math.sin(u * 6 + ph + 1.6) * 5 * u;
+      if (u > 0.7 && Math.sin(age * 40 + x) < 0) return;
+      q.px(x, y, z, u < 0.3 ? WHITE : u < 0.6 ? C[7] : C[6]);
+      glints.push([x, y, z, 0.35 * (1 - u)]);
+    });
+    // light: a violet bloom round it, but none on the black heart
+    q.glow(0, -16, 0, 52, C[4], 0.42 * fl);
+    q.glow(0, -12, 0, 26, C[6], 0.22 * fl);
+    q.glow(0, -2, 0, 46, C[4], 0.3);
+    for (const [x, y, z, k] of glints) q.glow(x, y, z, 3, C[6], k);
+    // dark smoke climbing off the tips, a lit rim on its underside, far to near
+    const smoke = [];
+    cycle(t, D, 14, S + 1, (r) => r.range(1.2, 1.9), (age, L, r) => {
+      const u = age / L, a = r.range(0, TAU), d = r.range(0, 6), ph = r.range(0, 6), wob = Math.sin(u * 4 + ph) * 5 * u, y = -30 - u * r.range(36, 52);
+      smoke.push([Math.cos(a) * d + wob, y, Math.sin(a) * d + Math.sin(u * 4 + ph + 1.6) * 5 * u, 3 + u * 6, Math.min(1, u * 6) * (1 - u) * 0.7, u]);
+    });
+    for (const [x, y, z, rad, a, u] of q.sort(smoke, (e) => e)) {
+      q.disc(x, y, z, rad, mix(mix(C[3], C[2], 0.5), C[1], u), a);
+      q.disc(x, y - rad * 0.3, z, rad * 0.5, C[3], a * 0.4);
+      q.disc(x, y + rad * 0.45, z, rad * 0.55, C[5], a * 0.45 * (1 - u));
+    }
+    // the heart stays black under every light drawn above (smoke over it keeps its own light)
+    const Cb = p.C, Lb = p.L;
+    for (let i = 0; i < Cb.length; i++) if (Cb[i] === HEART) Lb[i] = 0;
+  },
+};

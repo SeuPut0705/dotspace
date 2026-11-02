@@ -1,4 +1,5 @@
-import { chain, READY } from "../../core/index.js";
+import { chain, in3d, READY } from "../../core/index.js";
+import { recenter } from "./_lib.js";
 import * as smite from "../holy/smite.js";
 
 const BOLT = 0.47, TX = 118;
@@ -38,3 +39,10 @@ export const act = {
 };
 
 export const create = chain([{ fx: smite, t: 0, x: TX }]);
+
+const MID = 59;
+export const three = {
+  meta: { actor: 0, size: [304, 217], origin: [152, 162], camera: { pitch: 0.3 } },
+  act: recenter(act, MID),
+  create: chain([{ fx: in3d(smite), t: 0, x: TX - MID }]),
+};

@@ -1,4 +1,5 @@
-import { chain, READY } from "../../core/index.js";
+import { chain, in3d, READY } from "../../core/index.js";
+import { recenter } from "./_lib.js";
 import * as arrow from "../projectiles/arrow.js";
 import * as spark from "../impacts/hit-spark.js";
 
@@ -41,3 +42,13 @@ export const create = chain([
   { fx: arrow, t: LOOSE, until: HIT, x: (t) => 30 + (t - LOOSE) * SPEED, y: -28 },
   { fx: spark, t: HIT, x: TX - 10, height: 30 },
 ]);
+
+const MID = 90;
+export const three = {
+  meta: { actor: 0, size: [346, 137], origin: [173, 94], camera: { pitch: 0.3 } },
+  act: recenter(act, MID),
+  create: chain([
+    { fx: in3d(arrow), t: LOOSE, until: HIT, x: (t) => 30 + (t - LOOSE) * SPEED - MID, y: -28 },
+    { fx: in3d(spark), t: HIT, x: TX - 10 - MID, y: 0, height: 30 },
+  ]),
+};

@@ -1,4 +1,5 @@
-import { chain, shiftKeys, shiftHits, READY } from "../../core/index.js";
+import { chain, in3d, shiftKeys, shiftHits, READY } from "../../core/index.js";
+import { recenter } from "./_lib.js";
 import * as slash from "../melee/sword-slash.js";
 import * as double from "../melee/double-slash.js";
 import * as cleave from "../melee/heavy-cleave.js";
@@ -38,3 +39,14 @@ export const create = chain([
   { fx: double, t: B, x: STEP },
   { fx: cleave, t: C, x: STEP * 2 },
 ]);
+
+const MID = 60;
+export const three = {
+  meta: { actor: 0, size: [220, 131], origin: [110, 99], camera: { pitch: 0.3 } },
+  act: recenter(act, MID),
+  create: chain([
+    { fx: in3d(slash), t: A, x: -MID },
+    { fx: in3d(double), t: B, x: STEP - MID },
+    { fx: in3d(cleave), t: C, x: STEP * 2 - MID },
+  ]),
+};

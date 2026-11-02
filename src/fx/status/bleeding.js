@@ -1,8 +1,8 @@
 // The beads, drops, drying splats and crowns are
 // adapted from Sprite Fusion's open-source blood (https://www.spritefusion.com/pixel-art-vfx/blood),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { fit, rand, smooth } from "../../core/index.js";
-import { shape, travel } from "./_lib.js";
+import { fit, rand, smooth, space, TAU } from "../../core/index.js";
+import { shape, travel, lift, softRing } from "./_lib.js";
 
 export const meta = {
   name: "Bleeding",
@@ -96,11 +96,17 @@ export function drawBack(p, t, o) {
 }
 
 export function draw(p, t, o) {
+  paint(p, t, o, null);
+}
+
+// Everything the body wears: the flash, the wounds, the runs and the beads. In 2D the drops, splats and spurt are
+// drawn here too; the 3D variant passes a hook that takes the falling drops and the splats instead (and its own spurt).
+function paint(p, t, o, hook) {
   const C = fit(o.palette, 6), a = o.actor, W = wounds(a), S = shape(a);
   // each heartbeat flashes the body red for a moment
   const ph = ((t % BEAT) + BEAT) % BEAT, hurt = Math.max(0, 1 - ph / 0.12);
   if (hurt > 0) for (const [mx, my] of S.body) p.blend(a.x + mx, a.y + my, C[4], 0.26 * hurt);
-  for (const w of W) {
+  for (const [wi, w] of W.entries()) {
     // the wound, a dark gash with a wet lip, and the blood running down from it
     p.px(w.x, w.y0 - 1, C[1]);
     p.px(w.x - w.side, w.y0 - 1, C[0]);
@@ -118,14 +124,16 @@ export function draw(p, t, o) {
         if (len === 3) p.px(w.x - 1, w.yb + 2, C[1]);
         p.px(w.x, w.yb + len - 2, u > 0.5 ? C[5] : C[4]);
       } else if (age < swell + fall) {
-        const f = age - swell, y = w.yb + 2 + 0.5 * G * f * f;
-        drop(p, C, w.x, y, G * f, big ? 2 : 1);
-      } else splat(p, C, w.x, ground, age - swell - fall, big, w.mx * 31 + k);
+        const f = age - swell;
+        if (hook) hook.fall(wi, w, k, f, fall, big);
+        else drop(p, C, w.x, w.yb + 2 + 0.5 * G * f * f, G * f, big ? 2 : 1);
+      } else if (hook) hook.splat(wi, w, k, age - swell - fall, big, w.mx * 31 + k);
+      else splat(p, C, w.x, ground, age - swell - fall, big, w.mx * 31 + k);
     }
   }
   // the heartbeat squeezes a little spurt from the first wound: droplets streak out and fall
   const w = W[0];
-  if (ph < 0.5)
+  if (!hook && ph < 0.5)
     for (let j = 0; j < 7; j++) {
       const vx = w.side * (18 + 42 * rand(j, 7)), vy = -(15 + 50 * rand(j, 8)), tt = ph - j * 0.012;
       if (tt <= 0) continue;
@@ -137,3 +145,78 @@ export function draw(p, t, o) {
     }
   p.glow(w.x, w.y0, 6, C[4], 0.25 * hurt);
 }
+
+// 3D: drops let go of the wounds and fall to the floor round the body, where each spatters into a decal that spreads,
+// throws a crown of droplets and dries; under them a glossy true-circle pool with rippling rings; the heartbeat
+// spurts out in a fan.
+const WZ = [3, 7, -4]; // each wound's depth: the left arm, the front of the body, the right arm
+const OUT = [[-1, 0], [0, 1], [1, 0]]; // and the way its drops spill outward on landing
+export const three = {
+  meta: { size: [88, 76], origin: [44, 60], bg: "ground", camera: { pitch: 0.4 } },
+  draw(p, t, o) {
+    const q = space(p, o), C = fit(o.palette, 6), a = o.actor, W = wounds(a);
+    const ph = ((t % BEAT) + BEAT) % BEAT, hurt = Math.max(0, 1 - ph / 0.12), beat = Math.exp(-ph / 0.25);
+    const falls = [], splats = [], life = D * 0.85;
+    // where drop k of wound wi lands: a little outward of the wound
+    const land = (wi, w, k) => [w.x + OUT[wi][0] * 7 * rand(w.mx, k, 41) + (rand(w.mx, k, 42) - 0.5) * 2.5, WZ[wi] + OUT[wi][1] * 7 * rand(w.mx, k, 43) + (rand(w.mx, k, 44) - 0.5) * 2.5];
+    paint(p, t, o, {
+      fall: (wi, w, k, f, fall, big) => falls.push({ wi, w, k, f, fall, big }),
+      splat: (wi, w, k, age, big, seed) => age >= 0 && age <= life && splats.push({ wi, w, k, age, big, seed }),
+    });
+    // the pool under the wounds: dark and glossy, a ripple running out of it on every beat
+    const px = (W[0].x + W[2].x) / 2 - 1, R = 9, rip = smooth(0, 1, ph / 0.55) * R * 1.05;
+    q.plane(px, 0, 0, null, R + 1, (u, v) => {
+      const r = Math.hypot(u, v), ang = Math.atan2(v, u), edge = R * (1 + 0.07 * Math.sin(ang * 3 + 1) + 0.05 * Math.sin(ang * 5));
+      if (r > edge) return;
+      const f = r / edge;
+      // wet highlights: an arc inside the near lip, one on the far lip, and a glint
+      if (r > edge * 0.55 && r < edge * 0.75 && ((ang > 0.9 && ang < 2.2) || (ang > -2.6 && ang < -1.5))) return r < edge * 0.63 ? C[4] : C[3];
+      if (Math.abs(u + 3.5) < 0.9 && Math.abs(v - 2) < 0.7) return C[5];
+      if (ph < 0.55 && Math.abs(r - rip) < 0.9) return C[3];
+      return f > 0.85 ? C[2] : f > 0.5 ? C[1] : C[0];
+    });
+    // the drops that fall: a bead with a tail, straight from the wound to its landing
+    for (const d of falls) {
+      const { wi, w, k, f, fall, big } = d, [lx, lz] = land(wi, w, k), s = Math.min(1, f / fall), y0 = lift(q, w.yb + 2);
+      q.at(w.x + (lx - w.x) * s, y0 * (1 - s * s), WZ[wi] + (lz - WZ[wi]) * s, (pp) => drop(pp, C, 0, 0, G * f, big ? 2 : 1));
+    }
+    // the spurt: a fan of droplets streaking out and falling, spread round the outward direction
+    const w0 = W[0], y0 = lift(q, w0.y0);
+    if (ph < 0.5)
+      for (let j = 0; j < 10; j++) {
+        const h = 18 + 42 * rand(j, 7), vy = -(15 + 50 * rand(j, 8)), tt = ph - j * 0.012, psi = (j / 9 - 0.5) * 1.9 + (rand(j, 9) - 0.5) * 0.3;
+        if (tt <= 0) continue;
+        const pos = (s) => [w0.x + w0.side * Math.cos(psi) * travel(h, 0, 1.2, s), y0 + travel(vy, G * 0.8, 0.6, s), WZ[0] + Math.sin(psi) * travel(h, 0, 1.2, s)];
+        const [x, y, z] = pos(tt), [x2, y2, z2] = pos(tt - 0.02);
+        if (y >= -1) continue;
+        q.line(x2, y2, z2, x, y, z, j % 3 ? C[3] : C[2]);
+        q.px(x, y, z, j % 2 ? C[5] : C[4]);
+      }
+    // the splats, flat on the floor: they spread, throw a crown of droplets and dry
+    for (const s of splats) {
+      const [x, z] = land(s.wi, s.w, s.k), age = s.age, spread = smooth(0, 0.1, age), hw = (s.big ? 2.2 : 1.4) * (0.5 + 0.5 * spread) * 1.3, fade = 1 - smooth(life - 0.5, life, age);
+      const dry = age < 0.35 ? 4 : age < 1 ? 3 : 2;
+      q.plane(x, 0, z, null, hw + 1, (u, v, out) => {
+        const d = Math.hypot(u, v);
+        if (d > hw) return;
+        out.c = d > hw * 0.75 ? C[dry - 1] : C[dry];
+        out.a = fade;
+        out.blend = fade < 0.98;
+      });
+      if (age < 0.3) q.px(x - 0.5, -0.4, z, C[5]);
+      if (age < 0.4)
+        for (let j = 0; j < (s.big ? 3 : 2); j++) {
+          const ang = rand(s.seed, j, 3) * TAU, vr = 18 + 24 * rand(s.seed, j, 1), vy = -(40 + 40 * rand(s.seed, j, 2)), dy = vy * age + 0.5 * G * age * age;
+          if (dy <= 0) q.px(x + Math.cos(ang) * vr * age, -1 + dy, z + Math.sin(ang) * vr * age, j ? C[3] : C[4]);
+        }
+    }
+    // light after the solids: the pool's sheen
+    q.glow(px, -2, 0, 9, C[3], 0.06 + 0.04 * beat);
+    // ripples where a drop has just landed, far to near
+    const fresh = splats.filter((s) => s.age < 0.45).map((s) => ({ s, at: land(s.wi, s.w, s.k) }));
+    for (const { s, at } of q.sort(fresh, (e) => [e.at[0], 0, e.at[1]])) {
+      const u = s.age / 0.45;
+      softRing(q, at[0], 0, at[1], 0.8 + 4.5 * u, 1.1, C[4], 0.7 * (1 - u));
+    }
+  },
+};

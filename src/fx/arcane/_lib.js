@@ -158,3 +158,26 @@ export function squeezed(p, A, sh, sx, body, edge, a = 1, dx = 0) {
       if (v) p.dot(x + dx, A.y + y, v === 1 ? edge : body, a);
     }
 }
+
+// ---- 3D helpers (the Space draws these; the 2D effects never call them)
+
+/** > 0 on the half of a floor circle (angle g, x = cos g, z = sin g) that is turned towards the camera, < 0 on the far half. */
+export const facing = (q, g) => Math.cos(g) * q.sy + Math.sin(g) * q.cy;
+
+/** A mote at world point (x, y, z) drifting (vx, vy, vz) px/s: its streak points where it goes on screen. */
+export function moteAt(q, x, y, z, vx, vy, vz, c, size = 1, k = 1, glow = 0.4) {
+  if (!q.project(x, y, z)) return;
+  const sx = q.x, sy = q.y;
+  q.project(x + vx * 0.01, y + vy * 0.01, z + vz * 0.01);
+  const dx = (q.x - sx) * 100, dy = (q.y - sy) * 100;
+  q.at(x, y, z, (p) => mote(p, 0, 0, dx, dy, c, size, k, glow));
+}
+
+/** An energy streak at world point (x, y, z) rushing (vx, vy, vz) px/s: drawn like streak(), pointing where it goes on screen. */
+export function streakAt(q, x, y, z, vx, vy, vz, c, a = 1, maxLen = 7, glow = 0.4) {
+  if (!q.project(x, y, z)) return;
+  const sx = q.x, sy = q.y;
+  q.project(x + vx * 0.01, y + vy * 0.01, z + vz * 0.01);
+  const dx = (q.x - sx) * 100, dy = (q.y - sy) * 100;
+  q.at(x, y, z, (p) => streak(p, 0, 0, dx, dy, c, a, maxLen, glow));
+}

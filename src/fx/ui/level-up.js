@@ -1,7 +1,7 @@
 // The pillar's strands of light and the rings climbing it adapt Sprite Fusion's open-source holy light
 // (https://www.spritefusion.com/pixel-art-vfx/holy-light), and the streaks rushing in its power-up
 // (https://www.spritefusion.com/pixel-art-vfx/power-up), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, PF, Rng, fit, band, flare, sparkle, clamp, seg, smooth, ease, noise2, fract, rand, scale, TAU, WHITE, READY } from "../../core/index.js";
+import { Particles, Lights, P, PF, Rng, fit, space, band, flare, sparkle, clamp, seg, smooth, ease, noise2, fract, rand, scale, TAU, WHITE, READY } from "../../core/index.js";
 import { spell, drawWord, tintActor, lightActor, haloActor } from "./_lib.js";
 
 export const meta = {
@@ -334,3 +334,266 @@ export function create(o) {
     },
   };
 }
+
+// ---- 3D: the pillar is a real cylinder of light round the hero, built of strands that stream up it, with the
+// near wall in front of him and the far wall behind; rings climb it as true circles, the gathering streaks pour in
+// from all round along the floor, the sparks go up in a cone, and the title floats above as one billboard that
+// always faces the camera (so it reads from every side), brought forward of the light so the pillar never cuts it.
+const DY = TY + 7, WALLS = 14;
+
+// the pillar in space: walls of dashes on a cylinder, a white core, strands inside
+function column3(q, C, t) {
+  const a = t - REL;
+  if (a < 0 || t > GONE) return;
+  const top = -TOP * ease.outExpo(clamp(a / 0.12)), bot = -TOP * ease.inCubic(seg(t, RET, GONE)), W = widthAt(t), k = 1 - smooth(RET, GONE, t);
+  q.glowLine(0, top, 0, 0, Math.min(bot, -34), 0, W * 1.6 + 6, C[5], 0.2 * k + 0.06);
+  q.glowLine(0, top, 0, 0, Math.min(bot, -40), 0, 5, WHITE, 0.18 * k);
+  if (a < 0.04) {
+    // one white-hot frame: the whole pillar solid light
+    q.beam(0, bot, 0, 0, top, 0, W * 1.1, (u, v) => (v < 0.5 ? WHITE : C[6]), (u) => Math.min(1, clamp((-top * (1 - u) + bot * u + TOP) / 20) * 1.5));
+    return;
+  }
+  const y0 = Math.ceil(top), y1 = Math.ceil(bot);
+  for (let y = y0; y < y1; y++) {
+    const h = -y / TOP, fade = clamp((y + TOP) / 16) * (t < RET ? 1 : clamp((bot - y) / 10)), head = y - top < 3 && a < 0.16;
+    const wr = W * (1 - 0.3 * h) + 0.9 * noise2(y * 0.2, t * 12, 3);
+    for (let i = 0; i < WALLS; i++) {
+      const g = (i / WALLS) * TAU + t * 0.7, run = fract(y * 0.06 + t * 3.4 + (i % 2) * 0.5) < 0.78;
+      const wx = Math.cos(g) * wr, wz = Math.sin(g) * wr;
+      q.dot(wx, y, wz, head ? WHITE : run ? C[6] : C[5], fade * (run ? 1.4 : 0.9) * (q.depth(wx, y, wz) < -2 ? 0.3 : 1));
+    }
+    for (const S of STRANDS) {
+      if (h > S.end) continue;
+      const ph = fract((y + t * S.sp) / S.per + S.ph);
+      if (ph > S.duty) continue;
+      const u = ph / S.duty, g = S.x * 7 + S.per, r = wr * (0.35 + 0.55 * rand(S.per, 4));
+      const sx = Math.cos(g) * r, sz = Math.sin(g) * r, c = head || u < 0.2 ? WHITE : u < 0.65 ? C[7 - S.lvl] : C[6 - S.lvl];
+      if (q.depth(sx, y, sz) < -2) q.dot(sx, y, sz, c, 0.4);
+      else q.px(sx, y, sz, c);
+    }
+  }
+  // the core: white, flickering
+  for (let y = y0; y < y1; y++) {
+    const fade = clamp((y + TOP) / 16) * (t < RET ? 1 : clamp((bot - y) / 10));
+    q.dot(0, y, 0, noise2(y * 0.3, t * 14, 5) > -0.2 ? WHITE : C[6], fade * 1.5);
+  }
+}
+
+export const three = {
+  meta: { size: [208, 184], origin: [104, 140], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), R = new Rng(o.seed), A = o.actor, SHADOW = scale(C[0], 0.5);
+    const ps = new Particles({ rng: R, ground: () => 0, sparks: [C[7], C[6], C[5], C[3]] }), lights = new Lights();
+    const spawn = (k, x, y, z, vx, vy, vz, life, ...rest) => ps.spawn3(k, x, y, z, vx, vy, vz, Math.min(life, meta.duration - 0.05 - t), ...rest);
+    const word = spell(o.text), BASE = TY + 14, X0 = -word.w;
+    const lets = word.letters.filter((L) => L.g).map((L, i) => ({ g: L.g, w: L.w, cx: X0 + (L.x + L.w / 2) * 2, born: DROP + i * STAG, pop: EXIT + i * 0.04, off: -18, v: 60, sq: 0, flash: 0, on: false, landed: false, rest: false, burst: false }));
+    const right = X0 + word.w * 2;
+    const sats = Array.from({ length: 8 }, (_, i) => {
+      const s = i % 2 ? 1 : -1, x = s * R.range(20, 60), y = TY + 7 + (Math.abs(x) < 50 ? R.sign() * R.range(11, 18) : R.range(-14, 14));
+      return { x, y, t0: SHINE - 0.1 + i * 0.13 + R.range(0, 0.05), dur: R.range(0.32, 0.5), L: R.range(3, 6) };
+    });
+    // little stars that fly off the title's letters (drawn on its plane, so they stay with the letters)
+    const flicks = [];
+    const halos = [], rush = [];
+    let t = 0, released = false, nextHalo = REL + 0.03, gather = 0;
+
+    return {
+      update(dt) {
+        t += dt;
+        // the gathering: streaks pour in along the floor to the feet and in from all round to the body, and in the
+        // last beat run up the hero from the feet; the late ones are swallowed by the burst
+        for (gather += t < REL ? dt * 420 : 0; gather >= 1; gather--) {
+          const kind = R.next(), sp = R.range(140, 250) * (1 + t * 2), a = R.range(0, TAU), ca = Math.cos(a), sa = Math.sin(a);
+          let x, y, z, tx, ty, tz;
+          if (kind < 0.42) {
+            const D = R.range(22, 70);
+            (x = ca * D), (y = -1 - R.range(0, D * 0.1)), (z = sa * D), (tx = ca * 3), (ty = -1), (tz = sa * 3);
+          } else if (kind < 0.84) {
+            const D = R.range(34, 64), e = R.range(-1, 1);
+            (x = ca * D), (y = Math.min(-3, -20 + e * D * 0.85)), (z = sa * D), (tx = ca * 11), (ty = -20 + e * 14), (tz = sa * 11);
+          } else {
+            if (t < REL * 0.4) continue;
+            (x = R.range(-9, 9)), (z = R.range(-9, 9)), (y = -1), (tx = x * 0.7), (tz = z * 0.7), (ty = -R.range(26, 44));
+          }
+          const dx = tx - x, dy = ty - y, dz = tz - z, l = Math.hypot(dx, dy, dz) || 1;
+          rush.push({ x, y, z, vx: (dx / l) * sp, vy: (dy / l) * sp, vz: (dz / l) * sp, life: Math.min(l / sp, REL + 0.06 - t), len: R.range(5, 9), c: R.chance(0.45) ? C[6] : C[5] });
+        }
+        for (let i = rush.length - 1; i >= 0; i--) {
+          const m = rush[i];
+          if ((m.life -= dt) <= 0) rush.splice(i, 1);
+          else (m.x += m.vx * dt), (m.y += m.vy * dt), (m.z += m.vz * dt);
+        }
+        if (t < REL && R.chance(0.12)) {
+          const a = R.range(0, TAU), r = R.range(0, 30);
+          spawn(P.STAR, Math.cos(a) * r, -R.range(0, 3), Math.sin(a) * r, 0, -R.range(10, 30), 0, R.range(0.3, 0.5), C[6], 0.6);
+        }
+        if (!released && t >= REL) {
+          released = true;
+          lights.add(0, -24, 90, C[5], 0.6, 0.7, 0);
+          lights.add(0, -8, 40, WHITE, 0.6, 0.12, 0);
+          // speed lines flung out from the hero in every direction
+          for (let i = 0; i < 26; i++) {
+            const a = (i / 26) * TAU + R.range(-0.12, 0.12), e = R.range(-0.15, 1.3), c = Math.cos(e), sp = R.range(260, 460);
+            spawn(P.MOTE, Math.cos(a) * c * 6, -18, Math.sin(a) * c * 6, Math.cos(a) * c * sp, -Math.sin(e) * sp * 0.8, Math.sin(a) * c * sp, R.range(0.08, 0.17), R.chance(0.4) ? C[7] : C[6], 1);
+          }
+          for (let i = 0; i < 28; i++) {
+            const th = Math.abs(R.range(-1.3, 1.3)), ph = R.range(0, TAU), sp = R.range(120, 290);
+            spawn(P.SPARK, R.range(-5, 5), -2, R.range(-5, 5), Math.sin(th) * Math.cos(ph) * sp, -Math.cos(th) * sp, Math.sin(th) * Math.sin(ph) * sp, R.range(0.35, 0.8));
+          }
+          for (let i = 0; i < 16; i++)
+            spawn(P.STAR, R.range(-10, 10), R.range(-36, -4), R.range(-10, 10), R.range(-30, 30), -R.range(15, 60), R.range(-30, 30), R.range(0.6, 1.3), R.pick([C[7], C[6], C[5]]), R.chance(0.35) ? R.range(1.5, 2.6) : R.range(0.4, 0.9));
+        }
+        const W = widthAt(t);
+        if (t >= nextHalo && t < RET - 0.1) halos.push(t), (nextHalo += 0.16);
+        // streaks race up beside the pillar
+        if (t > REL && t < RET + 0.1 && R.chance(0.5)) {
+          const a = R.range(0, TAU), r = R.range(0.75, 1.6) * W, y = R.range(-4, -60), vy = -R.range(140, 260);
+          spawn(P.MOTE, Math.cos(a) * r, y, Math.sin(a) * r, 0, vy, 0, Math.min(R.range(0.16, 0.32), (y + 96) / -vy), R.chance(0.5) ? C[7] : C[6], R.range(0.6, 1));
+        }
+        // motes rise from the floor while the light lasts
+        if (t > REL && t < 2.4 && R.chance(0.14 * (1 - seg(t, 1.6, 2.4)))) {
+          spawn(P.EMBER, R.range(-20, 20), -R.range(1, 30), R.range(-20, 20), R.range(-15, 15), -R.range(20, 55), R.range(-15, 15), R.range(0.8, 1.6), C[5], R.range(1, 2));
+        }
+        // gold motes lift off the hero while the light lasts
+        if (A && t > REL + 0.1 && t < 2.2 && R.chance(0.09)) {
+          const m = A.mask;
+          for (let n = 0; n < 12; n++) {
+            const i = R.int(0, m.w - 1), j = R.int(0, m.h - 1);
+            if (!m.data[j * m.w + i]) continue;
+            spawn(P.STAR, A.x + i + 0.5, A.y + j + 0.5, R.range(-3, 3), R.range(-8, 8), -R.range(14, 34), R.range(-8, 8), R.range(0.6, 1.1), R.pick([C[7], C[6], C[5]]), R.chance(0.2) ? 1.5 : 0.6);
+            break;
+          }
+        }
+        // twinkles in the air round the title and the hero while it holds
+        if (t > 1.0 && t < 2.5 && R.chance(0.13)) {
+          const up = R.chance(0.6), a = R.range(0, TAU), r = up ? R.range(14, 58) : R.range(6, 24), y = up ? TY + 7 + R.range(-16, 16) : R.range(-44, -6);
+          spawn(P.STAR, Math.cos(a) * r, y, Math.sin(a) * r, R.range(-6, 6), -R.range(4, 14), R.range(-6, 6), R.range(0.4, 0.8), R.pick([C[7], C[6], C[6], C[5]]), R.chance(0.3) ? R.range(1.5, 2.4) : 0.6);
+        }
+        // the letters drop in, bounce and settle; then pop away one by one
+        for (const L of lets) {
+          if (t < L.born) continue;
+          L.on = true;
+          if (!L.rest) {
+            L.v += 1700 * dt;
+            L.off += L.v * dt;
+            if (L.off >= 0 && L.v > 0) {
+              L.off = 0;
+              if (L.v > 110) {
+                L.sq = 1;
+                if (!L.landed) {
+                  L.landed = true;
+                  L.flash = 1;
+                  lights.add(0, DY, 18, C[5], 0.4, 0.25, 0);
+                  for (const s of [-1, 1]) flicks.push({ t0: t, x: L.cx, y: BASE - R.range(0, 3) - DY, vx: s * R.range(15, 40), vy: -R.range(5, 25), life: R.range(0.25, 0.45), s: R.range(0.5, 1.2) });
+                }
+                L.v = -L.v * 0.3;
+              } else (L.v = 0), (L.rest = true);
+            }
+          }
+          L.sq = Math.max(0, L.sq - dt / 0.1);
+          L.flash = Math.max(0, L.flash - dt / 0.12);
+          if (!L.burst && t >= L.pop + 0.06) {
+            L.burst = true;
+            for (let i = 0; i < 3; i++) {
+              const an = R.range(0, TAU), sp = R.range(20, 55);
+              flicks.push({ t0: t, x: L.cx + R.range(-3, 3), y: BASE - 7 - DY + R.range(-4, 4), vx: Math.cos(an) * sp, vy: Math.sin(an) * sp - 15, life: R.range(0.3, 0.6), s: i ? 0.6 : R.range(1.2, 2) });
+            }
+          }
+        }
+        ps.update(dt);
+        lights.update(dt);
+      },
+
+      draw(p) {
+        const q = space(p, o), end = meta.duration - 0.05;
+        // the floor: the gathering ring closing in, the release rings running out, the plate the pillar stands on
+        if (t < REL) {
+          const k = seg(t, 0.02, REL);
+          q.ring(0, 0, 0, 4 + 52 * (1 - ease.inQuad(k)), 1.5, C[5], k * 1.1);
+        }
+        for (const [d, r1, th] of [[0, 72, 4], [0.08, 46, 2.5]]) {
+          const k = (t - REL - d) / 0.55;
+          if (k > 0 && k < 1) q.ring(0, 0, 0, 5 + r1 * ease.outCubic(k), Math.max(1, th * (1 - k)), (v) => (k < 0.15 ? WHITE : v > 0.55 ? C[6] : C[5]), 1.15 - k);
+        }
+        const pk = t < REL ? 0.55 * seg(t, 0.05, REL) : 1 - smooth(RET - 0.1, GONE + 0.2, t);
+        if (pk > 0.02) {
+          const rx = 16 + 12 * pk + Math.sin(t * 9);
+          q.plane(0, 0, 0, null, rx, (u, v, out) => {
+            const d = Math.hypot(u, v) / rx, e = d / Math.max(0.05, pk);
+            if (d > 1) return;
+            out.c = e < 0.3 ? WHITE : e < 0.55 ? C[6] : e < 0.8 ? C[5] : C[4];
+            out.a = d < 0.6 * pk ? 1 : pk * (1 - d) * 2.2;
+          });
+          q.glow(0, -1, 0, rx * 2.2, C[4], 0.35 * pk);
+        }
+        // rings climb the pillar: true circles in the air, their far half behind the hero and their near half in front
+        for (const h0 of halos) {
+          const k = (t - h0) / 0.6;
+          if (k > 0 && k < 1) q.ring(0, -2 - 72 * ease.outQuad(k), 0, (widthAt(t) * 1.45 + 4) * (1 - 0.4 * k), 1.5, k < 0.12 ? WHITE : C[6], (1 - k) * 1.4);
+        }
+        column3(q, C, t);
+        // the hero: warming as it gathers, flashed white on the release, then lit gold with a glowing edge
+        const lit = smooth(REL - 0.02, REL + 0.04, t) * (1 - smooth(RET, 2.5, t));
+        tintActor(p, A, t < REL ? 0 : t < REL + 0.06 ? 1 : Math.exp(-(t - REL - 0.06) / 0.07), [C[4], C[5], C[6]]);
+        lightActor(p, A, C[5], 0.1 * seg(t, 0.05, REL) * (1 - lit) + 0.06 * lit, 0.6 * lit, t);
+        haloActor(p, A, C[5], 0.85 * lit * (1 - smooth(RET, GONE + 0.3, t)) + 0.3 * lit, t);
+        // the spark gathering at the feet, then the flare of the release
+        if (t < REL) {
+          const k = seg(t, 0.05, REL), beat = 1 + 0.4 * Math.exp(-((t - REL * 0.6) ** 2) / 0.001);
+          q.at(0, -2, 0, (pp) => sparkle(pp, 0, 0, (1 + 4 * k * k) * beat, C[6], C[5], 0.3 + 0.4 * k));
+        } else if (t < REL + 0.22) {
+          const a = (t - REL) / 0.22;
+          q.at(0, -4, 0, (pp) => flare(pp, 0, 0, 28 * Math.pow(1 - a, 1.5), 1 - a, C));
+          q.glow(0, -16, 0, 48, WHITE, 0.3 * (1 - a));
+        }
+        // the gathering streaks: a gold tail and a white head, running straight in
+        for (const m of rush) {
+          const sp = Math.hypot(m.vx, m.vy, m.vz), ux = m.vx / sp, uy = m.vy / sp, uz = m.vz / sp, L = m.len;
+          q.line(m.x - ux * L, m.y - uy * L, m.z - uz * L, m.x - ux * L * 0.4, m.y - uy * L * 0.4, m.z - uz * L * 0.4, m.c);
+          q.line(m.x - ux * L * 0.35, m.y - uy * L * 0.35, m.z - uz * L * 0.35, m.x, m.y, m.z, WHITE);
+          q.glow(m.x, m.y, m.z, 4, C[5], 0.25);
+        }
+        ps.draw(q);
+        // the title: one billboard above the hero, brought forward of the pillar; rays behind it, letters, shine, twinkles
+        q.at(0, DY, 0, (pp) => {
+          pp.z -= 26;
+          rays(pp, C, t, ease.outExpo(seg(t, LANDED, LANDED + 0.2)) * (1 - ease.inQuad(seg(t, EXIT - 0.15, EXIT + 0.1))), 0, 0);
+          const items = [], done = (t - LANDED) / 0.12;
+          for (const L of lets) {
+            if (!L.on) continue;
+            let sx = 2, sy = 2, flash = L.flash;
+            if (!L.landed && L.v > 150) (sx = 1.8), (sy = 2.3);
+            if (L.sq > 0) (sx = 2 * (1 + 0.22 * L.sq)), (sy = 2 * (1 - 0.22 * L.sq));
+            const pu = (t - L.pop) / 0.07, hop = seg(t, L.pop - 0.1, L.pop);
+            if (pu >= 1) continue;
+            if (hop > 0 && pu <= 0) (sx = 2 * (1 - 0.1 * hop)), (sy = 2 * (1 + 0.15 * hop));
+            if (pu > 0) (sx = sy = 2 * (1 + 0.3 * pu)), (flash = 1);
+            flash = Math.max(flash, done > 0 && done < 1 ? 1 - done : 0);
+            const h = 7 * sy, w = L.w * sx;
+            items.push({ g: L.g, x: L.cx - w / 2, y: BASE + L.off - h - 3 * ease.outQuad(hop) - DY, sx, sy, a: clamp((t - L.born) / 0.05), flash });
+          }
+          const sh = seg(t, SHINE, SHINE + 0.34), shine = sh > 0 && sh < 1 ? X0 - 14 + (right - X0 + 30) * ease.inOutSine(sh) : null;
+          drawWord(pp, items, { fill: [C[3], C[4], C[5], C[6]], edge: WHITE, under: C[2], outline: C[0], shadow: SHADOW, shine, shineY: TY - DY, glint: C[6] });
+          if (shine !== null && shine > X0 && shine < right) pp.glowLine(shine, TY - DY, shine + 8.4, BASE - DY, 9, C[6], 0.3);
+          for (const L of lets) {
+            const u = (t - L.pop - 0.07) / 0.16;
+            if (u > 0 && u < 1) sparkle(pp, L.cx, BASE - 7 - DY, 6 * (1 - u) * (1 - u), C[6], C[5], 0.5);
+          }
+          const g = (t - SHINE - 0.3) / 0.26;
+          if (g > 0 && g < 1) sparkle(pp, right - 2, TY + 1 - DY, 7 * Math.sin(g * Math.PI), C[6], C[5], 0.6);
+          for (const s of sats) {
+            const u = (t - s.t0) / s.dur;
+            if (u > 0 && u < 1) sparkle(pp, s.x, s.y - DY, s.L * Math.pow(Math.sin(u * Math.PI), 0.7), C[6], C[5], 0.5);
+          }
+          for (const f of flicks) {
+            const k = (t - f.t0) / f.life;
+            if (k > 0 && k < 1 && t < end) sparkle(pp, f.x + f.vx * k * f.life, f.y + f.vy * k * f.life + 30 * k * k * f.life, f.s * 2.4 * (1 - k), C[6], C[5], 0.4);
+          }
+        });
+        const hold = smooth(0.9, 1.2, t) * (1 - smooth(EXIT, EXIT + 0.4, t)), done = (t - LANDED) / 0.12;
+        if (hold > 0) q.glow(0, DY, 0, 50, C[5], 0.22 * hold + (done > 0 && done < 1 ? 0.3 * (1 - done) : 0));
+        lights.draw(q);
+      },
+    };
+  },
+};

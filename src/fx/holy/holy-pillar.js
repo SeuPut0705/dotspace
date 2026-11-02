@@ -1,5 +1,5 @@
-import { Particles, Lights, P, Rng, fit, sparkle, clamp, smooth, seg, lerp, ease, rand, TAU, WHITE } from "../../core/index.js";
-import { GOLD, Feathers, oval } from "./_lib.js";
+import { Particles, Lights, P, Rng, fit, sparkle, space, clamp, smooth, seg, lerp, ease, rand, TAU, WHITE } from "../../core/index.js";
+import { GOLD, Feathers, Feathers3, oval, rod } from "./_lib.js";
 
 export const meta = {
   name: "Holy pillar",
@@ -210,3 +210,207 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the shafts leave the mark in a true cone, each at its own angle and its own side, the fan unfolding in all
+// directions and folding shut again; the sun is a core with rings and rays that turn in the air; the sigil is two
+// rings and a band of marks burning into the floor, a true circle; the dust and the feathers fall through the volume
+export const three = {
+  meta: { size: [208, 240], origin: [104, 208], camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), N = Math.max(3, o.shafts | 0), R = new Rng(o.seed), mid = (N - 1) / 2;
+    const WING = [C[2], C[3], C[4], C[5], C[6], WHITE];
+    const ps = new Particles({ rng: R, ground: () => 0, sparks: [WHITE, C[6], C[5], C[3]] });
+    const lights = new Lights(), feathers = new Feathers3(R, 0);
+    // the shafts: spread angle, the side it leans to, how fast each widens, how bright, its pulse offset
+    const shafts = Array.from({ length: N }, (_, i) => {
+      const off = i - mid, far = Math.abs(off) / mid;
+      return { th: Math.abs(off) * (0.4 / mid) + R.range(-0.02, 0.02) * Math.min(1, Math.abs(off)), az: i * 2.399 + 0.6, spread: R.range(0.05, 0.085) * (1 - far * 0.25), b: (1 - far * 0.35) * R.range(0.8, 1), ph: R.range(0, 1), far };
+    });
+    const motes = Array.from({ length: 72 }, () => {
+      const a = R.range(0, TAU), d = 80 * Math.sqrt(R.next());
+      return { x: Math.cos(a) * d, z: Math.sin(a) * d, y: R.range(0, 1), v: R.range(7, 18), amp: R.range(0.5, 2.5), f: R.range(0.6, 1.5), ph: R.range(0, TAU) };
+    });
+    for (let i = 0; i < 6; i++) {
+      const a = R.range(0, TAU);
+      feathers.add({ x: R.range(-46, 46), y: R.range(-150, -100), z: R.range(-46, 46), vx: R.range(-8, 8), vy: R.range(0, 8), vz: R.range(-8, 8), dir: [Math.cos(a), 0, Math.sin(a)], len: R.range(7, 9), wid: R.range(1.9, 2.3), life: R.range(1.4, 1.7), sink: R.range(26, 36), delay: HIT + 0.1 + i * 0.16 + R.range(0, 0.08) });
+    }
+    const DMAX = PY - TOP;
+    let t = 0, hit = false, shut = false, glinted = false;
+
+    // each shaft's angle off the vertical now: unfolding from the middle with an overshoot, folding back shut at the end
+    const angle = (s, tt) => {
+      const st = s.far * 0.1, open = ease.outBack(seg(tt, OPEN + st, OPEN + st + 0.42), 1.5), fold = ease.inOutCubic(seg(tt, FOLD - s.far * 0.1, SHUT));
+      return s.th * open * (1 - fold);
+    };
+    // how far down each shaft the light reaches (it pours from the sky), and where it lifts away at the end
+    const frontD = (s, tt) => DMAX * (1 - ease.inQuad(seg(tt, OPEN + s.far * 0.06, HIT + s.far * 0.06)));
+    const liftD = (tt) => DMAX * ease.inQuad(seg(tt, SHUT + 0.05, LIFT));
+    const fade = (tt) => smooth(OPEN, OPEN + 0.1, tt) * (1 - smooth(LIFT - 0.05, LIFT + 0.05, tt));
+    const width = (s, d, tt) => (1.4 + d * s.spread) * lerp(1, 0.25, smooth(SHUT, LIFT, tt));
+    // brightness along a shaft: a pulse of light runs down each one, one after another
+    const pulse = (s, d, tt) => {
+      if (tt < HIT || tt > SHUT) return 1;
+      const D = DMAX * (1 - frac((tt - HIT) / 0.6 + s.ph));
+      return 1 + 0.9 * Math.exp(-(((d - D) / 12) ** 2));
+    };
+    // a point d along a shaft from the mark
+    const along = (s, d) => {
+      const a = angle(s, t), sn = Math.sin(a), cs = Math.cos(a);
+      return [sn * Math.cos(s.az) * d, PY - cs * d, sn * Math.sin(s.az) * d];
+    };
+    // light of all the shafts at a point (for motes)
+    const lightAt = (x, y, z) => {
+      const dy = PY - y;
+      if (dy <= 0) return 0;
+      let I = 0;
+      for (const s of shafts) {
+        const a = angle(s, t), ca = Math.cos(a), d = dy / ca;
+        if (d < liftD(t) || d < frontD(s, t)) continue;
+        const hw = width(s, d, t) / 2, v = (Math.hypot(x - Math.sin(a) * Math.cos(s.az) * d, z - Math.sin(a) * Math.sin(s.az) * d) * ca) / hw;
+        if (v < 1) I += (1 - v * v) * s.b;
+      }
+      return I * fade(t);
+    };
+
+    function fan(q) {
+      const k = fade(t);
+      if (k <= 0) return;
+      const lift = liftD(t);
+      for (const s of shafts) {
+        const f = frontD(s, t), d0 = Math.max(lift, f - 6, 0), d1 = DMAX;
+        if (d1 - d0 < 1) continue;
+        const [x0, y0, z0] = along(s, d0), [x1, y1, z1] = along(s, d1), w0 = width(s, d0, t), w1 = width(s, d1, t);
+        rod(q, x0, y0, z0, x1, y1, z1, w0, w1, (u, v, out) => {
+          const d = d0 + u * (d1 - d0), soft = smooth(f - 6, f + 4, d) * smooth(lift, lift + 6, d) * smooth(DMAX, DMAX - 30, d), I0 = s.b * pulse(s, d, t) * soft * k;
+          if (I0 < 0.02) return;
+          const I = I0 * Math.pow(1 - v * v, 1.3);
+          // a fine bright line runs down the middle of each shaft
+          if (v * (width(s, d, t) / 2) < 0.7 && I0 > 0.3) {
+            out.c = I0 > 0.75 ? WHITE : C[6];
+            out.a = Math.min(1, I0 * 1.1);
+            out.blend = false;
+            return;
+          }
+          out.c = C[6];
+          out.a = Math.min(0.7, I * 0.6);
+          out.l = C[4];
+          out.k = Math.min(0.9, I * 0.4);
+        });
+      }
+      // where the shafts converge, the light gathers to a point
+      if (t > HIT - 0.05) q.glow(0, PY - 3, 0, 20, C[5], 0.5 * k);
+    }
+
+    // the sun: a core with rings and rays that opens at the top like an iris, then closes with a glint
+    function sun(q) {
+      const r = 15 * ease.outBack(seg(t, 0.02, 0.45), 1.8) * (1 - ease.inBack(seg(t, SHUT, LIFT + 0.1), 1.5));
+      if (r > 0.5) {
+        const spin = t * 0.6, rr = r * 0.85, ph = spin * 0.7;
+        q.ball(0, SUN, 0, r * 0.45, (nx, ny, nz) => (nz > 0.45 ? WHITE : C[6]));
+        // the horizontal rings and the tilted one that turns
+        for (let j = 0, n = Math.ceil(r * TAU * 1.4); j < n; j++) {
+          const g = (j / n) * TAU, c = Math.cos(g), s = Math.sin(g);
+          q.px(c * r * 0.62, SUN, s * r * 0.62, C[6]);
+          q.px(c * r, SUN, s * r, Math.sin(g * 6 + spin * 4) > 0.5 ? WHITE : C[5]);
+          q.px(c * rr * Math.cos(ph), SUN + s * rr, c * rr * Math.sin(ph), C[5]);
+        }
+        // the rays ticking round it, in the plane of the horizontal ring and of the tilted one
+        for (let j = 0; j < 16; j++) {
+          const g = spin + (j * TAU) / 16, l = j % 2 ? 3 : 6, c = Math.cos(g), s = Math.sin(g);
+          q.line(c * (r + 2), SUN, s * (r + 2), c * (r + 2 + l), SUN, s * (r + 2 + l), (u) => (u < 0.4 ? C[6] : C[4]), (u) => 1.1 - u);
+          if (j % 2 === 0) q.line(c * Math.cos(ph) * (rr + 2), SUN + s * (rr + 2), c * Math.sin(ph) * (rr + 2), c * Math.cos(ph) * (rr + 2 + l), SUN + s * (rr + 2 + l), c * Math.sin(ph) * (rr + 2 + l), (u) => (u < 0.4 ? C[6] : C[4]), (u) => 1.1 - u);
+        }
+        q.glow(0, SUN, 0, Math.min(32, r * 3), C[4], 0.5);
+        q.glow(0, SUN, 0, r * 1.4, WHITE, 0.35);
+      }
+      if (t > LIFT && t < LIFT + 0.3) q.at(0, SUN, 0, (pp) => sparkle(pp, 0, 0, 10 * (1 - (t - LIFT) / 0.3), WHITE, C[5], 0.6));
+    }
+
+    // the sigil burning on the floor: two rings and a turning band of marks; white-hot, then gold, then cooling
+    function sigil(q) {
+      if (t < HIT) return;
+      const u = seg(t, HIT, HIT + 0.2), heat = 1 - smooth(SHUT, SHUT + 0.8, t), out = 1 - smooth(SHUT + 0.4, SHUT + 1, t);
+      if (out <= 0) return;
+      // it burns in round from the front, both ways
+      const burnt = (g) => Math.abs(((g - Math.PI / 2 + Math.PI) % TAU + TAU) % TAU - Math.PI) <= u * Math.PI + 0.01;
+      const col = (g, hot) => {
+        if (!burnt(g)) return 0;
+        const flick = rand(Math.round(g * 40), Math.floor(t * 20)) < 0.18;
+        return t < HIT + 0.08 || (flick && heat > 0.4) ? WHITE : heat > 0.6 ? (hot ? C[6] : C[5]) : heat > 0.3 ? C[4] : heat > 0.1 ? C[3] : C[2];
+      };
+      for (let j = 0, n = Math.ceil(RX * TAU * 1.5); j < n; j++) {
+        const g = (j / n) * TAU, c = Math.cos(g), s = Math.sin(g), c1 = col(g, true), c2 = col(g, false);
+        if (c1) q.dot(c * RX, 0, s * RX, c1, out);
+        if (c2) q.dot(c * RX * 0.72, 0, s * RX * 0.72, c2, out);
+      }
+      // marks between the rings, turning slowly
+      for (let j = 0; j < 12; j++) {
+        const g = t * 0.35 + (j * TAU) / 12;
+        if (!burnt(g)) continue;
+        const c = col(g, j % 2 === 0), r0 = RX * 0.78, r1 = RX * (j % 3 === 0 ? 0.95 : 0.88);
+        if (c) q.line(Math.cos(g) * r0, 0, Math.sin(g) * r0, Math.cos(g) * r1, 0, Math.sin(g) * r1, c, out);
+      }
+      for (let i = 0; i < 6; i++) q.glow(Math.cos((i / 6) * TAU) * RX * 0.8, -2, Math.sin((i / 6) * TAU) * RX * 0.8, 16, C[4], 0.3 * out * (0.5 + 0.5 * heat));
+      q.glow(0, -1, 0, 10, WHITE, 0.3 * heat * out);
+    }
+
+    return {
+      update(dt) {
+        t += dt;
+        // light gathers to the sun as it opens
+        if (t < OPEN + 0.1 && R.chance(0.5)) {
+          const a = R.range(0, TAU), s = R.range(-1, 1), c = Math.sqrt(1 - s * s), D = R.range(22, 34), T = R.range(0.18, 0.28), v = ((D - 10) * 3) / (Math.exp(3 * T) - 1);
+          const ux = Math.cos(a) * c, uy = s, uz = Math.sin(a) * c;
+          ps.spawn3(P.STREAK, ux * D, SUN + uy * D, uz * D, -ux * v, -uy * v, -uz * v, T, R.chance(0.5) ? C[6] : C[5]);
+        }
+        if (!hit && t >= HIT) {
+          hit = true;
+          lights.add(0, -30, 64, C[5], 0.85, 0.5);
+          lights.add(0, -6, 30, WHITE, 0.8, 0.12);
+          for (let i = 0; i < 26; i++) {
+            const p = R.range(0, 1.2), g = R.range(0, TAU), sp = R.range(70, 190);
+            ps.spawn3(P.SPARK, R.range(-3, 3), -2, R.range(-3, 3), Math.sin(p) * Math.cos(g) * sp, -Math.cos(p) * sp, Math.sin(p) * Math.sin(g) * sp, R.range(0.25, 0.6));
+          }
+        }
+        // while it holds: embers off the burning sigil, a few feathers drifting down through the shafts
+        if (t > HIT && t < SHUT + 0.1 && R.chance(0.35)) {
+          const g = R.range(0, TAU), r = RX * (R.chance(0.5) ? 1 : 0.72);
+          ps.spawn3(P.EMBER, Math.cos(g) * r, -1, Math.sin(g) * r, R.range(-6, 6), -R.range(12, 30), R.range(-6, 6), R.range(0.5, 0.8), C[5], 1);
+        }
+        if (t > HIT && t < FOLD && R.chance(0.05)) ps.spawn3(P.STAR, R.range(-1, 1) * 40, -R.range(20, 160), R.range(-1, 1) * 40, 0, R.range(2, 8), 0, R.range(0.3, 0.6), R.chance(0.5) ? WHITE : C[6], R.range(0.8, 1.8));
+        // the fan snaps shut on the mark: a flash where the shafts become one
+        if (!shut && t >= SHUT) {
+          shut = true;
+          lights.add(0, -60, 70, C[5], 0.7, 0.35);
+          for (let i = 0; i < 12; i++) ps.spawn3(P.STAR, R.range(-4, 4), -R.range(10, 170), R.range(-4, 4), R.range(-25, 25), R.range(-10, 10), R.range(-25, 25), R.range(0.4, 0.8), R.chance(0.5) ? WHITE : C[6], R.range(0.8, 2));
+        }
+        if (!glinted && t >= LIFT) {
+          glinted = true;
+          lights.add(0, SUN, 40, WHITE, 0.6, 0.2);
+        }
+        ps.update(dt);
+        feathers.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o);
+        // solid things first, nearest first by depth; then the translucent shafts; light last
+        sigil(q);
+        sun(q);
+        feathers.draw(q, WING);
+        // dust motes drifting down, lit only where a shaft catches them
+        for (const m of motes) {
+          const y = TOP + ((((m.y * DMAX + t * m.v) % DMAX) + DMAX) % DMAX), x = m.x + Math.sin(t * m.f + m.ph) * m.amp, z = m.z + Math.cos(t * m.f + m.ph) * m.amp, I = lightAt(x, y, z);
+          if (I < 0.2) continue;
+          q.dot(x, y, z, I > 0.7 ? WHITE : C[6], Math.min(1, I * 1.3));
+          q.light(x, y, z, C[5], 0.4 * Math.min(1, I));
+        }
+        if (t > HIT - 0.02 && t < HIT + 0.25) q.at(0, PY - 2, 0, (pp) => sparkle(pp, 0, 0, 12 * (1 - (t - HIT) / 0.25), WHITE, C[5], 0.7));
+        if (t > SHUT && t < SHUT + 0.2) q.at(0, PY - 2, 0, (pp) => sparkle(pp, 0, 0, 8 * (1 - (t - SHUT) / 0.2), WHITE, C[5], 0.5));
+        ps.draw(q);
+        fan(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

@@ -1,7 +1,7 @@
 // The shaded smear, its light and the dotted trace follow Sprite Fusion's open-source slash
 // (https://www.spritefusion.com/pixel-art-vfx/slash), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Bits, Lights, P, B, Rng, fit, sparkle, clamp, smooth, ease, READY } from "../../core/index.js";
-import { through, onSwing, travel, smear, trace, glowAlong } from "./_lib.js";
+import { Particles, Bits, Lights, P, B, Rng, fit, sparkle, clamp, smooth, ease, space, READY } from "../../core/index.js";
+import { through, onSwing, travel, smear, trace, glowAlong, lay, onSwing3, travel3, smear3, trace3, glowAlong3, spray } from "./_lib.js";
 
 export const meta = {
   name: "Claw swipe",
@@ -115,3 +115,92 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the three claws are three rings on three planes, each turned a little further round than the one before and
+// set a little further back, so the rake fans through depth: from the front they land where the 2D marks did, from
+// the side they spread like the tines of a fork. Each mark also keeps a hot core line and a light along it, which
+// read from every side when its plane is edge on. Flecks leave in a cone, drips run off in depth and splash on the
+// floor.
+export const three = {
+  meta: { size: [144, 104], origin: [72, 82], camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), n = C.length, Rg = new Rng(o.seed), floor = () => 0;
+    const ps = new Particles({ rng: Rg, ground: floor, sparks: o.sparks }), drips = new Bits({ ground: floor }), lights = new Lights();
+    const marks = [0, 1, 2].map((i) => {
+      const s = through(31 + i * 8, -23 + i * 2, 1.84, 1, 40, 0.84 - i * 0.05, 0.5);
+      const S = lay(s, { yaw: (1 - i) * 0.26, z: -(1 - i) * 5 });
+      return { S, t0: i * STAGGER, W: 4.2 - i * 0.4, open: false, end: travel3(S, S.span) };
+    });
+    let t = 0;
+    const heatAt = (m) => clamp(1 - (t - m.t0) / 0.42);
+    return {
+      update(dt) {
+        t += dt;
+        for (const m of marks) {
+          if (!m.open && t >= m.t0 + RAKE * 0.7) {
+            m.open = true;
+            const { S, end } = m;
+            lights.add(end.x, end.y - 6, 34, C[4], 0.45, 0.3, end.z);
+            // hot flecks thrown on along the rake, in a cone round where it is heading
+            for (let i = 0; i < 7; i++) {
+              const [vx, vy, vz] = spray(Rg, [end.dx, end.dy, end.dz], 0.8, Rg.range(110, 260));
+              ps.spawn3(P.SPARK, end.x, end.y, end.z, vx, vy, vz, Rg.range(0.12, 0.32));
+            }
+            for (let i = 0; i < 5; i++) {
+              const [x, y, z] = onSwing3(S, S.R, S.span * Rg.range(0.15, 0.9));
+              ps.spawn3(P.MOTE, x, y, z, Rg.range(-60, -10), Rg.range(-30, 30), Rg.range(-40, 40), Rg.range(0.2, 0.4), Rg.chance(0.5) ? C[5] : C[4], 0.5);
+            }
+            // drips run off the wound and fall to the floor
+            for (let i = 0; i < 2; i++) {
+              const [x, y, z] = onSwing3(S, S.R - 1, S.span * Rg.range(0.35, 0.75));
+              drips.add({ kind: B.DRIP, x, y, z, vx: Rg.range(-8, 8), vy: Rg.range(10, 40), vz: Rg.range(-8, 8), g: 0.55, life: 1.2, c: C[3] });
+            }
+          }
+        }
+        drips.update(dt);
+        // where a drip lands it splashes into a few embers
+        for (const b of drips.list)
+          if (b.life <= 0 && !b.splat) {
+            b.splat = true;
+            for (let i = 0; i < 3; i++) ps.spawn3(P.EMBER, b.x, -1, b.z, Rg.range(-14, 14), -Rg.range(12, 36), Rg.range(-14, 14), Rg.range(0.2, 0.4), C[4], 0.6);
+          }
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o);
+        for (const m of marks) {
+          const u = t - m.t0;
+          if (u < 0) continue;
+          const { S } = m, span = S.span, head = span * ease.outExpo(clamp(u / RAKE)), c = smooth(CLOSE0, CLOSE0 + CLOSE, u), lo = (span / 2) * c, hi = Math.min(head, span - (span / 2) * c);
+          const heat = heatAt(m);
+          if (hi - lo > 0.02) {
+            smear3(q, S, lo, hi, m.W, (uu, r, out) => {
+              const v = uu / span, w = m.W * Math.pow(Math.sin(Math.PI * v), 1.15) * (1 - 0.55 * c), off = Math.abs(r - (S.R - m.W / 2)) / (w / 2 + 0.01);
+              if (w < 0.5 || off > 1) return;
+              const ci = Math.round((1 - heat) * 5.2 + off * 1.6 + (head < span ? (span - uu) / span : 0) * 0.5);
+              out.c = C[n - 1 - clamp(ci, 0, n - 2)];
+            }, 2);
+            // the hot core as a line through space: it stays when the plane is edge on
+            const pts = [], steps = Math.max(2, Math.ceil((hi - lo) / 0.06));
+            for (let i = 0; i <= steps; i++) pts.push(onSwing3(S, S.R - m.W / 2, lo + ((hi - lo) * i) / steps));
+            q.polyline(pts, C[n - 1 - clamp(Math.round((1 - heat) * 5.2), 0, n - 2)], 0.9);
+            glowAlong3(q, S, S.R - m.W / 2, lo, hi, 11, C[4], 0.42 * heat * heat, 0.2);
+          }
+          // where it has closed, a dotted red scar lingers and fades
+          const k = 0.8 * (1 - clamp((u - CLOSE0 - CLOSE * 0.5) / 0.4));
+          if (c > 0.05 && k > 0) {
+            trace3(q, S, S.R - m.W / 2, 0.04 * span, lo, C[2], k);
+            trace3(q, S, S.R - m.W / 2, span - lo, 0.96 * span, C[2], k);
+          }
+          // the claw tip glints as it tears in
+          const g = u - RAKE * 0.4;
+          if (g > 0 && g < 0.16) q.at(m.end.x, m.end.y, m.end.z, (pp) => sparkle(pp, 0, 0, 5 * ease.outBack(Math.min(1, g / 0.04)) * (1 - g / 0.16), C[6], C[4], 0.4));
+        }
+        drips.draw(q);
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

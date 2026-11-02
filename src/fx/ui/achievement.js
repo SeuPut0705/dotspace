@@ -1,4 +1,4 @@
-import { Particles, Lights, P, Rng, fit, sparkle, star, clamp, seg, ease, rand, TAU, WHITE, hex } from "../../core/index.js";
+import { Particles, Bits, Lights, P, B as BIT, Rng, fit, space, sparkle, star, clamp, seg, ease, rand, TAU, WHITE, hex } from "../../core/index.js";
 import { spell, drawWord, panel } from "./_lib.js";
 
 export const meta = {
@@ -114,3 +114,134 @@ export function create(o) {
     },
   };
 }
+
+// ---- 3D: the toast floats in the world and slides in through depth -------------------------------------------------
+
+// a billboard faces the camera: its screen-right and its way back to the camera, in world space
+function frame3(c = {}) {
+  const yaw = c.yaw ?? 0, pit = c.pitch ?? 0.3, cp = Math.cos(pit);
+  return { rx: Math.cos(yaw), rz: -Math.sin(yaw), tx: Math.sin(yaw) * cp, ty: -Math.sin(pit), tz: Math.cos(yaw) * cp, cp };
+}
+// the world point u px right and v px down of P on the toast's own screen plane, w towards the camera
+const onToast = (V, P, u, v, w = 0) => [P[0] + V.rx * u + V.tx * w, P[1] + v / V.cp + V.ty * w, P[2] + V.rz * u + V.tz * w];
+const sphere = (R) => {
+  const a = R.range(0, TAU), c = R.range(-1, 1), s = Math.sqrt(1 - c * c);
+  return [Math.cos(a) * s, c, Math.sin(a) * s];
+};
+
+const H3 = -38, SLIDE = 1.25, DIR = [0.75, -0.66], LIFT = 7;
+
+export const three = {
+  meta: { size: [304, 120], origin: [152, 82], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const G = fit(o.palette, 8), Bn = fit(o.ribbon, 5), R = new Rng(o.seed), floor = () => 0;
+    const ps = new Particles({ rng: R, ground: floor, sparks: [G[7], G[6], G[5], G[3]] }), bits = new Bits({ ground: floor }), lights = new Lights();
+    const title = spell(o.title, "mini"), sub = spell(o.text, "mini"), TX = PX + 34;
+    let t = 0, popped = false;
+    const end = meta.duration - 0.05;
+    // the same slide as the 2D toast, run along a path through depth; it bobs a little once it has settled
+    const xAt = (t) => (t < IN ? 30 * Math.pow(1 - t / IN, 3) : t < OUT ? -3 * Math.exp(-(t - IN) * 12) * Math.sin((t - IN) * 30) : seg(t, OUT, OUT + 0.06) < 1 ? -3 * seg(t, OUT, OUT + 0.06) : -3 + 33 * ease.inQuad(seg(t, OUT + 0.06, OUT + 0.24)));
+    const spot = (t) => {
+      const m = xAt(t) * SLIDE;
+      return [m * DIR[0], H3 + (t > IN ? 1.4 * Math.sin((t - IN) * 4.2) : 0), m * DIR[1]];
+    };
+    const medalAt = (V, Pt) => onToast(V, Pt, MX, MY, LIFT);
+    return {
+      update(dt) {
+        t += dt;
+        const V = frame3(o.camera);
+        if (!popped && t >= MEDAL + 0.06) {
+          popped = true;
+          const M = medalAt(V, spot(t));
+          lights.add(M[0], M[1], 36, G[5], 0.7, 0.4, M[2]);
+          // sparkles burst from the medal in a full sphere, gold flecks fall to the floor
+          for (let i = 0; i < 20; i++) {
+            const [dx, dy, dz] = sphere(R), sp = R.range(50, 110);
+            ps.spawn3(P.STAR, M[0] + dx * 12, M[1] + dy * 12, M[2] + dz * 12, dx * sp, dy * sp, dz * sp, R.range(0.3, 0.5), R.pick([G[7], G[6], G[5]]), i % 3 ? 1.3 : R.range(2, 2.8));
+          }
+          for (let i = 0; i < 12; i++) {
+            const [dx, dy, dz] = sphere(R), sp = R.range(100, 200);
+            ps.spawn3(P.SPARK, M[0] + dx * 10, M[1] + dy * 10, M[2] + dz * 10, dx * sp, dy * sp - 20, dz * sp, R.range(0.16, 0.3));
+          }
+          for (let i = 0; i < 10; i++) {
+            const [dx, dy, dz] = sphere(R), sp = R.range(40, 100);
+            bits.add({ kind: BIT.SHARD, x: M[0] + dx * 8, y: M[1] + dy * 8, z: M[2] + dz * 8, vx: dx * sp, vy: dy * sp - 40, vz: dz * sp, g: 0.4, drag: 1.1, bounce: 0.3, life: R.range(0.7, 1.1), a: R.range(0, TAU), va: R.range(-18, 18), s: R.range(1.4, 2.4), c: R.pick([G[7], G[6], G[5], G[4]]) });
+          }
+        }
+        if (t > 0.5 && t < OUT && R.chance(0.05)) {
+          const M = medalAt(V, spot(t)), [dx, dy, dz] = sphere(R);
+          ps.spawn3(P.STAR, M[0] + dx * 13, M[1] + dy * 11, M[2] + dz * 13, 0, -R.range(4, 10), 0, Math.min(R.range(0.3, 0.5), end - t), G[6], R.chance(0.3) ? 1.4 : 0.6);
+        }
+        bits.update(dt);
+        ps.update(dt);
+        lights.update(dt);
+      },
+
+      draw(p) {
+        const q = space(p, o), V = frame3(q.camera);
+        const out = t > OUT + 0.06, a = t < 0.05 ? 0.5 : out ? 1 - seg(t, OUT + 0.12, OUT + 0.24) : 1;
+        if (a <= 0) return;
+        const Pt = spot(t), [px, py, pz] = Pt, M = medalAt(V, Pt);
+        const sh = seg(t, SHINE, SHINE + 0.36), shine = sh > 0 && sh < 1 ? PX - 12 + (PW + 30) * ease.inOutSine(sh) : null;
+        const mk = t - MEDAL;
+        // the plate, its words and the medal, all on one billboard; the medal stands proud of the plate
+        q.at(px, py, pz, (pp) => {
+          // a dark card a little behind the plate, so it has an edge in depth
+          pp.z += 4;
+          panel(pp, PX + 2, PY + 3, PW, PH, { outline: INK.low, rim: INK.low, top: INK.low, body: INK.low, low: INK.low }, { r: 4, a: 0.55 * a });
+          pp.z -= 4;
+          panel(pp, PX, PY, PW, PH, INK, { r: 4, a, shine });
+          pp.line(PX + 4, PY + 1, PX + PW - 5, PY + 1, G[4], a);
+          pp.px(PX + 3, PY + 1, G[2]);
+          const ti = title.letters.filter((L) => L.g).map((L) => ({ g: L.g, x: TX + L.x * 2, y: PY + 5, sx: 2, sy: 2, a }));
+          drawWord(pp, ti, { fill: [G[4], G[5], G[6]], edge: G[7], under: G[3], outline: INK.outline, shadow: 0, shine, shineY: PY, glint: G[7] });
+          const si = sub.letters.filter((L) => L.g).map((L) => ({ g: L.g, x: TX + L.x * 2, y: PY + 19, sx: 2, sy: 2, a }));
+          drawWord(pp, si, { fill: [hex("#9a94b0"), hex("#d8d4e6"), WHITE], edge: WHITE, under: hex("#6e6886"), outline: INK.outline, shadow: 0, shine, shineY: PY });
+          if (mk > 0) {
+            const s = mk < 0.035 ? 1.5 : 1 + 0.35 * Math.exp(-mk * 16) * Math.cos(mk * 28);
+            pp.z -= LIFT;
+            medal(pp, G, Bn, MX, MY, s, mk < 0.07, shine === null ? null : shine - MX + 4);
+            const g = ((t - 1.5) % 0.9) / 0.9;
+            if (t > 1.5 && g < 0.25) sparkle(pp, MX - 4, MY - 4, 4 * Math.sin((g / 0.25) * Math.PI), G[7], G[6], 0.5);
+            pp.z += LIFT;
+          }
+        });
+        bits.draw(q);
+        // speed lines are real lines through depth, trailing behind the toast's path
+        const moving = t < IN * 0.8 || out, tr = out ? -1 : 1, side = (DIR[0] * V.rx + DIR[1] * V.rz) * tr >= 0 ? 1 : -1;
+        if (moving)
+          for (let i = 0; i < 9; i++) {
+            const f = Math.floor(t * 30), v = PY + 3 + rand(f, i, 2) * (PH - 6), L = 10 + rand(f, i, 3) * 26, s0 = 1 + rand(i, 4) * 6;
+            // they start at the edge of the plate it is moving away from, and stream on along the path
+            const [x0, y0, z0] = onToast(V, Pt, side * (PW / 2 + 2 + rand(i, 5) * 8), v);
+            q.line(x0 + DIR[0] * s0 * tr, y0, z0 + DIR[1] * s0 * tr, x0 + DIR[0] * (s0 + L) * tr, y0, z0 + DIR[1] * (s0 + L) * tr, (w) => (w < 0.3 ? WHITE : w < 0.6 ? G[6] : G[4]), (w) => a * (1.1 - w));
+          }
+        // under the toast: a soft shadow, a ring of gold dashes turning on the floor, and a ring that runs out when the medal lands
+        q.plane(px, 0, pz, null, 46, (u, v, o2) => {
+          const d = Math.hypot(u, v) / 46;
+          if (d > 1) return;
+          o2.c = INK.outline;
+          o2.a = 0.55 * a * (1 - d * d);
+          o2.blend = true;
+        });
+        q.ring(px, 0, pz, 40, 2.5, (v) => (v > 0.5 ? G[5] : G[3]), (v, g) => (((g + t * 0.9 + 20 * TAU) % (TAU / 9)) < (TAU / 9) * 0.55 ? a : 0));
+        if (mk > 0.06 && mk < 0.5) {
+          const rk = (mk - 0.06) / 0.44, r = 34 + 30 * ease.outCubic(rk);
+          q.ring(px, 0, pz, r, 2.5 * (1 - rk) + 1, rk < 0.25 ? WHITE : G[5], (1.1 - rk) * a);
+          q.ring(M[0], M[1], M[2], 8 + 18 * ease.outCubic(rk), 2 * (1 - rk) + 1, rk < 0.2 ? WHITE : G[6], (1.1 - rk) * a, [V.tx, V.ty, V.tz]);
+        }
+        // a halo turns round the medal: its far half goes behind the medal, its near half in front
+        if (mk > 0.2 && t < OUT) {
+          q.ring(M[0], M[1], M[2], 15, 1.5, G[5], 0.55 * a);
+          for (let i = 0; i < 3; i++) {
+            const ph = mk * 3.6 + (i * TAU) / 3;
+            q.at(M[0] + Math.cos(ph) * 15, M[1], M[2] + Math.sin(ph) * 15, (pp) => sparkle(pp, 0, 0, 2.5, G[7], G[6], 0.5));
+          }
+        }
+        ps.draw(q);
+        if (mk > 0) q.glow(M[0], M[1], M[2], 20, G[5], 0.3 * a + (mk < 0.15 ? 0.5 * (1 - mk / 0.15) : 0));
+        lights.draw(q);
+      },
+    };
+  },
+};

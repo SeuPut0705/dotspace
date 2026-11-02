@@ -1,8 +1,8 @@
 // The bolt (a branching path, a stepped leader, strokes that flicker frame by frame, light along the channel) and
 // the rain (streaks with lit heads, splashes that throw droplets) are adapted from Sprite Fusion's open-source
 // lightning (https://www.spritefusion.com/pixel-art-vfx/lightning), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, P, Rng, fit, clamp, smooth, rand, wrap, TAU, WHITE, hex, mix, scale } from "../../core/index.js";
-import { clip, pass, box, field, sample, trips, tree, wave, bayer, splash } from "./_lib.js";
+import { Particles, P, Rng, fit, clamp, smooth, rand, wrap, TAU, WHITE, hex, mix, scale, space } from "../../core/index.js";
+import { clip, pass, box, field, sample, trips, tree, wave, bayer, splash, splash3 } from "./_lib.js";
 
 export const meta = {
   name: "Storm",
@@ -382,3 +382,254 @@ function floor(q, B, t, S, C, V, f) {
   // the bolt's reflection in the pools, broken by ripples
   if (f > 0.2) for (let y = 1; y < 10; y++) if (rand(y, Math.floor(t * 30), 3) < 0.8) q.dot(BX1 + Math.sin(y * 1.7 + t * 40) * 1.2, y, y < 4 ? WHITE : V[4], f * (1.1 - y / 12));
 }
+
+// ---- 3D: a cylinder of storm (radius R3, height H3, origin at the floor's center). The rain falls through it from a
+// cloud canopy that rolls overhead; the bolt is a real path in x, y and z whose forks reach towards and away from
+// the viewer; the strike lights the floor, the rain, the pools and the canopy, and the thunder keeps the 2D timing.
+const R3 = 96, H3 = 112, BK = 0.8, XS = 16, ZS = 12, SL3 = 0.42;
+const edge3 = (x, z, r = R3) => clamp((r - 5 - Math.sqrt(x * x + z * z)) / 14);
+// the 2D bolt's (x, y) in the volume: the same shape, 0.8 the size, a weaving z that forks follow by where they are
+function lift(x2, y2) {
+  const x = XS + (x2 - BX1) * BK, y = (y2 - BY1) * BK, xl = XS + (-y / (-(BY0 - BY1) * BK)) * (BX0 - BX1) * BK;
+  return [x, y, ZS + 18 * (Math.sin(0.07 * y + 0.9) - Math.sin(0.9)) + 0.7 * (x - xl) + 5 * Math.sin(0.23 * x + 0.31 * y) - 5 * Math.sin(0.23 * XS)];
+}
+const HIT = lift(BX1, BY1), ROOT = lift(BX0, BY0);
+const lifted = (paths) => paths.map((pp) => ({ w: pp.w, pts2: pp.pts, pts: pp.pts.map(([x, y]) => lift(x, y)) }));
+const litAt3 = (f, x, z) => {
+  const L = f * (0.3 + 0.7 * Math.max(0, 1 - Math.hypot(x - HIT[0], z - HIT[2]) / 150));
+  return L > 0.45 ? 2 : L > 0.15 ? 1 : 0;
+};
+
+// the rain: far drops thin and dim, near drops long with bright heads that splash on the floor; the flash lights every drop
+function rain3(q, t, S, C, V, f, near) {
+  const ux = SL3 / Math.hypot(SL3, 1), uy = 1 / Math.hypot(SL3, 1), sd = S * 7 + 1 + near;
+  const at = (i, j) => {
+    const g = rand(sd, i, j, 6) * TAU, r = (R3 - 12) * Math.sqrt(rand(sd, i, j, 2));
+    return [Math.cos(g) * r, Math.sin(g) * r];
+  };
+  const BODY = near ? [C[6], C[6], V[4]] : [C[4], C[4], C[5]], HEAD = near ? [C[7], WHITE, WHITE] : [C[5], C[6], C[6]], TAIL = [C[4], C[5], V[3]];
+  trips(t, D, near ? 72 : 300, sd, near ? 40 : 30, near ? 48 : 38, (u, k, m, i) => {
+    const j = wrap(k, m), [xm, zm] = at(i, j), L = near ? 9 + rand(sd, i, j, 3) * 5 : 3 + rand(sd, i, j, 3) * 2, y = (-H3 - L) * (1 - u);
+    const x = xm - (-H3 / 2 - y) * SL3, fa = edge3(x, zm) * smooth(-H3, -H3 + 16, y);
+    if (fa > 0.02) {
+      const dk = clamp((q.depth(x, y, zm) + R3) / (2 * R3)), a = fa * (1 - 0.5 * dk), lit = litAt3(f, x, zm);
+      if (near) {
+        q.line(x - ux * L, y - uy * L, zm, x - ux * L * 0.55, y - uy * L * 0.55, zm, TAIL[lit], a);
+        q.line(x - ux * L * 0.55, y - uy * L * 0.55, zm, x - ux, y - uy, zm, BODY[lit], a);
+        q.dot(x, y, zm, HEAD[lit], a);
+      } else {
+        q.line(x - ux * L, y - uy * L, zm, x - ux * L * 0.4, y - uy * L * 0.4, zm, BODY[lit], a);
+        q.line(x - ux * L * 0.4, y - uy * L * 0.4, zm, x, y, zm, HEAD[lit], a);
+      }
+    }
+    if (!near) return;
+    // the drops before this one landed: splash
+    const dur = D / m;
+    for (let back = 1; back < 4; back++) {
+      const age = u * dur + (back - 1) * dur;
+      if (age > 0.4) break;
+      const jp = wrap(k - back, m), [xp0, zp] = at(i, jp), xp = xp0 + (H3 / 2) * SL3, fl = edge3(xp, zp), lit = litAt3(f, xp, zp);
+      if (fl > 0.02) splash3(q, xp, zp, age, 0.25 + rand(sd, i, jp, 8) * 0.65, { hot: lit ? WHITE : C[7], cool: [C[5], C[6], V[4]][lit] }, rand(sd, i, jp, 4), fl);
+    }
+  });
+}
+
+// the bolt, drawn as in 2D a stroke at a time, but each point of the channel sits in space
+function leader3(q, t, P1, V) {
+  const reach = BY0 + (BY1 - BY0) * Math.pow(Math.floor(((t - T_LEAD) / (T1 - T_LEAD)) * 9) / 9, 1.25);
+  for (const p of P1)
+    for (let i = 0; i < p.pts.length - 1; i++) {
+      if (p.pts2[i + 1][1] > reach) break;
+      q.line(...p.pts[i], ...p.pts[i + 1], p.w >= 1 ? V[2] : V[1]);
+      if (i % 4 === 0) q.glow(...p.pts[i], 6, V[3], 0.22 * p.w);
+    }
+}
+
+// a stroke: a violet sheath, a pale blue body, a white-hot core (two pixels wide at the peak), light all along
+function stroke3(q, paths, k, V) {
+  for (const pass of [0, 1, 2])
+    for (const p of paths) {
+      const trunk = p.w >= 1;
+      if (!trunk && (k < 0.4 || (pass === 0 && p.w < 0.5))) continue;
+      for (let i = 0; i < p.pts.length - 1; i++) {
+        const A = p.pts[i], B = p.pts[i + 1], l = Math.max(1, Math.hypot(B[0] - A[0], B[1] - A[1], B[2] - A[2]));
+        for (let d = 0; d <= l; d += 0.6) {
+          const s = d / l;
+          q.at(A[0] + (B[0] - A[0]) * s, A[1] + (B[1] - A[1]) * s, A[2] + (B[2] - A[2]) * s, (pp) => {
+            if (pass === 0) pp.circle(0, 0, trunk ? (k > 0.6 ? 2.3 : 1.7) : 1.2, k > 0.6 ? V[2] : V[1]);
+            else if (pass === 1) pp.circle(0, 0, trunk ? (k > 0.6 ? 1.4 : 0.9) : 0.6, trunk ? V[4] : V[3]);
+            else if (trunk) {
+              pp.px(0, 0, k > 0.3 ? WHITE : V[4]);
+              if (k > 0.85) pp.px(1, 0, WHITE);
+            } else if (p.w > 0.4 && k > 0.6) pp.px(0, 0, V[4]);
+          });
+        }
+        if (pass === 0 && i % 3 === 0) q.glow(...A, trunk ? 18 : 8, V[3], (trunk ? 0.5 : 0.3) * k * p.w);
+      }
+    }
+}
+
+function bolt3(q, t, S, V) {
+  const P1 = lifted(channel(S));
+  if (t < T1) return leader3(q, t, P1, V);
+  // the restrike runs down the same channel, with fewer, shorter forks
+  const P2 = [P1[0], ...lifted(tree(new Rng(S * 31 + 2), BX0, BY0, BX1, BY1, 0.3, 0.3).slice(1).filter((_, i) => i < 2))];
+  const s = t >= T2 ? 2 : 1, a = t - (s === 2 ? T2 : T1), k = env(t, s === 2 ? T2 : T1, s === 2 ? F2 : F1), paths = s === 2 ? P2 : P1;
+  if (k > 0) stroke3(q, paths, k, V);
+  else if (a < 0.5) {
+    const g = 1 - a / 0.5;
+    for (const p of paths) if (p.w >= 1) for (const [x, y, z] of p.pts) q.dot(x, y, z, V[1], g * 0.9);
+  }
+}
+
+// spider lightning crawling along the underside of the canopy while the sheet lightning glows, a little further each frame
+function crawler3(q, t, S, V) {
+  const a = t - T_SHEET - 0.22;
+  if (a < 0 || a > 0.17) return;
+  const Q = tree(new Rng(S * 7 + 3), -150, -138, -26, -134, 0.2, 0.7), reach = -150 + 130 * Math.min(1, (Math.floor(a * 30) + 1) / 3), k = a < 0.1 ? 1 : 0.5;
+  const to = ([x, y]) => [(x + 88) * 0.85, -H3 + 8, (y + 136) * 2.5 - 25];
+  for (const p of Q)
+    for (let i = 0; i < p.pts.length - 1; i++) {
+      if (p.pts[i][0] > reach) break;
+      const A = to(p.pts[i]), B = to(p.pts[i + 1]);
+      q.line(...A, ...B, p.w >= 1 && k > 0.6 ? V[4] : V[3]);
+      if (p.w >= 1) q.dot(A[0], A[1] + 1, A[2], V[2], k);
+      if (i % 3 === 0) q.glow(...A, 10, V[3], 0.35 * k * p.w);
+    }
+}
+
+// where the bolt lands: a blinding hit, arcs skittering along the wet floor, sparks, steam, a glow that cools
+function strike3(q, t, S, C, V) {
+  const a = t - T1;
+  if (a < 0 || a > 1.8) return;
+  const k = flashAt(t), [hx, , hz] = HIT;
+  if (k > 0) {
+    const fr = Math.floor(t * 30 + 1e-3), Rc = new Rng(S * 977 + fr);
+    for (let i = 0; i < 5; i++) {
+      const phi = (i / 5) * TAU + Rc.range(-0.5, 0.5), l = Rc.range(14, 34) * (0.6 + 0.4 * k), cs = Math.cos(phi), sn = Math.sin(phi);
+      for (const p of tree(Rc, 0, 0, l, Rc.range(-3, 3), 0.35, 0.5, 0.6, 1)) {
+        const pts = p.pts.map(([x, y]) => [hx + x * cs - y * sn, -0.8, hz + x * sn + y * cs]);
+        q.polyline(pts, k > 0.6 && p.w > 0.5 ? V[4] : V[3]);
+        const m = pts[pts.length >> 1];
+        q.glow(m[0], -1, m[2], 8, V[3], 0.3 * k);
+      }
+    }
+    q.ball(hx, -1, hz, 2 + 3 * k, V[4]);
+    q.ball(hx, -1, hz, 1 + 2 * k, WHITE);
+    q.glow(hx, -12, hz, 95, V[2], 0.55 * k);
+    q.glow(hx, -4, hz, 40, V[3], 0.5 * k);
+    q.glow(hx, -2, hz, 14, WHITE, 0.6 * k);
+  }
+  const ps = new Particles({ rng: new Rng(S * 13 + 5), ground: () => 0, sparks: [WHITE, V[4], V[3], V[2]], haze: V[2] }), R = ps.R, steam = mix(C[4], V[3], 0.3);
+  const burst = (n, pow) => {
+    for (let i = 0; i < n; i++) {
+      const phi = R.range(0, TAU), off = R.range(0, 1.3), sp = R.range(100, 340) * pow, h = Math.sin(off) * sp;
+      ps.spawn3(P.SPARK, hx, -1, hz, Math.cos(phi) * h, -Math.cos(off) * sp, Math.sin(phi) * h, R.range(0.18, 0.6));
+    }
+    // a skirt of spray and steam blown out along the floor
+    for (let i = 0; i < 8 * pow; i++) {
+      const phi = R.range(0, TAU), c = Math.cos(phi), s = Math.sin(phi), v = R.range(30, 90);
+      ps.spawn3(P.VAPOUR, hx + c * R.range(2, 8), -R.range(1, 3), hz + s * R.range(2, 8), c * v, -R.range(4, 16), s * v, R.range(0.6, 1.2), steam, R.range(2.5, 4.5), R.range(0, 0.08));
+    }
+  };
+  burst(60, 1);
+  let tt = 0, second = false;
+  for (const dt = 1 / 120; tt + dt <= a; tt += dt) {
+    if (!second && tt >= T2 - T1) (second = true), burst(20, 0.7);
+    ps.update(dt);
+  }
+  ps.draw(q);
+  if (a < 1.6) q.glow(hx, -3, hz, 16, V[2], 0.4 * (1 - a / 1.6) ** 2);
+}
+
+// pools on the wet floor: they hold the sky, and flash with it
+function pools3(S) {
+  return Array.from({ length: 6 }, (_, i) => {
+    const a = rand(S, i, 64) * TAU, d = (R3 - 30) * Math.sqrt(rand(S, i, 65));
+    return { x: Math.cos(a) * d, z: Math.sin(a) * d, r: 9 + rand(S, i, 63) * 10, sx: 1 + rand(S, i, 66) * 0.7 };
+  });
+}
+function floor3(q, t, S, C, V, f) {
+  const F = field(S + 3, 256, 128), P = pools3(S), [hx, , hz] = HIT;
+  q.plane(0, 0, 0, null, R3 + 1, (u, v, o) => {
+    const d = Math.hypot(u, v) / R3;
+    if (d > 1) return;
+    if (d > 0.975) return void ((o.c = d > 0.99 ? C[3] : C[4]), (o.l = V[3]), (o.k = 0.04 + f * 0.2));
+    const wet = sample(F, u * 1.2 + 31, v * 1.2 + 9), near = Math.hypot(u - hx, v - hz) / 150;
+    o.c = wet > 0.55 ? C[2] : C[1];
+    o.a = 0.5 + 0.3 * smooth(0.5, 0.95, wet);
+    o.blend = true;
+    if (f > 0.04) (o.l = V[3]), (o.k = f * 0.28 * Math.max(0, 1 - near) ** 2);
+  });
+  for (const pp of P)
+    q.plane(pp.x, 0, pp.z, null, pp.r * pp.sx + 1, (u, v, o) => {
+      const d = Math.hypot(u / pp.sx, v);
+      if (d > pp.r) return;
+      const rim = d > pp.r - 1.6, near = Math.hypot(pp.x + u - hx, pp.z + v - hz) / 150, g = clamp(f * (1.35 - near));
+      o.c = g > 0.06 ? mix(C[4], rim || (g > 0.7 && d < pp.r * 0.35) ? V[4] : V[3], 0.45 + 0.55 * g) : rim ? C[5] : d < pp.r * 0.5 ? C[4] : C[3];
+      o.l = V[3];
+      o.k = g * 0.25;
+    });
+}
+
+// the cloud canopy over the volume: two rolling layers of cloud, lit from inside by every flash
+function canopy3(q, t, S, C, V, lights) {
+  const F = field(S * 3 + 1, 256, 128), RAMP = [C[0], C[1], C[2], C[3], C[4], C[5], C[6], V[4], WHITE];
+  const litAt = (x, z) => {
+    let L = 0;
+    for (const [sx, sz, R, k] of lights) {
+      const d = Math.hypot(x - sx, z - sz) / R;
+      if (d < 1) L += k * (1 - d) * (1 - d);
+    }
+    return Math.min(1, L);
+  };
+  [[-H3 + 6, 0.9, 0], [-H3 - 3, 0.65, 1]].forEach(([y, base, up]) => {
+    const shift = (256 * (1 + up) * t) / D;
+    q.plane(0, y, 0, null, R3, (u, v, o) => {
+      const d = Math.hypot(u, v) / R3;
+      if (d > 1) return;
+      const U = u * 1.7 + shift + up * 77, W = v * 1.7 + 20 + up * 33, n = sample(F, U, W), a = clamp((n - 0.33) * 3.6) * (1 - smooth(0.78, 1, d)) * base;
+      if (a < 0.04) return;
+      const gx = sample(F, U - 1.2, W - 1.2) - n, L = litAt(u, v);
+      o.c = RAMP[Math.min(8, 2 + (n > 0.5 ? 1 : 0) + (gx > 0.008 ? 1 : 0) + (gx > 0.03 ? 1 : 0) + Math.round(L * 3.8))];
+      o.a = a;
+      o.blend = true;
+      if (L > 0.03) (o.l = V[3]), (o.k = L * 0.3);
+    });
+  });
+}
+
+// mist kicked up by the rain, drifting low along the ground, tinted by the flash
+const RM = 76;
+function mist3(q, t, S, C, V, f) {
+  const items = [], tint = f > 0.05 ? mix(C[4], V[3], f) : C[4];
+  for (let i = 0; i < 14; i++) {
+    const z = (rand(S, i, 81) * 2 - 1) * (RM - 12), half = Math.sqrt(RM * RM - z * z), g = (rand(S, i, 82) + (3 * t) / D) % 1;
+    items.push({ x: half * (1 - 2 * g), y: -(3 + rand(S, i, 83) * 7), z, r: 9 + rand(S, i, 84) * 8, a: Math.sin(Math.PI * g) });
+  }
+  for (const m of q.sort(items, (e) => [e.x, e.y, e.z]))
+    q.disc(m.x, m.y, m.z, m.r, (d, g) => (g < -0.4 && d > 0.45 ? tint : mix(C[3], tint, 0.4)), (d) => (1 - d) ** 1.2 * 0.5 * m.a * edge3(m.x, m.z, RM + 4));
+}
+
+export const three = {
+  meta: { size: [224, 180], origin: [112, 144], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    t = snap(t);
+    const q = space(p, o), S = o.seed, C = fit(o.palette, 8), V = fit(o.bolt, 6), f = flashAt(t), sh = sheetAt(t), far = farAt(t);
+    const lead = t > T_LEAD && t < T1 ? 0.25 + 0.2 * Math.sin(t * 70) : 0, pre = t > T_LEAD - 0.5 && t < T_LEAD ? 0.12 * Math.max(0, Math.sin((t - T_LEAD) * 41)) : 0;
+    const Lc = f + lead * 0.5 + pre, lights = [];
+    if (Lc > 0) lights.push([ROOT[0], ROOT[2], 150, Lc]);
+    if (sh > 0) lights.push([-45, -30, 120, sh]);
+    if (far > 0) lights.push([50, -50, 80, far]);
+    if (far2At(t) > 0) lights.push([-10, 55, 70, far2At(t)]);
+    floor3(q, t, S, C, V, f);
+    rain3(q, t, S, C, V, f, 0);
+    rain3(q, t, S, C, V, f, 1);
+    if (t > T_LEAD && t < T2 + 0.7) bolt3(q, t, S, V);
+    crawler3(q, t, S, V);
+    strike3(q, t, S, C, V);
+    for (const [x, z, R, k] of lights) q.glow(x, -H3 + 10, z, R * 0.7, V[2], 0.3 * Math.min(1, k));
+    canopy3(q, t, S, C, V, lights);
+    mist3(q, t, S, C, V, f);
+  },
+};

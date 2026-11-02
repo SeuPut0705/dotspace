@@ -1,7 +1,7 @@
 // The lit floor line is adapted from Sprite Fusion's open-source heal (https://www.spritefusion.com/pixel-art-vfx/heal),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, sparkle, flare, band, clamp, smooth, seg, lerp, ease, TAU, WHITE, mix, READY } from "../../core/index.js";
-import { GOLD, ASH, shapeOf, recolor, toneOf, feather, Feathers, oval, FAR, NEAR } from "./_lib.js";
+import { Particles, Lights, P, Rng, fit, sparkle, flare, band, space, clamp, smooth, seg, lerp, ease, TAU, WHITE, mix, READY } from "../../core/index.js";
+import { GOLD, ASH, shapeOf, recolor, toneOf, feather, Feathers, Feathers3, oval, FAR, NEAR, leaf, rod, nearer } from "./_lib.js";
 
 export const meta = {
   name: "Resurrection",
@@ -408,3 +408,401 @@ export function create(o) {
     },
   };
 }
+
+// ---- 3D
+// The wings grow from the shoulders on the back, swept back and tilted: each is a plane of real feathers, seen
+// from the front, the side and the back. The shaft of light is a cone of rays; the halo, the pour ring and the
+// downstroke's ripple are true circles; everything thrown flies out in the round.
+const GAM = 0.55, ZB = -5; // how far the wings sweep back, and how far behind the body their roots sit
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+
+export const three = {
+  meta: { size: [208, 176], origin: [104, 148], camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), AS = fit(o.ash, 6), A = o.actor, S = shapeOf(A), R = new Rng(o.seed);
+    const WING = [C[2], C[3], C[4], C[5], C[6], WHITE];
+    const ps = new Particles({ rng: R, ground: () => 0, sparks: [WHITE, C[6], C[5], C[3]], haze: C[4] });
+    const lights = new Lights(), loose = new Feathers3(R, 0);
+    const rows = new Map();
+    for (const [x, y] of S.edge) (rows.get(y) ?? rows.set(y, []).get(y)).push(x);
+    // the shaft of light: a few rays, each at its own side and distance from the axis, with its own width and shimmer
+    const rays = Array.from({ length: 6 }, (_, i) => ({ az: i * 2.399 + 0.4, f: R.range(0.1, 0.85), w: R.range(0.1, 0.2), b: R.range(0.55, 1), fr: R.range(1.5, 3.5), ph: R.range(0, TAU) }));
+    const cores = [...rays].sort((a, b) => b.b - a.b).slice(0, 2);
+    const motes = Array.from({ length: 34 }, () => ({ f: R.range(0, 0.95), a: R.range(0, TAU), y: R.range(0, 1), v: R.range(4, 11), amp: R.range(0.6, 2.4), ph: R.range(0, TAU), fr: R.range(0.6, 1.4) }));
+    // each feather opens on its own beat, outer ones last, and comes off at its own time, tips first
+    const reach = QUILLS.map(([s, ang, len]) => { const b = along(ARM_OPEN, s); return Math.hypot(b[0] + Math.cos(ang) * len, b[1] + Math.sin(ang) * len); }), far = Math.max(...reach);
+    const quills = QUILLS.map(([s, ang, len, wid, kind], i) => {
+      const off = () => SC + (1 - reach[i] / far) * 0.2 + R.range(0, 0.04);
+      return { s, ang, len, wid, kind, fold: 1.45 + (i % 6) * 0.04, open: kind === 0 ? 0.06 + (s - 0.8) * 0.45 : kind === 1 ? s * 0.06 : 0.03 + s * 0.05, off: [off(), off()], gone: [false, false] };
+    });
+    let t = 0, poured = false, flashed = false, formed = false, beaten = false;
+
+    const climbY = (tt) => lerp(1, S.top - 2, ease.inOutSine(seg(tt, CL0, CL1)));
+    const shaftK = (tt) => smooth(0, 0.12, tt) * (1 - smooth(3.0, 3.75, tt));
+    const shaftW = (tt) => lerp(0.4, 1, ease.outCubic(seg(tt, 0, 0.6))) * lerp(1, 0.12, ease.inCubic(seg(tt, 2.9, 3.6)));
+    const halfW = (y, tt) => lerp(8, 25, (y - TOP) / -TOP) * shaftW(tt);
+    // the rays' axes at height y
+    const rayAt = (r, y) => [Math.cos(r.az) * r.f * halfW(y, t), y, Math.sin(r.az) * r.f * halfW(y, t)];
+
+    // a wing's plane: its span (swept back), its slope down it, and the normal; si 0 the right wing, 1 the left
+    const frame = (si, tt) => {
+      const side = si ? -1 : 1, b = 0.3 - 0.3 * beat(tt), s = Math.sin(b), c = Math.cos(b), sg = Math.sin(GAM), cg = Math.cos(GAM);
+      const e1 = [side * cg, 0, -sg], e2 = [side * s * sg, c, s * cg];
+      return { e1, e2, n: cross(e1, e2), x0: side * SHOULDER[0] };
+    };
+    // a point (lx, ly) in the wing's own plane, from its shoulder, in the world
+    const at = (F, lx, ly) => [F.x0 + lx * F.e1[0] + ly * F.e2[0], SHOULDER[1] + ly * F.e2[1], ZB + lx * F.e1[2] + ly * F.e2[2]];
+    const head = (F, ang) => [Math.cos(ang) * F.e1[0] + Math.sin(ang) * F.e2[0], Math.cos(ang) * F.e1[1] + Math.sin(ang) * F.e2[1], Math.cos(ang) * F.e1[2] + Math.sin(ang) * F.e2[2]];
+
+    // the pose of every feather of one wing at time tt, in its own plane from the shoulder: quill base (x, y), angle, length, width, alpha, hot
+    function wing3(tt, si) {
+      const oa = ease.outBack(seg(tt, W0, W0 + 0.4), 1.6), rot = beat(tt), om = (beat(tt) - beat(tt - 0.03)) / 0.03;
+      const arm = ARM_FOLD.map((f, i) => [lerp(f[0], ARM_OPEN[i][0], oa), lerp(f[1], ARM_OPEN[i][1], oa)]);
+      const cr = Math.cos(rot), sr = Math.sin(rot), place = ([x, y]) => [x * cr - y * sr, x * sr + y * cr];
+      const a0 = smooth(W0, W0 + 0.1, tt), out = [];
+      quills.forEach((q, i) => {
+        if (tt >= q.off[si] + 0.05) return;
+        const of = ease.outBack(seg(tt, W0 + q.open, W0 + q.open + 0.42), 2), [bx, by] = place(along(arm, q.s));
+        const ang = lerp(q.fold, q.ang, of) + rot - clamp(om * 0.045 * FLEX[q.kind], -0.5, 0.5);
+        out.push({ i, q, x: bx, y: by, ang, len: q.len * lerp(0.3, 1, of), wid: q.wid, a: a0, hot: tt < W0 + q.open + 0.07 || tt >= q.off[si] ? 1 : 0 });
+      });
+      return { out, arm: arm.map(place) };
+    }
+
+    function drawWing(q, si) {
+      const F = frame(si, t), { out, arm } = wing3(t, si);
+      if (!out.length) return;
+      const order = [...out].sort((a, b) => b.q.ang - a.q.ang), put = (f) => {
+        const [x, y, z] = at(F, f.x, f.y);
+        leaf(q, x, y, z, head(F, f.ang), F.n, f.len, f.wid, WING, f.a, 1, f.hot);
+      };
+      // the lowest feathers first, so each one above lays its warm trailing edge over the next; coverts on top
+      for (const f of order) if (f.q.kind !== 2) put(f);
+      for (const f of order) if (f.q.kind === 2) put(f);
+      // the leading edge: a white bone of light with a gold underside
+      const k = out.length / quills.length, pts = arm.map(([x, y]) => at(F, x, y)), a0 = out[0].a;
+      if (k > 0.5) {
+        q.polyline(pts.map(([x, y, z]) => [x, y + 1, z]), C[5], a0);
+        q.polyline(pts, WHITE, a0);
+      }
+      const [cx, cy, cz] = at(F, 24, -14);
+      q.glow(cx, cy, cz, 38, C[4], 0.26 * a0 * k);
+      const g = ((t - W0 - 0.45) * 1.3) % 1;
+      if (k > 0.9 && t > W0 + 0.45 && g < 0.8) {
+        const [lx, ly] = along(arm, g / 0.8), [gx, gy, gz] = at(F, lx, ly), s = 2 + Math.sin((g / 0.8) * Math.PI) * 2;
+        q.at(gx, gy, gz, (pp) => sparkle(pp, 0, 0, s, WHITE, C[6], 0.4));
+      }
+      q.glowLine(...pts[0], ...pts[3], 7, C[5], 0.25 * a0 * k);
+      // the tips of the primaries leave trails of light as they come down
+      if (t > B1 + 0.03 && t < B2 + 0.14)
+        for (const i of [6, 8, 10]) {
+          const trail = [];
+          for (let j = 0; j < 10; j++) {
+            const tt = Math.max(B1 + 0.01, t - j * 0.012), w = wing3(tt, si).out.find((f) => f.i === i);
+            if (w) trail.push(at(frame(si, tt), w.x + Math.cos(w.ang) * (w.len - 1), w.y + Math.sin(w.ang) * (w.len - 1)));
+          }
+          const fade = 1 - smooth(B2, B2 + 0.14, t);
+          for (let j = 1; j < trail.length; j++) q.line(...trail[j - 1], ...trail[j], j < 3 ? WHITE : j < 6 ? C[6] : C[4], fade * (1.1 - j / 10));
+        }
+    }
+
+    // the shaft: a cone of rays pouring down onto the fallen, each shimmering on its own beat
+    function shaft(q) {
+      const k = shaftK(t);
+      if (k <= 0) return;
+      const front = lerp(TOP, 1, ease.inQuad(seg(t, 0, POUR))), yEnd = Math.min(front, 0);
+      if (yEnd > TOP + 2)
+        for (const r of rays) {
+          rod(q, ...rayAt(r, TOP), ...rayAt(r, yEnd), 3.6 * r.w * halfW(TOP, t), 3.6 * r.w * halfW(yEnd, t), (u, v, out) => {
+            const y = TOP + u * (yEnd - TOP), e = Math.exp(-2.2 * v * v) * r.b * (0.72 + 0.28 * Math.sin(t * r.fr + r.ph)) * k * (0.75 + 0.25 * smooth(TOP, 0, y)) * smooth(front, front - 10, y);
+            out.c = C[6];
+            out.a = e * 0.14;
+            out.l = C[4];
+            out.k = e * 0.09;
+          });
+        }
+      // the brightest rays show as fine lines, light running down them
+      for (const r of cores) {
+        const sh = 0.75 + 0.25 * Math.sin(t * r.fr + r.ph);
+        if (yEnd > TOP + 2)
+          q.line(...rayAt(r, TOP), ...rayAt(r, yEnd), (u) => (0.5 + 0.5 * Math.sin((TOP + u * (yEnd - TOP)) * 0.13 - t * 11 + r.ph) > 0.8 ? WHITE : C[6]), (u) => {
+            const y = TOP + u * (yEnd - TOP);
+            return k * sh * (0.15 + 0.55 * (0.5 + 0.5 * Math.sin(y * 0.13 - t * 11 + r.ph))) * smooth(front, front - 10, y);
+          });
+      }
+      // the head of the pour
+      if (t < POUR + 0.05 && front > TOP + 14) {
+        const fy = Math.min(front, 0);
+        q.glow(0, fy, 0, 14, C[5], 0.7 * k);
+        for (let dy = -6; dy <= 0; dy++) q.dot(0, fy + dy, 0, dy > -3 ? WHITE : C[6], 1 + dy / 7);
+      }
+      // dust motes lit where they cross a ray
+      for (const m of motes) {
+        const y = TOP + ((((m.y * -TOP + t * m.v) % -TOP) + -TOP) % -TOP);
+        if (y > front) continue;
+        const w = halfW(y, t), x = Math.cos(m.a) * m.f * w + Math.sin(t * m.fr + m.ph) * m.amp, z = Math.sin(m.a) * m.f * w + Math.cos(t * m.fr + m.ph) * m.amp;
+        let I = 0;
+        for (const r of rays) {
+          const [rx, , rz] = rayAt(r, y), sig = Math.max(1, 1.2 * r.w * w);
+          I += r.b * Math.exp(-(((x - rx) ** 2 + (z - rz) ** 2) / (sig * sig))) * (0.72 + 0.28 * Math.sin(t * r.fr + r.ph));
+        }
+        I *= k;
+        if (I < 0.25) continue;
+        q.dot(x, y, z, I > 0.75 ? WHITE : I > 0.5 ? C[6] : C[5], Math.min(1, I * 1.4));
+        q.light(x, y, z, C[5], I * 0.5);
+      }
+    }
+
+    // the floor catches the light: a pool fading into the stone
+    function pool(q) {
+      const k = shaftK(t) * smooth(POUR - 0.05, POUR + 0.1, t), w = halfW(0, t) * 1.25;
+      if (k <= 0) return;
+      q.glow(0, -2, 0, w * 1.6, C[4], 0.3 * k);
+      q.plane(0, 0, 0, null, w + 1, (u, v, out) => {
+        const d = Math.hypot(u, v) / w;
+        if (d >= 1) return;
+        out.c = d < 0.15 ? WHITE : d < 0.3 ? C[5] : d < 0.6 ? C[5] : d < 0.85 ? C[4] : C[3];
+        out.a = k * (1 - d) * 0.9;
+        out.blend = true;
+        out.l = C[4];
+        out.k = 0.2 * k * (1 - d);
+      });
+    }
+
+    // the halo: a true circle that closes round the head from the front, both ways
+    function halo(q) {
+      const form = ease.outCubic(seg(t, H0, H1)), k = 1 - smooth(3.35, 3.9, t);
+      if (form <= 0 || k <= 0) return;
+      const white = t >= H1 && t < H1 + 0.06, gl = (t - H1) * 4.2 + Math.PI / 2, n = 120, rr = HRX * (0.9 + 0.1 * form);
+      for (let j = 0; j < n; j++) {
+        const g = (j / n) * TAU, fromFront = Math.abs((((g - Math.PI / 2 + Math.PI) % TAU) + TAU) % TAU - Math.PI);
+        if (fromFront > form * Math.PI + 0.02) continue;
+        const x = HX + Math.cos(g) * rr, z = Math.sin(g) * rr, dg = Math.abs((((g - gl + Math.PI) % TAU) + TAU) % TAU - Math.PI), hot = white || dg < 0.22 || fromFront > form * Math.PI - 0.3;
+        if (nearer(q, x, HY, z, HX, HY, 0) >= 0) {
+          q.px(x, HY, z, hot ? WHITE : C[6]);
+          q.px(x, HY + 1, z, hot ? C[6] : C[4]);
+        } else q.dot(x, HY, z, hot ? C[6] : C[5], k * 0.9);
+      }
+      q.glow(HX, HY, 0, 20, C[4], 0.4 * k * form);
+      q.glow(HX, HY + 1, 0, 9, WHITE, 0.2 * k * form);
+      const gx = HX + Math.cos(gl) * HRX, gz = Math.sin(gl) * HRX, gn = nearer(q, gx, HY, gz, HX, HY, 0) / HRX;
+      if (t > H1 && gn > 0.2) q.at(gx, HY + 0.5, gz, (pp) => sparkle(pp, 0, 0, 2 + 2 * gn, C[6], C[4], 0.35 * k));
+      if (t >= H1 && t < H1 + 0.3) q.at(HX, HY + 1, 0, (pp) => sparkle(pp, 0, 0, 7 * (1 - (t - H1) / 0.3), WHITE, C[5], 0.6));
+    }
+
+    function body(q, p) {
+      if (t >= CL1 + 0.6) return;
+      const Ly = climbY(t);
+      if (t < CL1) {
+        recolor(p, A, (c, x, y) => {
+          const d = y - Ly;
+          if (d < -0.5) return toneOf(AS, c);
+          if (d < 0.5) return WHITE;
+          if (d < 1.5) return C[6];
+          const k = Math.exp(-(d - 1.5) / 4) * 0.7;
+          return k > 0.08 ? mix(c, C[5], k) : 0;
+        });
+        // the outline catches the light where the glow has been
+        for (const [x, y] of S.out) {
+          const d = y - Ly;
+          if (d < -0.5 || d > 12) continue;
+          p.dot(x, y, d < 1 ? WHITE : d < 5 ? C[5] : C[4], d < 1 ? 1 : 1.1 - d / 12);
+        }
+        if (t > CL0) {
+          q.glow(0, Ly, 0, 26, C[4], 0.5);
+          q.glow(0, Ly, 0, 8, WHITE, 0.3);
+          q.glow(0, -18, 0, 36, C[5], 0.16 * seg(t, CL0, CL1));
+        }
+        return;
+      }
+      // the hero frame: the body flashes white, then cools through gold back to itself
+      const u = t - CL1;
+      recolor(p, A, (c) => (u < 0.06 ? WHITE : u < 0.45 ? mix(c, C[5], 0.55 * Math.pow(1 - u / 0.45, 2)) : 0));
+      if (u < 0.25) for (const [x, y] of S.out) p.dot(x, y, u < 0.08 ? WHITE : C[5], 1 - u / 0.25);
+    }
+
+    // a point in the round at height y, at a random direction (a, e): used for the bursts
+    const ring = (a, r) => [Math.cos(a) * r, Math.sin(a) * r];
+
+    return {
+      update(dt) {
+        t += dt;
+        // light streaks pour down the shaft, faster as they fall
+        if (t > 0.05 && t < 2.9 && R.chance(0.16)) {
+          const f = R.range(0, 0.9), a = R.range(0, TAU), y = TOP + R.range(8, 24), v0 = R.range(50, 90), life = Math.log(1 + (3 * (-y - 2)) / v0) / 3, hw = f * halfW(y, t);
+          ps.spawn3(P.STREAK, Math.cos(a) * hw, y, Math.sin(a) * hw, Math.cos(a) * f * 2, v0, Math.sin(a) * f * 2, life, R.chance(0.5) ? C[6] : C[5]);
+        }
+        if (t > 0.3 && t < 2.8 && R.chance(0.05)) {
+          const [x, z] = ring(R.range(0, TAU), R.next() * halfW(-30, t));
+          ps.spawn3(P.STAR, x, -R.range(4, 90), z, R.range(-3, 3), R.range(-4, 6), R.range(-3, 3), R.range(0.4, 0.8), R.chance(0.5) ? C[6] : WHITE, R.range(0.6, 1.8));
+        }
+        if (!poured && t >= POUR) {
+          poured = true;
+          lights.add(0, -12, 42, C[5], 0.9, 0.4);
+          lights.add(0, -6, 16, WHITE, 0.6, 0.1);
+          for (let i = 0; i < 14; i++) {
+            const [x, z] = ring(R.range(0, TAU), 18 * Math.sqrt(R.next()));
+            ps.spawn3(P.STAR, x, -R.range(0, 6), z, R.range(-20, 20), -R.range(10, 50), R.range(-20, 20), R.range(0.5, 1.1), R.chance(0.5) ? WHITE : C[6], R.range(0.6, 2.2));
+          }
+          for (let i = 0; i < 10; i++) {
+            const p = R.range(0, 1.2), g = R.range(0, TAU), sp = R.range(60, 150);
+            ps.spawn3(P.SPARK, R.range(-3, 3), -1, R.range(-3, 3), Math.sin(p) * Math.cos(g) * sp, -Math.cos(p) * sp, Math.sin(p) * Math.sin(g) * sp, R.range(0.25, 0.5));
+          }
+        }
+        // life climbs the body: bits of light peel off the rim at the front
+        if (t > CL0 && t < CL1) {
+          const Ly = Math.round(climbY(t));
+          for (const y of [Ly, Ly + 1]) {
+            const xs = rows.get(y);
+            if (!xs || !R.chance(0.35)) continue;
+            const x = R.pick(xs), s = Math.sign(x + 0.5);
+            ps.spawn3(R.chance(0.6) ? P.MOTE : P.STAR, x + s, y, R.range(-4, 4), s * R.range(8, 30), -R.range(15, 45), R.range(-15, 15), R.range(0.35, 0.7), R.chance(0.5) ? C[6] : C[5], R.range(0.5, 1.1));
+          }
+        }
+        if (!flashed && t >= CL1) {
+          flashed = true;
+          lights.add(0, -24, 64, C[5], 0.7, 0.5);
+          lights.add(0, -30, 28, WHITE, 0.7, 0.1);
+          for (let i = 0; i < 18; i++) {
+            const a = R.range(0, TAU), e = R.range(-0.7, 0.7), sp = R.range(30, 110);
+            ps.spawn3(P.STAR, Math.cos(a) * 6, -24 + Math.sin(e) * 12, Math.sin(a) * 6, Math.cos(a) * Math.cos(e) * sp, Math.sin(e) * sp * 0.7 - 20, Math.sin(a) * Math.cos(e) * sp, R.range(0.4, 0.9), R.chance(0.5) ? WHITE : C[6], R.range(0.6, 2));
+          }
+        }
+        // motes spiral in to make the halo
+        if (t > H0 - 0.2 && t < H0 + 0.1 && R.chance(0.6)) {
+          const g = R.range(0, TAU), D = R.range(14, 24), x = HX + Math.cos(g) * D, z = Math.sin(g) * D, y = HY + R.range(-0.5, 0.5) * D, tx = HX + Math.cos(g + 0.6) * HRX, tz = Math.sin(g + 0.6) * HRX;
+          const T = R.range(0.16, 0.24), l = Math.hypot(tx - x, HY - y, tz - z) || 1, v = (l * 3) / (Math.exp(3 * T) - 1);
+          ps.spawn3(P.STREAK, x, y, z, ((tx - x) / l) * v, ((HY - y) / l) * v, ((tz - z) / l) * v, T, R.chance(0.5) ? C[6] : C[5]);
+        }
+        if (!formed && t >= H1) {
+          formed = true;
+          lights.add(HX, HY, 30, C[6], 0.8, 0.3);
+        }
+        // the wings burst open with a scatter of light
+        if (t > W0 && t < W0 + 0.35 && R.chance(0.5))
+          for (const si of [0, 1]) {
+            const f = R.pick(wing3(t, si).out);
+            if (f) {
+              const [x, y, z] = at(frame(si, t), f.x + Math.cos(f.ang) * f.len, f.y + Math.sin(f.ang) * f.len);
+              ps.spawn3(P.STAR, x, y, z, (si ? -1 : 1) * R.range(5, 25), -R.range(5, 25), R.range(-12, 6), R.range(0.3, 0.6), R.chance(0.5) ? WHITE : C[6], R.range(0.6, 1.6));
+            }
+          }
+        // while the wings hold, light twinkles on the tips and motes lift off them
+        if (t > W0 + 0.45 && t < SC)
+          for (const si of [0, 1]) {
+            const F = frame(si, t);
+            if (R.chance(0.045)) {
+              const f = R.pick(wing3(t, si).out.filter((w) => w.q.kind === 0));
+              if (f) {
+                const [x, y, z] = at(F, f.x + Math.cos(f.ang) * (f.len - 2), f.y + Math.sin(f.ang) * (f.len - 2));
+                ps.spawn3(P.STAR, x, y, z, 0, -R.range(2, 8), 0, R.range(0.3, 0.6), R.chance(0.5) ? WHITE : C[6], R.range(1, 2.4));
+              }
+            }
+            if (R.chance(0.03)) {
+              const f = R.pick(wing3(t, si).out);
+              if (f) {
+                const [x, y, z] = at(F, f.x + Math.cos(f.ang) * f.len * 0.7, f.y + Math.sin(f.ang) * f.len * 0.7);
+                ps.spawn3(P.EMBER, x, y, z, R.range(-8, 8), -R.range(8, 25), R.range(-8, 8), R.range(0.6, 1.1), C[5]);
+              }
+            }
+          }
+        // the downstroke: a gust along the floor, light flung off the tips, a few feathers shaken loose
+        if (!beaten && t >= B2 - 0.03) {
+          beaten = true;
+          for (const si of [0, 1]) {
+            const side = si ? -1 : 1, F = frame(si, t), w = wing3(t, si).out;
+            lights.add(side * 30, -34, 46, C[5], 0.6, 0.4, ZB - 8);
+            // the gust skims out along the floor as streaks of lit dust
+            for (let i = 0; i < 7; i++) {
+              const e = R.range(-0.9, 0.9), sp = R.range(90, 160), d = R.range(8, 22);
+              ps.spawn3(P.MOTE, side * Math.cos(e) * d, -R.range(1, 4), Math.sin(e) * d, side * Math.cos(e) * sp, -R.range(0, 8), Math.sin(e) * sp, R.range(0.25, 0.45), R.chance(0.5) ? C[6] : C[5], R.range(0.6, 1));
+            }
+            for (const f of w)
+              if (f.q.kind === 0) {
+                const [x, y, z] = at(F, f.x + Math.cos(f.ang) * f.len, f.y + Math.sin(f.ang) * f.len);
+                ps.spawn3(P.SPARK, x, y, z, side * R.range(30, 90), R.range(60, 160), R.range(-30, 30), R.range(0.3, 0.6));
+              }
+            for (let i = 0; i < 3; i++) {
+              const f = R.pick(w.filter((v) => v.q.kind === 1));
+              if (f) {
+                const [x, y, z] = at(F, f.x + Math.cos(f.ang) * f.len * 0.6, f.y + Math.sin(f.ang) * f.len * 0.6);
+                loose.add({ x, y, z, vx: side * R.range(20, 70), vy: R.range(10, 50), vz: R.range(-20, 20), dir: head(F, f.ang), len: R.range(9, 12), wid: R.range(2.2, 2.8), life: R.range(1.2, 1.6), side });
+              }
+            }
+          }
+        }
+        // the wings come apart, tips first: each feather flashes and breaks into small ones and motes
+        for (const si of [0, 1]) {
+          const side = si ? -1 : 1;
+          for (const q of quills) {
+            if (q.gone[si] || t < q.off[si]) continue;
+            q.gone[si] = true;
+            const tt = q.off[si] - 0.001, F = frame(si, tt), f = wing3(tt, si).out.find((w) => w.q === q);
+            if (!f) continue;
+            const ca = Math.cos(f.ang), sa = Math.sin(f.ang), n = q.kind === 2 ? 0 : 1, at1 = (u) => at(F, f.x + ca * f.len * u, f.y + sa * f.len * u);
+            for (let j = 0; j < n; j++) {
+              const [x, y, z] = at1(0.55), ox = x - side * SHOULDER[0], oy = y - SHOULDER[1], oz = z - ZB, l = Math.hypot(ox, oy, oz) || 1, sp = R.range(60, 150);
+              loose.add({ x, y, z, vx: (ox / l) * sp + R.range(-15, 15), vy: (oy / l) * sp * 0.5 - R.range(20, 50), vz: (oz / l) * sp + R.range(-15, 15), dir: head(F, f.ang + R.range(-0.4, 0.4)), len: R.range(9, 12), wid: R.range(2.2, 2.8), life: R.range(1, 1.45), side });
+            }
+            for (let j = 0; j < 2; j++) {
+              const [x, y, z] = at1(R.range(0.3, 1));
+              ps.spawn3(P.EMBER, x, y, z, R.range(-15, 15), -R.range(10, 40), R.range(-15, 15), R.range(0.6, 1.1), C[5]);
+            }
+            if (R.chance(0.6)) {
+              const [x, y, z] = at1(1);
+              ps.spawn3(P.STAR, x, y, z, 0, -R.range(5, 15), 0, R.range(0.3, 0.6), WHITE, R.range(1, 2));
+            }
+          }
+        }
+        // the halo melts into rising motes
+        if (t > 3.35 && t < 3.75 && R.chance(0.4)) {
+          const g = R.range(0, TAU);
+          ps.spawn3(P.EMBER, HX + Math.cos(g) * HRX, HY, Math.sin(g) * HRX, R.range(-6, 6), -R.range(10, 25), R.range(-6, 6), R.range(0.5, 0.9), C[5]);
+        }
+        ps.update(dt);
+        lights.update(dt);
+        loose.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o);
+        pool(q);
+        // the pour: a ring of light running out over the floor
+        if (t > POUR && t < POUR + 0.4) {
+          const u = seg(t, POUR, POUR + 0.4), B5 = C.slice(3), n = B5.length, hot = t < POUR + 0.06;
+          q.ring(0, 0, 0, 4 + 32 * ease.outCubic(u), Math.max(1.5, 5 * (1 - u) + 1), (v) => {
+            const w = 1 - v;
+            return w < 0.15 ? (hot ? WHITE : B5[n - 1]) : w < 0.4 ? B5[n - 2] : w < 0.7 ? B5[n - 3] : B5[n - 4];
+          }, (v) => (1.1 - u) * (1 - v < 0.4 ? 1.2 : 0.15 + v));
+        }
+        body(q, p);
+        // the downstroke sends a ripple of light out over the floor
+        if (t > B2 - 0.03 && t < B2 + 0.45) {
+          const u = seg(t, B2 - 0.03, B2 + 0.45), fx = 10 + 70 * ease.outCubic(u);
+          q.plane(0, 0, 0, null, fx, (x, z, out) => {
+            const v = 1 - (fx - Math.hypot(x, z)) / 12;
+            if (v < 0) return;
+            out.c = v > 0.83 ? WHITE : v > 0.58 ? C[6] : C[4];
+            out.a = Math.min(1, (1 - u) * v * 1.3);
+            out.blend = true;
+            out.l = C[5];
+            out.k = 0.25 * (1 - u) * v;
+          });
+        }
+        // the wings light the character from behind
+        const wk = smooth(W0, W0 + 0.2, t) * (1 - smooth(SC, SC + 0.3, t));
+        if (wk > 0) {
+          for (const [x, y] of S.out) if (y < -8) p.light(x, y, C[5], 0.55 * wk);
+          q.glow(0, -34, ZB, 76, C[4], 0.14 * wk);
+        }
+        drawWing(q, 0);
+        drawWing(q, 1);
+        halo(q);
+        if (t >= CL1 && t < CL1 + 0.22) q.at(0, S.top - 1, 0, (pp) => flare(pp, 0, 0, 22 * (1 - (t - CL1) / 0.22), 1 - (t - CL1) / 0.22, C.slice(3)));
+        loose.draw(q, WING);
+        ps.draw(q);
+        shaft(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

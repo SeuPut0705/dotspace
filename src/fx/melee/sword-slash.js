@@ -1,6 +1,7 @@
 // The crescent, echo, trail, glint and spark recipe is adapted from Sprite Fusion's open-source slash
 // (https://www.spritefusion.com/pixel-art-vfx/slash), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, P, Rng, fit, sparkle, clamp, smooth, ease, TAU, READY } from "../../core/index.js";
+import { Particles, Lights, P, Rng, fit, space, sparkle, clamp, smooth, ease, TAU, READY } from "../../core/index.js";
+import { swing, lay, slash3, slashEnd3, shavings3, spray, travel3 } from "./_lib.js";
 
 export const meta = {
   name: "Sword slash",
@@ -136,3 +137,56 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the blade's ring stands in space on the plane the 2D crescent is the front view of, a true circle round the
+// fighter's chest: its far half goes behind him, the near half cuts across the front. The thin echo rides a plane
+// turned a little further, so from the side the two part like a swept sheet. Sparks and shavings leave in a cone
+// round where the edge is heading, not only left and right.
+
+export const three = {
+  meta: { size: [164, 130], origin: [82, 104], camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 7), Rg = new Rng(o.seed), ps = new Particles({ rng: Rg, ground: () => 0, sparks: o.sparks }), lights = new Lights();
+    const R0 = o.radius, a0 = -2.55, span = 3.5;
+    const base = swing({ cx: 6, cy: -26, R: R0, sy: 0.6, rot: -0.38, a0, dir: 1, span, W: 12, t0: 0, sweep: 0.06, hold: 0.06, trail: 0.24, ramp: C });
+    const A = lay(base, { yaw: -0.35, lean: 0.12 });
+    const E = lay({ ...base, R: R0 * (33 / 42), W: R0 * (4.5 / 42), a0: a0 + span * 0.1, span: span * 0.9 - 0.15, t0: 0.017, hold: 0.03, trail: 0.2, ramp: C.slice(0, 6) }, { yaw: 0.2, lean: -0.1 });
+    const tip = slashEnd3(A), dir = [tip.dx, tip.dy, tip.dz];
+    let t = 0, landed = false;
+    return {
+      update(dt) {
+        t += dt;
+        if (!landed && t >= A.sweep) {
+          landed = true;
+          for (let i = 0; i < 12; i++) {
+            const [vx, vy, vz] = spray(Rg, dir, 0.8, Rg.range(150, 400));
+            ps.spawn3(P.SPARK, tip.x, tip.y, tip.z, vx, vy, vz, Rg.range(0.12, 0.35));
+          }
+          shavings3(ps, Rg, A, 16, [C[4], C[5]]);
+          lights.add(tip.x, tip.y, 30, C[3], 0.5, 0.25, tip.z);
+        }
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o);
+        slash3(q, E, t);
+        slash3(q, A, t);
+        const g = t - A.sweep * 0.6;
+        if (g > 0 && g < 0.22) q.at(tip.x, tip.y, tip.z, (pp) => sparkle(pp, 0, 0, 9 * ease.outBack(Math.min(1, g / 0.05)) * (1 - g / 0.22), C[5], C[3], 0.6));
+        if (t < 0.3) {
+          const h = travel3(A, A.span * ease.outExpo(clamp(t / A.sweep)), A.R - 4);
+          q.glow(h.x, h.y, 40, C[3], 0.5 * (1 - t / 0.3));
+        }
+        // the cut lands: a thin ring of force runs out on the floor under the edge
+        const w = t - A.sweep;
+        if (w > 0 && w < 0.24) {
+          const k = w / 0.24;
+          q.ring(tip.x, 0, tip.z, 3 + 16 * ease.outCubic(k), 1.5, k < 0.4 ? C[5] : C[3], 0.8 * (1 - k));
+        }
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

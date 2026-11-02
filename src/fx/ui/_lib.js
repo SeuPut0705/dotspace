@@ -3,7 +3,7 @@
 // tintActor adapts the body flash of Sprite Fusion's open-source power-up
 // (https://www.spritefusion.com/pixel-art-vfx/power-up), MIT License, Copyright (c) 2026 Hugo Duprez.
 
-import { FONTS, WHITE, luma, noise, mix } from "../../core/index.js";
+import { FONTS, WHITE, luma, noise, mix, hex } from "../../core/index.js";
 
 /**
  * The letters of str in a pixel font, laid out left to right in font pixels:
@@ -192,4 +192,41 @@ export function shake(t, amp, t0 = 0, len = 0.3, seed = 1, hz = 32) {
   if (t < t0 || t > t0 + len) return [0, 0];
   const k = 1 - (t - t0) / len;
   return [Math.round(noise(t * hz, seed) * amp * k * 1.7), Math.round(noise(t * hz, seed + 7) * amp * k * 1.3)];
+}
+
+// ---- 3D helpers (the three variants): small parts every ui effect needs in space
+
+/** A uniform random direction on a sphere, y down: [x, y, z] (R is a seeded Rng). */
+export function dir3(R) {
+  const a = R.range(0, Math.PI * 2), c = R.range(-1, 1), s = Math.sqrt(1 - c * c);
+  return [Math.cos(a) * s, c, Math.sin(a) * s];
+}
+
+/** A random direction in the upper hemisphere (y <= 0), flatter when flat is near 1: [x, y, z]. */
+export function up3(R, flat = 0) {
+  const a = R.range(0, Math.PI * 2), e = R.range(0.1, 1.45) * (1 - flat * 0.7), c = Math.cos(e);
+  return [Math.cos(a) * c, -Math.sin(e), Math.sin(a) * c];
+}
+
+const POOL = hex("#0d0a14");
+/** The dark pool a floating thing casts on the floor: a soft translucent disc of radius r, alpha a. */
+export function pool(q, x, z, r, a, c = POOL) {
+  if (a <= 0.01 || r < 1) return;
+  q.plane(x, 0, z, null, r, (u, v, o) => {
+    const d = Math.hypot(u, v) / r;
+    if (d > 1) return;
+    o.c = c;
+    o.a = a * (d < 0.55 ? 1 : 1.9 * (1 - d));
+    o.blend = true;
+  });
+}
+
+/**
+ * A shell of light round a point, seen from every side: a ring flat in the air and a ring facing the camera.
+ * c, a are plain values.
+ */
+export function shell(q, x, y, z, r, w, c, a) {
+  if (a <= 0.02 || r < 1) return;
+  q.ring(x, y, z, r, w, c, a);
+  q.at(x, y, z, (pp) => pp.ring(0, 0, r, w, c, a));
 }

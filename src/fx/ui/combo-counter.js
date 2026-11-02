@@ -1,5 +1,5 @@
-import { Particles, Lights, P, Rng, fit, sparkle, clamp, seg, ease, rand, TAU, WHITE, scale } from "../../core/index.js";
-import { spell, drawWord, shake } from "./_lib.js";
+import { Particles, Lights, P, Rng, fit, space, sparkle, clamp, seg, ease, rand, TAU, WHITE, scale, hex } from "../../core/index.js";
+import { spell, drawWord, shake, dir3 } from "./_lib.js";
 
 export const meta = {
   name: "Combo counter",
@@ -127,3 +127,135 @@ export function create(o) {
     },
   };
 }
+
+// ---- 3D: the words are a billboard that really flies, in along the floor on a diagonal, smearing in afterimages at
+// their own places in space, and slams to a stop; the speed lines are streaks through the volume, the slam throws
+// a ring along the floor and a shell round the words, sparks come out in a cone round the line of flight.
+const CY = -38, DX = 0.93, DZ = 0.37;
+export const three = {
+  meta: { size: [236, 152], origin: [118, 114], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), R = new Rng(o.seed), SHADOW = scale(C[0], 0.5);
+    const ps = new Particles({ rng: R, ground: () => 0, sparks: [C[7], C[6], C[5], C[3]] }), lights = new Lights();
+    const big = spell("x" + Math.round(o.count)), lab = spell(o.label);
+    const BS = 4, LS = 2, W = big.w * BS + 4 + lab.w * LS, X0 = -W / 2, BASE = 12;
+    const spikes = Array.from({ length: 12 }, () => [dir3(R), R.range(14, 26)]);
+    let t = 0, hit = false, out = false;
+    const xAt = (t) => {
+      t = Math.max(0, t);
+      if (t < HIT) return -32 * Math.pow(1 - t / HIT, 2);
+      if (t < OUT) return 7 * Math.exp(-(t - HIT) * 18) * Math.sin((t - HIT) * 34);
+      const u = seg(t, OUT, OUT + 0.2);
+      return u < 0.3 ? -4 * ease.outQuad(u / 0.3) : -4 + 24 * ease.inQuad((u - 0.3) / 0.7);
+    };
+    // the line of flight is (DX, 0, DZ); a point at distance d along it, across it and at height y
+    const at = (d, lat = 0, y = 0) => [DX * d - DZ * lat, CY + y, DZ * d + DX * lat];
+    // a direction in a cone round the line of flight, turned by phi round it
+    const cone = (a, phi) => [Math.cos(a) * DX - Math.sin(a) * Math.sin(phi) * DZ, -Math.sin(a) * Math.cos(phi), Math.cos(a) * DZ + Math.sin(a) * Math.sin(phi) * DX];
+    return {
+      update(dt) {
+        t += dt;
+        if (!hit && t >= HIT) {
+          hit = true;
+          lights.add(0, CY, 70, C[5], 0.7, 0.4, 0);
+          lights.add(-20 * DX, CY, 34, WHITE, 0.8, 0.1, -20 * DZ);
+          lights.add(0, -6, 60, C[4], 0.5, 0.4, 0);
+          for (let i = 0; i < 30; i++) {
+            const a = R.range(-1.2, 1.2) + (R.chance(0.3) ? Math.PI : 0), sp = R.range(120, 300), [dx, dy, dz] = cone(a, R.range(0, TAU)), [x, y, z] = at(R.range(-20, 20), 0, R.range(-8, 8));
+            ps.spawn3(P.SPARK, x, y, z, dx * sp, dy * sp * 0.6 - 20, dz * sp, R.range(0.12, 0.3));
+          }
+        }
+        // sparkles pop off the count on its beat
+        if (t > BEAT && t < OUT && R.chance(0.1)) {
+          const [x, y, z] = at(X0 + R.range(0, big.w * BS), R.range(-6, 6), BASE - R.range(0, 30));
+          ps.spawn3(P.STAR, x, y, z, R.range(-10, 10), -R.range(5, 20), R.range(-10, 10), R.range(0.25, 0.45), R.pick([C[7], C[6]]), R.chance(0.3) ? 1.6 : 0.6);
+        }
+        if (!out && t >= OUT + 0.06) {
+          out = true;
+          for (let i = 0; i < 12; i++) {
+            const [x, y, z] = at(R.range(-50, 30), R.range(-14, 14), R.range(-14, 10)), sp = R.range(220, 320);
+            ps.spawn3(P.MOTE, x, y, z, DX * sp, R.range(-10, 10), DZ * sp, R.range(0.06, 0.14), R.pick([C[7], C[6]]), 1);
+          }
+        }
+        ps.update(dt);
+        lights.update(dt);
+      },
+
+      draw(p) {
+        const q = space(p, o), [sx, sy] = shake(t, 3, HIT, 0.25, o.seed), x = xAt(t);
+        const moving = t < HIT || t > OUT + 0.06, stretch = moving ? (t < HIT ? 1.22 : 1.12) : 1;
+        const pulse = Math.exp(-(((t - BEAT) / 0.05) ** 2)), flash = (t >= HIT && t < HIT + 0.07) || pulse > 0.6 ? 1 : 0;
+        const a = t > OUT ? 1 - seg(t, OUT + 0.08, OUT + 0.2) : t < 0.035 ? 0.5 : 1;
+        const layout = (dx, fl = flash) => {
+          const bs = BS * (1 + 0.12 * pulse), items = [];
+          const bx = X0 + dx - (big.w * BS * (stretch - 1)) / 2, by = BASE - 7 * bs;
+          big.letters.forEach((L) => L.g && items.push({ g: L.g, x: bx + L.x * BS * stretch, y: by, sx: BS * stretch, sy: bs, slant: 1, flash: fl, a }));
+          const lx = X0 + dx + big.w * BS * stretch + 4;
+          lab.letters.forEach((L) => L.g && items.push({ g: L.g, x: lx + L.x * LS * stretch, y: BASE - 7 * LS, sx: LS * stretch, sy: LS, slant: 0.5, flash: fl, a }));
+          return items;
+        };
+        const [wx, wy, wz] = at(x, 0, -2);
+        // the shadow the sign casts on the floor, long across the line of flight
+        q.plane(wx, 0, wz, null, 62, (u, v, out) => {
+          const al = u * DX + v * DZ, ac = -u * DZ + v * DX, d = Math.hypot(al / 52, ac / 11);
+          if (d > 1) return;
+          out.c = hex("#0d0a14");
+          out.a = 0.55 * a * (d < 0.55 ? 1 : 1.9 * (1 - d));
+          out.blend = true;
+        });
+        // speed lines stream through the air round it as it rockets in, and again as it leaves
+        const k = t < HIT ? 1 : t < OUT ? Math.max(0, 1 - (t - HIT) / 0.35) * 0.9 : seg(t, OUT + 0.04, OUT + 0.12) * (1 - seg(t, OUT + 0.18, OUT + 0.3)), dir = t >= OUT ? -1 : 1;
+        if (k > 0.02) {
+          const f = Math.floor(t * 30);
+          for (let i = 0; i < 20; i++) {
+            if (rand(f, i, 3) > k) continue;
+            const y = (rand(f, i, 1) - 0.5) * 64, L = 16 + rand(f, i, 2) * 50, c = (rand(f, i, 4) - 0.5) * 190, lat = (rand(f, i, 5) - 0.5) * 80;
+            const d0 = Math.max(-100, c - L / 2), d1 = Math.min(100, c + L / 2);
+            q.line(...at(d0, lat, y), ...at(d1, lat, y), (u) => ((dir > 0 ? u : 1 - u) > 0.75 ? WHITE : (dir > 0 ? u : 1 - u) > 0.35 ? C[6] : C[4]), (u) => ((dir > 0 ? u : 1 - u) < 0.25 ? 0.6 : 1));
+          }
+        }
+        // the slam: spikes flung out of the count in every direction for two frames, then rings rolling out along the floor and round it
+        const hk = t - HIT;
+        if (hk >= 0 && hk < 0.07) {
+          const [cx, cy, cz] = at(X0 + (big.w * BS) / 2);
+          for (const [[dx, dy, dz], L] of spikes) {
+            if (hk < 0.035) q.beam(cx, cy, cz, cx + dx * L, cy + dy * L, cz + dz * L, 3, (u) => (u < 0.5 ? WHITE : C[6]));
+            else q.line(cx + dx * L * 0.5, cy + dy * L * 0.5, cz + dz * L * 0.5, cx + dx * L * 1.3, cy + dy * L * 1.3, cz + dz * L * 1.3, C[5]);
+          }
+        }
+        const rk = (t - HIT) / 0.32;
+        if (rk > 0 && rk < 1) {
+          const r = 20 + 34 * ease.outCubic(rk), c = rk < 0.3 ? WHITE : C[5];
+          q.ring(0, 0, 0, r * 1.2, Math.max(1.5, 3 * (1 - rk)), c, 1.35 - rk);
+          q.ring(0, CY, 0, r, 1.6, c, 1.3 - rk);
+          q.at(0, CY, 0, (pp) => pp.ellipse(0, 0, r * 1.15, r * 0.75, c, (d) => (d > 1 - 1.5 / (r * 0.75) ? 1.25 - rk : 0)));
+        }
+        // the words: smeared while they fly, with two dimmer afterimages left behind at their own places in space
+        if (moving && a > 0)
+          for (const [lag, c] of [[0.03, C[2]], [0.015, C[3]]]) {
+            const [ax, ay, az] = at(xAt(t - (t < HIT ? lag : -lag)));
+            q.at(ax, ay, az, (pp) => drawWord(pp, layout(0, 0).map((it) => ({ ...it, flash: 0 })), { fill: [c], edge: c, under: c, outline: 0, shadow: 0 }));
+          }
+        if (a > 0) {
+          q.at(wx, wy, wz, (pp) => {
+            const sh = seg(t, 0.62, 0.86);
+            drawWord(pp, layout(sx).map((it) => ({ ...it, y: it.y + sy })), { fill: [C[4], C[5], C[6], C[7]], edge: WHITE, under: C[3], outline: C[0], ow: 2, shadow: SHADOW, shine: sh > 0 && sh < 1 ? X0 - 10 + (W + 24) * sh : null, shineY: BASE - 28, glint: C[6] });
+            // the combo timer: a thin bar under the words, draining until it goes
+            const bk = seg(t, HIT + 0.1, HIT + 0.2) * (t > OUT ? 0 : 1);
+            if (bk > 0) {
+              const bw = W * bk, left = 1 - seg(t, HIT + 0.2, OUT), bx = X0 + sx, by = BASE + 5 + sy;
+              pp.rect(bx - 1, by - 1, bw + 2, 4, C[0]);
+              pp.rect(bx, by, bw, 2, C[1]);
+              if (left > 0) pp.rect(bx, by, bw * left, 2, C[5]), pp.rect(bx, by, bw * left, 1, C[6]), pp.px(bx + bw * left - 1, by, WHITE);
+            }
+            const g = (t - 0.86) / 0.22;
+            if (g > 0 && g < 1) sparkle(pp, X0 + W - 2, BASE - 14, 6 * Math.sin(g * Math.PI), C[7], C[5], 0.5);
+          });
+        }
+        ps.draw(q);
+        q.glow(wx - 20 * DX, wy, wz - 20 * DZ, 60, C[4], 0.2 * a + (t >= HIT && t < HIT + 0.15 ? 0.5 * (1 - (t - HIT) / 0.15) : 0) + 0.25 * pulse);
+        lights.draw(q);
+      },
+    };
+  },
+};

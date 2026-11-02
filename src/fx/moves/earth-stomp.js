@@ -1,4 +1,5 @@
-import { chain, READY } from "../../core/index.js";
+import { chain, in3d, READY } from "../../core/index.js";
+import { recenter } from "./_lib.js";
 import * as spike from "../nature/earth-spike.js";
 
 const STOMP = 0.06, RAM = STOMP + 0.43, TX = 112;
@@ -38,3 +39,10 @@ export const act = {
 };
 
 export const create = chain([{ fx: spike, t: STOMP, x: TX }]);
+
+const MID = 56;
+export const three = {
+  meta: { actor: 0, size: [350, 202], origin: [175, 144], camera: { pitch: 0.3 } },
+  act: recenter(act, MID),
+  create: chain([{ fx: in3d(spike), t: STOMP, x: TX - MID }]),
+};

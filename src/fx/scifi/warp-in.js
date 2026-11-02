@@ -1,7 +1,8 @@
 // The column (bands of the ramp across it, strands, pulses scrolling along it, a guide thread before it lands,
 // rings riding it) is adapted from Sprite Fusion's open-source holy light
 // (https://www.spritefusion.com/pixel-art-vfx/holy-light), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, band, sparkle, clamp, smooth, lerp, ease, rand, mix, TAU, WHITE, READY } from "../../core/index.js";
+import { Particles, Lights, P, Rng, fit, band, sparkle, space, clamp, smooth, lerp, ease, rand, mix, TAU, WHITE, READY } from "../../core/index.js";
+import { cone } from "./_lib.js";
 
 export const meta = {
   name: "Warp in",
@@ -276,3 +277,275 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the beam is a hollow tube of light you see through from every side with the hero built inside it; rings ride down it
+// and land on the floor as circles, the scan is a ring and a disc of light falling through him, the slam is a shockwave
+// across the floor, the energy gathers in from all round and the sparks and vapour fly every way.
+export const three = {
+  meta: { size: [204, 168], origin: [102, 128], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), W = o.width, R = new Rng(o.seed), A = o.actor;
+    const ps = new Particles({ rng: R, ground: () => 0, sparks: [WHITE, C[6], C[5], C[3]], haze: C[5] }), lights = new Lights();
+    const body = [], rows = new Map();
+    for (let my = 0; my < A.h; my++)
+      for (let mx = 0; mx < A.w; mx++) {
+        const i = my * A.w + mx;
+        if (!A.mask.data[i]) continue;
+        const on = (x, y) => x >= 0 && y >= 0 && x < A.w && y < A.h && A.mask.data[y * A.w + x];
+        const x = A.x + mx, y = A.y + my, edge = !on(mx - 1, my) || !on(mx + 1, my) || !on(mx, my - 1) || !on(mx, my + 1);
+        body.push({ x, y, c: A.pixels[i] || C[2], edge, ts: scanT(y, A.y), j: rand(o.seed, mx, my) });
+        const r = rows.get(y) ?? [x, x];
+        rows.set(y, [Math.min(r[0], x), Math.max(r[1], x)]);
+      }
+    const rings = [];
+    let t = 0, slammed = false, snapped = false, nextRing = SLAM + 0.08, lastRow = A.y - 3;
+    // a random way out over the upper half: [cos az, sin az, horizontal share, up share]
+    const out3 = (lo = 0.05, hi = 1.45) => {
+      const az = R.range(0, TAU), a = R.range(lo, hi);
+      return [Math.cos(az), Math.sin(az), Math.cos(a), Math.sin(a)];
+    };
+    const ringAt = (q, y, r, w, c, a, ramp) => q.decal(0, y, 0, null, r + 3, (pp) => pp.ring(0, 0, r, w, ramp ? (v) => ramp[Math.min(ramp.length - 1, Math.floor(v * ramp.length))] : c, a));
+
+    const column = (q) => {
+      const w = widthAt(t, W);
+      if (w <= 0.05 || t > SNAP + 0.14) return;
+      const bottom = t - SLAM < 0.06 ? lerp(TOP, 0, ease.inCubic(clamp((t - SLAM) / 0.06) * 0.5 + 0.5)) : t > SNAP ? lerp(0, TOP, ease.outExpo((t - SNAP) / 0.14)) : 0;
+      const hero = t - SLAM < 0.07, hollow = 0.78 * smooth(OPEN - 0.16, OPEN, t), thin = 1 - clamp((w - 1.5) / (W - 1.5));
+      if (bottom - TOP < 2) return;
+      cone(q, 0, 0, TOP, bottom, w, w, (h, out) => {
+        const qd = Math.sqrt(1 - h.vz * h.vz), pulse = ((((h.y - TOP) * 0.028 - t * 2.6) % 1) + 1) % 1 < 0.09 ? 1 : 0, ang = Math.atan2(h.z, h.x) / TAU;
+        if (hero) {
+          out.c = qd < 0.55 ? WHITE : qd < 0.8 ? C[6] : qd < 1 ? C[5] : C[4];
+          return;
+        }
+        if (w < 2.4) {
+          out.c = qd < 0.7 ? WHITE : C[6];
+          return;
+        }
+        let strand = 0;
+        for (let s = 0; s < 5; s++) {
+          const d = ((((ang - rand(o.seed, s) - 0.02 * Math.sin(t * (1.5 + s) + s * 2)) % 1) + 1.5) % 1) - 0.5;
+          if (Math.abs(d) < 0.012) strand = 1;
+        }
+        if (qd < hollow) {
+          out.blend = true;
+          out.c = strand || pulse ? C[6] : C[5];
+          out.a = clamp(0.05 + 0.3 * qd * qd + 0.3 * strand + 0.25 * pulse + 0.7 * thin);
+        } else if (qd < 0.78) {
+          const lvl = Math.max(0, (qd < 0.22 ? 0 : qd < 0.45 ? 1 : 2) - pulse - strand);
+          out.c = lvl === 0 ? WHITE : C[7 - lvl];
+        } else if (qd < 0.96) out.c = qd > 0.86 && qd < 0.93 ? WHITE : C[6];
+        else {
+          out.c = C[5];
+          out.a = 0.85;
+        }
+      });
+      // a soft fringe round the walls
+      cone(q, 0, 0, TOP, bottom, w * 1.3, w * 1.3, (h, out) => {
+        const qd = Math.sqrt(1 - h.vz * h.vz);
+        if (qd < 0.7) return;
+        out.blend = true;
+        out.c = C[4];
+        out.a = 0.28 * (qd - 0.7) / 0.3;
+      });
+      // light rides the walls, not the middle, so the body being built inside stays readable
+      for (let y = Math.floor(TOP); y < bottom; y += 12) {
+        const r = Math.min(w + 8, y - TOP + 2);
+        if (hollow < 0.4) q.glow(0, y, 0, Math.min(w * 2.6 + 6, y - TOP + 2), C[4], hero ? 0.55 : 0.32);
+        else for (const [x, z] of [[w + 3, 0], [-w - 3, 0], [0, w + 3], [0, -w - 3]]) q.glow(x, y, z, r, C[4], 0.14);
+      }
+    };
+
+    const floor = (q) => {
+      const on = t < SLAM ? smooth(0, SLAM, t) * 0.5 : 1 - smooth(SNAP, SNAP + 0.5, t);
+      if (on > 0.01) {
+        const rx = W * 1.9 + (t < SLAM ? 0 : 2 * Math.sin(t * 6));
+        q.plane(0, 0, 0, null, rx, (u, v, out) => {
+          const d = Math.hypot(u, v) / rx;
+          if (d > 1) return;
+          out.c = d < 0.35 ? C[7] : d < 0.6 ? C[6] : d < 0.85 ? C[5] : C[4];
+          out.a = on * clamp((1.05 - d) * 2.4);
+          out.blend = true;
+        });
+        q.glow(0, -1, 0, rx * 1.3, C[4], 0.3 * on);
+      }
+      for (const r of rings) {
+        const k = (t - r.t0 - 0.5) / 0.35;
+        if (k >= 0 && k < 1) ringAt(q, 0, W * (1.2 + 1.3 * ease.outCubic(k)), 1.5, 0, 1 - k, [C[3], C[4], C[5], C[6]]);
+      }
+      for (const [d, s] of [[0, 1], [0.08, 0.65]]) {
+        const k = (t - SLAM - d) / 0.55;
+        if (k >= 0 && k < 1) {
+          ringAt(q, 0.5, 92 * s * ease.outCubic(k), Math.max(1.2, 5 * (1 - k)), 0, 1.15 - k, k < 0.25 ? [C[5], C[6], WHITE, WHITE] : [C[3], C[5], C[6], WHITE]);
+          q.glow(0, -2, 0, 12 + 40 * ease.outCubic(k) * s, C[4], 0.3 * (1 - k));
+        }
+      }
+      const k = (t - SNAP) / 0.45;
+      if (k >= 0 && k < 1) ringAt(q, 0, 10 + 26 * ease.outCubic(k), 2 * (1 - k) + 0.8, 0, 1.1 - k, k < 0.3 ? [C[5], C[6], WHITE, WHITE] : [C[4], C[5], C[6], WHITE]);
+    };
+
+    // the rings riding down the beam
+    const ride = (q) => {
+      const w = widthAt(t, W);
+      for (const r of rings) {
+        const k = (t - r.t0) / 0.5;
+        if (k < 0 || k >= 1) continue;
+        const y = lerp(TOP + 6, -1, ease.inQuad(k)), rx = w * 1.18 + 1, c = k < 0.25 ? WHITE : C[6];
+        q.decal(0, y, 0, null, rx + 3, (pp) => {
+          pp.ring(0, 0, rx, 1.5, c);
+          pp.ring(0, 0, rx - 1.5, 1, C[3], 0.8);
+        });
+        q.glow(0, y, 0, rx + 6, C[5], 0.25);
+      }
+    };
+
+    // the hero, built out of light: the blueprint first, then each row as the scanline crosses it
+    const hero = (p) => {
+      if (t >= DONE || t < SCAN0 - 0.2) return;
+      const blink = Math.floor(t * 24);
+      for (const b of body) {
+        const a = t - b.ts;
+        if (a < 0) {
+          if (b.edge && rand(b.x, b.y, blink) < 0.6) p.dot(b.x, b.y, C[1], 0.8 * smooth(SCAN0 - 0.25, SCAN0 - 0.05, t));
+          continue;
+        }
+        const k = a / COOL, dx = a < 0.06 && b.j < 0.3 ? (b.j < 0.15 ? -1 : 1) : 0;
+        p.px(b.x + dx, b.y, k < 0.18 ? WHITE : k < 0.45 ? mix(b.c, C[6], 0.72) : k < 0.75 ? mix(b.c, C[5], 0.38) : b.c);
+        if (k < 0.5) p.light(b.x + dx, b.y, C[5], 0.22 * (1 - k / 0.5));
+      }
+    };
+    // the scan: a ring and a disc of light falling through the beam, hottest where it crosses the body
+    const scanline = (q, p) => {
+      if (t < SCAN0 || t > SCAN1) return;
+      const y = Math.floor(scanY(t, A.y)), w = widthAt(t, W) * 1.5, r = rows.get(y);
+      q.decal(0, y, 0, null, w + 3, (pp) => {
+        pp.ring(0, 0, w, 1.3, C[6]);
+        pp.ring(0, 0, w - 1.3, 1, C[5], 0.8);
+      });
+      q.plane(0, y, 0, null, w, (u, v, out) => {
+        out.blend = true;
+        out.c = C[5];
+        out.a = 0.08 + 0.12 * (Math.hypot(u, v) / w) ** 2;
+      });
+      if (r) for (let x = r[0]; x <= r[1]; x++) p.dot(x, y, WHITE, 1);
+      q.glowLine(-w, y, 0, w, y, 0, 5, C[5], 0.5);
+      q.glowLine(0, y, -w, 0, y, w, 5, C[5], 0.4);
+      if (r) for (const x of r) sparkle(p, x + 0.5, y, 2, C[6], C[5], 0.3);
+    };
+
+    return {
+      update(dt) {
+        t += dt;
+        // gathering: energy streaks in toward the spot, from every side
+        if (t < SLAM - 0.04) {
+          if (R.chance(0.8)) {
+            const [cx, cz, hh, up] = out3(0.05, 1.5), D = R.range(30, 64), T = R.range(0.18, 0.28), v = (D * 3) / (Math.exp(3 * T) - 1);
+            const x = cx * hh * D, y = -up * D * 0.8 - 2, z = cz * hh * D, l = Math.hypot(x, y + 2, z) || 1;
+            ps.spawn3(P.STREAK, x, y, z, (-x / l) * v, (-(y + 2) / l) * v, (-z / l) * v, T, R.chance(0.5) ? C[6] : C[5]);
+          }
+          if (R.chance(0.12)) {
+            const a = R.range(0, TAU), rr = R.range(30, 56), sp = R.range(40, 70);
+            ps.spawn3(P.VAPOUR, Math.cos(a) * rr, -R.range(0, 2), Math.sin(a) * rr, -Math.cos(a) * sp, -R.range(0, 4), -Math.sin(a) * sp, R.range(0.3, 0.45), C[5], R.range(2, 3));
+          }
+        }
+        if (t >= SLAM && !slammed) {
+          slammed = true;
+          lights.add(0, -40, 120, C[4], 1, 0.55, 0);
+          lights.add(0, -10, 44, WHITE, 0.9, 0.14, 0);
+          for (let i = 0; i < 44; i++) {
+            const [cx, cz, hh, up] = out3(0.2, 1.3), sp = R.range(110, 270), a = R.range(0, TAU), rr = R.range(0, W * 0.6);
+            ps.spawn3(P.SPARK, Math.cos(a) * rr, -1, Math.sin(a) * rr, cx * hh * sp * 0.8, -up * sp, cz * hh * sp * 0.8, R.range(0.25, 0.75));
+          }
+          for (let i = 0; i < 22; i++) {
+            const a = R.range(0, TAU), rr = R.range(4, 18), sp = R.range(40, 150);
+            ps.spawn3(P.VAPOUR, Math.cos(a) * rr, -R.range(0, 4), Math.sin(a) * rr, Math.cos(a) * sp, -R.range(2, 18), Math.sin(a) * sp, R.range(0.5, 0.95), R.chance(0.6) ? C[6] : C[5], R.range(3, 6));
+          }
+          for (let i = 0; i < 12; i++) {
+            const a = R.range(0, TAU), rr = R.range(0.3, 1.3) * W;
+            ps.spawn3(P.STAR, Math.cos(a) * rr, -R.range(2, 40), Math.sin(a) * rr, R.range(-20, 20), -R.range(10, 40), R.range(-20, 20), R.range(0.4, 0.8), R.chance(0.5) ? WHITE : C[6], R.range(1, 2.2));
+          }
+        }
+        if (slammed && t < CLOSE) {
+          if (t >= nextRing) rings.push({ t0: nextRing }), (nextRing += 0.17);
+          const w = widthAt(t, W);
+          if (R.chance(0.5)) {
+            const a = R.range(0, TAU), rr = R.range(0, 0.8) * w;
+            ps.spawn3(P.STREAK, Math.cos(a) * rr, TOP + R.range(9, 36), Math.sin(a) * rr, 0, R.range(60, 110), 0, R.range(0.3, 0.45), R.chance(0.5) ? WHITE : C[6]);
+          }
+          if (R.chance(0.18)) {
+            const a = R.range(0, TAU), rr = w * R.range(0.8, 1.3);
+            ps.spawn3(P.STAR, Math.cos(a) * rr, -R.range(4, 70), Math.sin(a) * rr, 0, -R.range(5, 20), 0, R.range(0.3, 0.6), C[6], R.range(0.6, 1.8));
+          }
+          if (R.chance(0.1)) {
+            const a = R.range(0, TAU), sp = R.range(20, 50);
+            ps.spawn3(P.VAPOUR, Math.cos(a) * R.range(8, 16), -R.range(0, 3), Math.sin(a) * R.range(8, 16), Math.cos(a) * sp, -R.range(2, 8), Math.sin(a) * sp, R.range(0.5, 0.8), C[5], R.range(2.5, 4));
+          }
+        }
+        // the scanline spits light off the edges of the body as it crosses, off in every direction
+        if (t > SCAN0 && t < SCAN1) {
+          const y = Math.floor(scanY(t, A.y));
+          if (y !== lastRow) {
+            lastRow = y;
+            const r = rows.get(y);
+            if (r && R.chance(0.7))
+              for (const [x, s] of [[r[0], -1], [r[1] + 1, 1]])
+                if (R.chance(0.6)) {
+                  const az = (s < 0 ? Math.PI : 0) + R.range(-1.3, 1.3), sp = R.range(40, 90);
+                  ps.spawn3(P.MOTE, x, y, 0, Math.cos(az) * sp, R.range(-20, 10), Math.sin(az) * sp, R.range(0.15, 0.3), R.chance(0.5) ? WHITE : C[6], 0.6);
+                }
+          }
+        }
+        if (t >= DONE && t - dt < DONE)
+          for (let i = 0; i < 6; i++) {
+            const b = body[Math.floor(R.next() * body.length)];
+            ps.spawn3(P.STAR, b.x + 0.5, b.y + 0.5, R.range(-4, 4), R.range(-6, 6), -R.range(6, 20), R.range(-6, 6), R.range(0.4, 0.8), R.chance(0.5) ? WHITE : C[6], R.range(1, 2));
+          }
+        if (t >= SNAP && !snapped) {
+          snapped = true;
+          lights.add(0, -1, 32, C[4], 0.5, 0.25, 0);
+          lights.add(0, -1, 10, WHITE, 0.5, 0.08, 0);
+          for (let i = 0; i < 26; i++) {
+            const [cx, cz, hh, up] = out3(0.2, 1.5), sp = R.range(90, 260);
+            ps.spawn3(P.SPARK, R.range(-2, 2), -1, R.range(-2, 2), cx * hh * sp * 0.8, -up * sp, cz * hh * sp * 0.8, R.range(0.2, 0.6));
+          }
+          for (let i = 0; i < 12; i++) {
+            const a = R.range(0, TAU), rr = R.range(0, 16);
+            ps.spawn3(P.STAR, Math.cos(a) * rr, -R.range(0, 46), Math.sin(a) * rr, R.range(-10, 10), -R.range(8, 26), R.range(-10, 10), R.range(0.4, 0.65), R.chance(0.5) ? WHITE : C[6], R.range(0.6, 1.8));
+          }
+          for (let i = 0; i < 18; i++) {
+            const a = R.range(0, TAU), rr = R.range(0, 6);
+            ps.spawn3(R.chance(0.6) ? P.STAR : P.MOTE, Math.cos(a) * rr, -R.range(10, 100), Math.sin(a) * rr, R.range(-6, 6), -R.range(14, 40), R.range(-6, 6), R.range(0.4, 0.6), R.chance(0.4) ? WHITE : R.chance(0.5) ? C[6] : C[5], R.range(0.5, 1.4), R.range(0, 0.15));
+          }
+        }
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o);
+        floor(q);
+        // the guide thread: a dotted line pricking down to the spot, brightening, and a target on the floor closing in
+        if (t < SLAM) {
+          const a = smooth(0, SLAM * 0.8, t) * 0.8, head = lerp(TOP, 0, ease.outCubic(clamp(t / (SLAM * 0.6))));
+          for (let y = TOP; y < head; y++) q.dot(0, y, 0, (y & 1) === 0 ? C[6] : C[5], a * (0.35 + 0.65 * ((y - TOP) / -TOP)));
+          q.glow(0, head, 0, 10, C[5], 0.5 * a);
+          const rx = lerp(34, 12, ease.outCubic(t / SLAM)), k = smooth(0, 0.15, t);
+          q.decal(0, 0, 0, null, rx + 3, (pp) => {
+            for (let i = 0; i < 48; i++) {
+              const g = (i / 48) * TAU + t * 3;
+              if (Math.floor(i / 4) % 2) continue;
+              pp.dot(Math.cos(g) * rx, Math.sin(g) * rx, i % 4 === 0 ? WHITE : C[5], k);
+            }
+          });
+        }
+        hero(p);
+        ride(q);
+        scanline(q, p);
+        if (t >= DONE && t < DONE + 0.3) p.outline(A.mask, A.x, A.y, C[6], 1 - (t - DONE) / 0.3);
+        if (t > SLAM && t < SLAM + 0.16) q.at(0, -2, 0, (pp) => sparkle(pp, 0, 0, 12 * (1 - (t - SLAM) / 0.16), C[6], C[5], 0.6));
+        column(q);
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

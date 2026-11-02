@@ -1,8 +1,8 @@
 // The faceted shading (a lit ridge, a bright face toward the light, a dark one away, a bright rim) follows
 // Sprite Fusion's open-source ice crystals (https://www.spritefusion.com/pixel-art-vfx/ice), MIT License,
 // Copyright (c) 2026 Hugo Duprez.
-import { PAL, fit, hex, clamp, smooth, ease, rand, WHITE } from "../../core/index.js";
-import { W, H, screenMeta, clipTo, glint, rect } from "./_lib.js";
+import { PAL, fit, hex, mix, clamp, smooth, ease, rand, space, WHITE } from "../../core/index.js";
+import { W, H, screenMeta, clipTo, glint, glint3, poly, edge, rect } from "./_lib.js";
 
 export const meta = screenMeta({
   name: "Diamond wipe",
@@ -87,3 +87,77 @@ export function draw(p0, t, o) {
     glint(p, d.cx, y, 9 * Math.pow(Math.sin(Math.PI * u), 0.7), d.spin + u * 1.5, C[6], C[5]);
   }
 }
+
+// 3D: the diamonds become gems standing on the floor. Each is an octahedron whose square-set equator is the 2D
+// diamond (they still tile, row on row, half a step apart), swelling up as the wave rolls across, rims lit and
+// ridges bright, cooling to black as they lock; then they rise as gems again and shrink away with glints.
+const S3 = 18, HD3 = S3 / 2 + 0.5, VH = 1.15, PR3 = 70;
+const cache3 = new Map();
+function lattice3(seed) {
+  if (cache3.has(seed)) return cache3.get(seed);
+  const out = [], span = PR3 * 2 + 0.45 * PR3 * 2;
+  for (let j = -Math.ceil(PR3 / (S3 / 2)) - 1; j <= Math.ceil(PR3 / (S3 / 2)) + 1; j++)
+    for (let i = -Math.ceil(PR3 / S3) - 1; i <= Math.ceil(PR3 / S3) + 1; i++) {
+      const cx = i * S3 + (j & 1 ? S3 / 2 : 0), cz = (j * S3) / 2;
+      if (Math.hypot(cx, cz) > PR3) continue;
+      // the wave runs left to right on a slant, each gem a little early or late
+      const u = clamp((cx + 0.45 * cz + PR3 * 1.45) / span), jr = rand(i, j, seed);
+      out.push({ cx, cz, tin: IN0 + (IN1 - IN0) * clamp(u + (jr - 0.5) * 0.08), tout: OUT0 + (OUT1 - OUT0) * clamp(u + (rand(i, j, seed + 1) - 0.5) * 0.08), glint: jr < 0.3, spin: rand(i, j, seed + 2) * 3 });
+    }
+  cache3.set(seed, out);
+  return out;
+}
+// the four upper faces, by the equator corners they run between (west, north, east, south), and which way each looks
+const SIDES = [[0, 1, -1, -1, 2], [1, 2, 1, -1, 3], [2, 3, 1, 1, 1], [3, 0, -1, 1, 0]]; // [corner, corner, sx, sz, quadrant]
+
+export const three = {
+  meta: { size: [184, 104], origin: [92, 72], bg: "ground", camera: { pitch: 0.34 } },
+  draw(p, t, o) {
+    const q = space(p, o), C = fit(o.palette, 8), ink = hex(o.color), L = lattice3(o.seed), glints = [], lights = [];
+    const FACE = [[C[2], C[1], C[0]], [C[1], C[0], C[0]], [C[1], C[0], C[0]], [C[0], C[0], ink]];
+    const LOCK = [mix(ink, C[0], 0.45), mix(ink, C[0], 0.25), mix(ink, C[0], 0.2), ink], EDGE = mix(ink, C[1], 0.6);
+    // the way to the eye, to leave out the faces turned away
+    const vx = q.sy * q.cp, vy = -q.sp, vz = q.cy * q.cp;
+    for (const d of L) {
+      const ki = (t - d.tin) / GROW, ko = (t - d.tout) / GROW;
+      if (d.glint && ko > 0.7 && ko < 1.5) glints.push([d, (ko - 0.7) / 0.8, 0, 0]);
+      if (ki <= 0 || ko >= 1) continue;
+      const hd = HD3 * (ko > 0 ? 1 - ease.inBack(ko, 2) : ease.outBack(Math.min(1, ki), 2.2));
+      const heat = ko > 0 ? smooth(0, 0.35, ko) : 1 - smooth(0.45, 1.25, ki);
+      if (hd < 0.5) continue;
+      const vh = hd * VH, { cx, cz } = d, settled = heat <= 0, st = heat > 0.66 ? 0 : heat > 0.33 ? 1 : 2;
+      const E = [[cx - hd, -vh, cz], [cx, -vh, cz - hd], [cx + hd, -vh, cz], [cx, -vh, cz + hd]], A = [cx, -2 * vh, cz], B = [cx, 0, cz];
+      for (const [i0, i1, sx, sz, qd] of SIDES) {
+        const nu = sx * 0.5 * vx - 0.7 * vy + sz * 0.5 * vz, nl = sx * 0.5 * vx + 0.7 * vy + sz * 0.5 * vz;
+        if (nu > -0.05) poly(q, [A, E[i0], E[i1]], settled ? LOCK[qd] : heat > 0.15 ? FACE[qd][st] : ink);
+        if (nl > -0.05) poly(q, [B, E[i1], E[i0]], settled ? ink : heat > 0.15 ? FACE[3][st] : ink);
+      }
+      if (!settled) {
+        // the rim, lit from the top left: white there, cooling round to the far side; the ridges up to the tip
+        const hot = heat > 0.5, RIM = [hot ? WHITE : C[6], hot ? C[6] : C[5], hot ? C[5] : C[4], hot ? C[4] : C[3]];
+        if (heat > 0.15) {
+          for (const [i0, i1, , , qd] of SIDES) {
+            edge(q, E[i0], E[i1], RIM[qd], 1, 0.7);
+            if (heat > 0.3) {
+              const sheen = Math.abs((((E[i0][0] + E[i0][2] * 0.6 - t * 120) % 40) + 40) % 40 - 20) < 2.5;
+              edge(q, A, E[i0], (u) => (u > 0.75 || (sheen && heat > 0.5) ? WHITE : i0 === 3 || i0 === 0 ? (heat > 0.6 ? C[6] : C[5]) : heat > 0.6 ? C[3] : C[2]), 1, 0.7);
+            }
+          }
+          lights.push([cx, -vh, cz, hd, heat]);
+        }
+      } else {
+        // locked in: black, only a faint edge to show the gem
+        for (const [i0, i1] of SIDES) {
+          edge(q, E[i0], E[i1], EDGE, 1, 0.7);
+          if (i0 === 3 || i0 === 0) edge(q, A, E[i0], EDGE, 0.7, 0.7);
+        }
+      }
+      if (ki > 0.6 && ki < 1.8 && d.glint) glints.push([d, (ki - 0.6) / 1.2, hd, vh]);
+    }
+    for (const [x, y, z, hd, heat] of lights) q.glow(x, y, z, hd + 6, C[4], 0.22 * heat);
+    for (const [d, u, hd, vh] of glints) {
+      if (u <= 0 || u >= 1) continue;
+      glint3(q, d.cx, hd ? -2 * vh : -3, d.cz, 6 * Math.pow(Math.sin(Math.PI * u), 0.7), d.spin + u * 1.5, C[6], C[5]);
+    }
+  },
+};

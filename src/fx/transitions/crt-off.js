@@ -1,8 +1,8 @@
 // The glowing line (a white core, a pale fringe, an outer fringe while it's fresh, light along it) follows
 // Sprite Fusion's open-source lightning strike (https://www.spritefusion.com/pixel-art-vfx/lightning),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { fit, hex, clamp, ease, noise, rand, WHITE } from "../../core/index.js";
-import { W, H, screenMeta, clipTo, glint, rect } from "./_lib.js";
+import { fit, hex, clamp, ease, noise, rand, space, TAU, WHITE } from "../../core/index.js";
+import { W, H, screenMeta, clipTo, glint, glint3, rect } from "./_lib.js";
 
 export const meta = screenMeta({
   name: "CRT off",
@@ -85,3 +85,105 @@ export function draw(p0, t, o) {
   const s = t - ON0;
   if (s >= 0 && s < 0.14) glint(p, XC, YC, 12 * (1 - s / 0.14) + 2, 0.4 + s * 6, C[6], C[5]), p.glow(XC, YC, 40, WHITE, 0.5 * (1 - s / 0.14));
 }
+
+// 3D: two ink slabs clamp the stage like jaws, a glowing seam between them. Closed, the seam is the line: the puck
+// of slabs shrinks round it to a dot that lingers as a glint and an afterglow on the dark floor; switched on, the dot
+// swells back into the puck and the jaws part. Warm-up: a band of light rolls down through the room.
+const PR3 = 74, GAP3 = 64, SLAB = 5, YM3 = -(GAP3 / 2 + SLAB);
+export const three = {
+  meta: { size: [176, 152], origin: [88, 118], bg: "ground", camera: { pitch: 0.34 } },
+  draw(p, t, o) {
+    const q = space(p, o), C = fit(o.palette, 8), ink = hex(o.color), { h, w } = shape(t), fl = 0.85 + 0.15 * rand(Math.floor(t * 30), 7, o.seed);
+    if (t >= OPEN1 + 0.02) {
+      if (t < OPEN1 + 0.6) {
+        // switched on: a warm-up glow over the room, a bright refresh band rolling down it once
+        const u = (t - OPEN1) / 0.6, yb = -(GAP3 + 2 * SLAB) * (1 - u);
+        q.plane(0, yb, 0, null, PR3, (x, z, out) => {
+          const d = Math.hypot(x, z) / PR3;
+          out.l = C[5];
+          out.k = 0.32 * (1 - u) * (1 - d * d * 0.7);
+        });
+        q.glow(0, YM3, 0, 80, C[5], 0.22 * (1 - u) ** 2);
+      }
+      return;
+    }
+    const pa = clamp((1 - h / H) / 0.12), sq = 1 - h / H;
+    if (pa <= 0) return;
+    const line = h <= 1 && w >= 1, gap = GAP3 * clamp((h - 1) / (H - 1)), R3 = line ? PR3 * (w / XC) : h <= 0 ? 0 : PR3, dotPhase = t >= LN1 && t < ON0;
+    // the dark floor under it all: the cover that stays while the plates close and while the dot lingers
+    q.plane(0, -0.4, 0, null, PR3, (x, z, out) => {
+      const d = Math.hypot(x, z);
+      if (d > PR3) return;
+      out.a = pa;
+      return d > PR3 - 1 ? C[1] : ink;
+    });
+    if (R3 >= 1) {
+      // the slabs: top face ink with a pale edge, a wall under it; the jaws' inner rims white-hot
+      const yt = YM3 - gap / 2 - SLAB, yb = YM3 + gap / 2;
+      const face = (y, lightIt) =>
+        q.plane(0, y, 0, null, R3, (x, z, out) => {
+          const d = Math.hypot(x, z);
+          if (lightIt && gap > 0.5) {
+            // the squeezed picture lights the lower jaw: brighter as it narrows, ringed like scanlines
+            out.l = C[5];
+            out.k = (0.55 * sq * sq + (Math.floor(d) & 1 ? 0.08 * sq : 0) + 0.35 * Math.max(0, 1 - (R3 - d) / 6) ** 2) * fl;
+          }
+          out.a = pa;
+          return d > R3 - 1 ? C[2] : ink;
+        });
+      face(yt, false);
+      face(yb, true);
+      for (let j = 1; j <= SLAB; j++) {
+        q.ring(0, yt + j, 0, R3, 1, j === SLAB && gap > 0.5 ? (sq > 0.6 ? C[6] : C[5]) : j === 1 ? C[1] : C[0], pa);
+        q.ring(0, yb + j, 0, R3, 1, C[0], pa);
+      }
+      if (gap > 0.5) q.ring(0, yb, 0, R3, 1, sq > 0.6 ? C[6] : C[5], pa);
+      if (gap > 0.5) q.glowLine(0, yb - 1, 0, 0, YM3, 0, 30, C[5], 0.25 * sq * fl);
+      if (line) {
+        // the line: the seam round the puck, white-hot with a pale fringe and an outer fringe while it is fresh, humming
+        const fresh = t < SQ1 + 0.08 || (t > ON0 && t < ON1 + 0.04), fr = Math.floor(t * 30);
+        q.plane(0, YM3, 0, null, R3 + 3, (x, z, out) => {
+          const d = Math.hypot(x, z), g = Math.atan2(z, x), r = R3 * (1 + 0.025 * noise(g * 3 + t * 9, o.seed)), e = d - r;
+          if (e > 2.5 || e < -1.5) return;
+          if (e < 0.2) return WHITE;
+          if (e < 1.2) return C[6];
+          if (fresh && e < 2.5) return C[4];
+          return 0;
+        });
+        q.ring(0, YM3 - 1, 0, R3 + 0.5, 1, C[6], 0.8);
+        q.ring(0, YM3 + 1, 0, R3 + 0.5, 1, C[6], 0.8);
+        // flecks of static spit off it
+        for (let s = 0; s < 6; s++) {
+          if (rand(fr, s, 9) > 0.5) continue;
+          const a = rand(fr, s, 10) * TAU, rr = R3 * (0.9 + 0.2 * rand(fr, s, 11));
+          q.px(Math.cos(a) * rr, YM3 + (rand(fr, s, 12) < 0.5 ? -1 : 1) * (2 + Math.floor(rand(fr, s, 13) * 4)), Math.sin(a) * rr, rand(fr, s, 14) < 0.5 ? WHITE : C[5]);
+        }
+        for (let k = 0; k < 10; k++) q.glow(Math.cos((k / 10) * TAU) * R3, YM3, Math.sin((k / 10) * TAU) * R3, 10, C[5], 0.3 * fl);
+        q.glow(0, YM3, 0, Math.min(60, 14 + R3 * 0.5), C[5], 0.4 * fl);
+      }
+    }
+    // the dot: a glint that holds a moment, then an afterglow cooling to nothing
+    if (dotPhase) {
+      const u = (t - LN1) / (DOT1 - LN1);
+      if (u < 0.35) glint3(q, 0, YM3, 0, 8 * (1 - u / 0.35) + 2, 0.2 + u * 2, C[6], C[5]);
+      if (u < 1) {
+        q.ball(0, YM3, 0, 1.6, u < 0.5 ? WHITE : u < 0.75 ? C[6] : C[4]);
+        // the phosphor smears the dot out flat as it cools
+        const sm = 7 * (1 - u);
+        if (sm > 1)
+          q.plane(0, YM3, 0, null, sm, (x, z, out) => {
+            const d = Math.hypot(x, z) / sm;
+            out.c = C[4];
+            out.a = (1 - d) * 0.8;
+          });
+        q.glow(0, YM3, 0, 22 * (1 - u * 0.5), C[5], 0.55 * (1 - u) ** 1.5);
+      }
+    }
+    // switching on: a pop of light at the heart before the puck swells
+    const s = t - ON0;
+    if (s >= 0 && s < 0.14) {
+      glint3(q, 0, YM3, 0, 9 * (1 - s / 0.14) + 2, 0.4 + s * 6, C[6], C[5]);
+      q.glow(0, YM3, 0, 40, WHITE, 0.5 * (1 - s / 0.14));
+    }
+  },
+};

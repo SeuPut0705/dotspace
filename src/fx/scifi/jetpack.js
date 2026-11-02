@@ -1,8 +1,8 @@
 // The exhaust (flame puffs cooling down the fire ramp into smoke, a warm light over the smoke) follows Sprite
 // Fusion's open-source fire (https://www.spritefusion.com/pixel-art-vfx/fire), MIT License,
 // Copyright (c) 2026 Hugo Duprez.
-import { P, PF, Rng, fit, tileFbm, clamp, lerp, rand, mix, TAU, WHITE } from "../../core/index.js";
-import { Ghosts } from "./_lib.js";
+import { P, PF, Rng, fit, tileFbm, space, clamp, lerp, rand, mix, TAU, WHITE } from "../../core/index.js";
+import { Ghosts, cone } from "./_lib.js";
 
 export const meta = {
   name: "Jetpack",
@@ -109,3 +109,103 @@ export function draw(p, t, o) {
   p.glow(0, o.length + 14, 34, F[4], 0.16);
   p.glow(0, o.length * 0.4, 30, F[5], 0.18);
 }
+
+// 3D: two real tanks on a strapped frame, each nozzle firing its own cone of flame you see through from every side;
+// flame puffs, sparks, embers and smoke leave each thruster in every direction round its axis and cool into smoke below.
+const ghost3 = new Map();
+function ghosts3(o, F) {
+  const key = `${o.seed}:${o.palette.join()}:${o.length}`;
+  if (ghost3.has(key)) return ghost3.get(key);
+  const rn = new Rng(o.seed + 5), L = o.length;
+  const g = new Ghosts(D, { sparks: [WHITE, F[6], F[5], F[4]], box: [-60, -28, 60, 90] });
+  for (const s of [-1, 1]) {
+    const at = (x, ...rest) => g.add(rn.range(0, D), ...rest.slice(0, 1), x, ...rest.slice(1));
+    const base = (k, x, y, vx, vy, life, col, size, flag = 0) => g.add(rn.range(0, D), k, x, y, vx, vy, life, col, size, flag, rn.range(0, TAU), s * GAP);
+    for (let i = 0; i < 28; i++) base(P.FIRE, rn.range(-1.5, 1.5), L * rn.range(0.55, 0.85), rn.range(-10, 10), rn.range(70, 130), rn.range(0.22, 0.4), 0, rn.range(2.2, 3.4), PF.SMOKES | (rn.chance(0.5) ? PF.BIG : 0));
+    for (let i = 0; i < 12; i++) base(P.SMOKE, rn.range(-3, 3), L + rn.range(2, 8), rn.range(0, 14), rn.range(40, 80), rn.range(1.1, 1.6), 0, rn.range(3, 5), PF.BIG);
+    for (let i = 0; i < 12; i++) base(P.SPARK, rn.range(-1, 1), L * rn.range(0.3, 0.7), rn.range(0, 60), rn.range(80, 200), rn.range(0.2, 0.45), WHITE, 1);
+    for (let i = 0; i < 6; i++) base(P.EMBER, rn.range(-2, 2), L * rn.range(0.6, 1), rn.range(10, 40), rn.range(20, 60), rn.range(0.6, 1.1), F[4], rn.range(0.8, 1.6));
+  }
+  ghost3.set(key, g);
+  return g;
+}
+
+export const three = {
+  meta: { size: [112, 116], origin: [56, 30], bg: "dark", camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const F = fit(o.palette, 8), H = fit(o.metal, 6), ph = t / D, f = Math.floor(t * FR) % Math.round(D * FR), S = o.seed, q = space(p, o);
+    const dy = Math.round(Math.sin(TAU * 12 * ph) * 0.6), g = ghosts3(o, F).at3(t);
+    // ---- solids: the frame, the tanks, the nozzles with their white-hot cores and the diamonds in the flame
+    const metal = (h, out) => {
+      const l = -h.vx * 0.8 - h.vy * 0.6, d = 1 - h.vz * h.vz;
+      out.c = d > 0.78 ? H[0] : l > 0.55 ? H[5] : l > 0.15 ? H[4] : l > -0.35 ? H[3] : H[2];
+    };
+    for (const s of [-1, 1]) {
+      const cx = s * GAP;
+      cone(q, cx, 0, -19 + dy, -3 + dy, 4.5, 4.5, (h, out) => {
+        if (!h.front) return;
+        metal(h, out);
+        if (Math.abs(h.y - (-12 + dy)) < 0.6) out.c = H[1];
+      });
+      q.ball(cx, -19 + dy, 0, 4.5, (nx, ny, nz) => {
+        const l = -nx * 0.8 - ny * 0.6, d = 1 - nz * nz;
+        return d > 0.78 ? H[0] : l > 0.55 ? H[5] : l > 0.15 ? H[4] : l > -0.35 ? H[3] : H[2];
+      });
+      // the nozzle bell, wider at its mouth, its inside lit by the flame
+      cone(q, cx, 0, -3 + dy, dy, 2.2, 4.3, (h, out) => {
+        if (!h.front) return;
+        metal(h, out);
+      });
+      q.ball(cx, dy + 0.4, 0, 2.6, (nx, ny, nz) => (nz > 0.6 ? F[6] : F[4]));
+    }
+    // the frame behind the tanks: a spine, and a strap from each tank to it; a status light on its face
+    q.beam(0, -21 + dy, -6, 0, -5 + dy, -6, 7, (u, v) => (v > 0.75 ? H[0] : v < 0.35 ? H[3] : H[2]));
+    for (const y of [-17, -8]) for (const s of [-1, 1]) q.beam(s * (GAP - 2), y + dy, 0, 0, y + dy, -6, 2.2, (u, v) => (v > 0.7 ? H[0] : v < 0.3 ? H[3] : H[2]));
+    q.ball(0, -13 + dy, -2.4, 1.1, F[5]);
+    const Ls = [];
+    for (const s of [-1, 1]) {
+      const cx = s * GAP, L = o.length * (0.92 + 0.08 * Math.sin(TAU * 7 * ph + s) + 0.06 * (rand(S, f, s, 1) - 0.5));
+      Ls.push(L);
+      // shock diamonds: bright knots strung down the core, breathing
+      for (let i = 0; i < 3; i++) {
+        const y = Math.round(dy + 5 + i * 6.5 + Math.sin(TAU * 4 * ph + i) * 0.5), r = Math.round(2.2 - i * 0.45 + 0.4 * Math.sin(TAU * 8 * ph + i * 2));
+        if (y > dy + L * 0.75 || r < 1) break;
+        q.at(cx, y, 0, (pp) => {
+          pp.z -= 3;
+          for (let yy = -r; yy <= r; yy++)
+            for (let xx = -r; xx <= r; xx++) {
+              const d = Math.abs(xx) + Math.abs(yy);
+              if (d <= r) pp.px(xx, yy, d < r ? WHITE : i === 0 ? F[6] : F[5]);
+            }
+        });
+        q.glow(cx, y, 0, 6, F[6], 0.35);
+      }
+      q.beam(cx, dy + 2, 0, cx, dy + L * 0.5, 0, 1.6, (u) => (u < 0.6 ? WHITE : F[6]));
+    }
+    // ---- the flames: a cone of heat torn ragged by noise streaming down it, white at its heart, red at its edges
+    for (const [i, s] of [-1, 1].entries()) {
+      const cx = s * GAP, L = Ls[i];
+      cone(q, cx, 0, dy, dy + L, 4.6, 0.6, (h, out) => {
+        const v = (h.y - dy) / L, ang = Math.atan2(h.z, h.x) / TAU, n = tileFbm(ang * 6 + s * 5, (h.y - dy) / 4 - ph * 20, 6, 10, S + (s > 0 ? 9 : 0), 2), edge = Math.sqrt(1 - h.vz * h.vz);
+        const qd = edge + n * 0.3;
+        if (v > 1.15 || qd > 1.2) return;
+        const heat = (1 - v) * 1.15 - qd * 0.9 + n * 0.25;
+        out.blend = true;
+        if (qd > 0.95) {
+          out.c = heat > 0.2 ? F[3] : F[2];
+          out.a = heat < -0.3 ? 0.4 : 0.8;
+          return;
+        }
+        out.c = heat > 0.82 ? WHITE : heat > 0.62 ? F[6] : heat > 0.42 ? F[5] : heat > 0.22 ? F[4] : heat > 0.02 ? F[3] : F[2];
+        out.a = heat > 0.4 ? 0.85 : 0.7;
+      });
+      // light: hot at the nozzle, warm down the plume
+      q.glow(cx, dy + 2, 0, 9, WHITE, 0.45);
+      q.glow(cx, dy + L * 0.45, 0, L * 0.8, F[4], 0.35);
+    }
+    g.draw(q);
+    // the fire lights the smoke below it, and its own surroundings
+    q.glow(0, o.length + 14, 0, 38, F[4], 0.16);
+    q.glow(0, o.length * 0.4, 0, 30, F[5], 0.18);
+  },
+};

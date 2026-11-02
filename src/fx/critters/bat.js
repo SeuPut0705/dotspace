@@ -1,5 +1,5 @@
-import { fit, hex, mix, clamp, wrap, lerp, sparkle, cycle, TAU } from "../../core/index.js";
-import { Grid, shift } from "./_lib.js";
+import { fit, hex, mix, clamp, wrap, lerp, sparkle, cycle, space, TAU } from "../../core/index.js";
+import { Grid, shift, mirrored, floorShadow, floorPool } from "./_lib.js";
 
 export const meta = {
   name: "Bat",
@@ -105,3 +105,56 @@ export function draw(p, time, o) {
     if (k < 1) sparkle(p, X - 2, Y - 1, 1 + 2.5 * Math.sin(Math.PI * k), E[3], E[2], 0.4 * Math.sin(Math.PI * k));
   }
 }
+
+// ---- 3D: the figure-eight is flown on the floor plane, at a height, its shadow gliding under it
+const FLY = { x: 34, z: 26, h: 44 };
+function at3(t) {
+  const a = (t / D) * TAU;
+  return { x: FLY.x * Math.sin(a), z: FLY.z * Math.sin(2 * a), y: -FLY.h + 7 * Math.sin(2 * a + 1), vx: Math.cos(a) * FLY.x, vz: 2 * Math.cos(2 * a) * FLY.z };
+}
+
+export const three = {
+  meta: { size: [160, 136], origin: [80, 106], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, time, o) {
+    const t = shift(time, D, o.seed), C = fit(o.palette, 7), E = fit(o.eyes, 4), S = at3(t), fi = frameAt(t), F = FRAMES[fi], g = GRID, q = space(p, o);
+    const Y = S.y + F.lift, flip = mirrored(q, S.vx, S.vz), rx = q.cy, rz = -q.sy;
+    // its shadow and its red glow slide over the floor, small and dark when it is high
+    const hgt = clamp(-S.y / 44);
+    floorShadow(q, S.x, S.z, 10 + 4 * (1 - hgt), "#000000", 0.75);
+    // the bat itself: a billboard, with a see-through echo of the wings on the downbeat
+    if (fi === 2) {
+      bat(g, C, E, FRAMES[1], t);
+      g.recolor((x, y, c) => mix(c, C[4], 0.35));
+      g.a.fill(0.35);
+      q.at(S.x, Y, S.z, (pp) => ((pp.z += 0.4), g.draw(pp, 1, 0, -FRAMES[1].lift + F.lift - 0 * 1, flip)));
+    }
+    bat(g, C, E, F, t);
+    q.at(S.x, Y, S.z, (pp) => g.draw(pp, 1, 0, 0, flip));
+    // moonlit dust hangs in the night air, all round it, in a volume
+    cycle(t, D, 24, o.seed * 11 + 1, D, (age, L, r) => {
+      const ang = r.range(0, TAU), rad = Math.sqrt(r.next()) * 62;
+      const x = Math.cos(ang) * rad + Math.sin(age * 1.1 + r.next() * 6) * 3, z = Math.sin(ang) * rad, y = r.range(-84, -4) + age * r.range(-2, 3);
+      const tw = Math.sin(age * 2.6 + r.next() * 6), a = Math.min(1, age * 2, (L - age) * 2) * (0.4 + 0.5 * tw);
+      q.dot(x, y, z, tw > 0.7 ? C[6] : C[5], a);
+      if (tw > 0.5) q.glow(x, y, z, 3, C[5], 0.2 * a);
+    });
+    // its glowing eyes leave a fading streak of red light along its flight
+    for (let k = 2; k <= 16; k++) {
+      const A = at3(t - (k - 1) * 0.022), B = at3(t - k * 0.022), u = 1 - k / 17;
+      for (const ex of [-1.5, 1.5]) q.glowLine(A.x + rx * ex, A.y - 0.5, A.z + rz * ex, B.x + rx * ex, B.y - 0.5, B.z + rz * ex, 2.6, E[1], 0.16 * u);
+    }
+    // moonlight on its back, the eyes glowing, the glints
+    q.glow(S.x - 3, Y - 6, S.z, 10, C[5], 0.12);
+    for (const ex of [-1.5, 1.5]) {
+      const e = flip ? -ex : ex;
+      q.glow(S.x + rx * e, Y - 0.5, S.z + rz * e, 7, E[1], 0.6);
+      q.glow(S.x + rx * e, Y - 0.5, S.z + rz * e, 2.5, E[2], 0.5);
+    }
+    q.glow(S.x, Y, S.z, 22, E[0], 0.25);
+    floorPool(q, S.x, S.z, 30, E[1], 0.34 * (1 - hgt * 0.6));
+    for (const g0 of [0.3, 1.5]) {
+      const k = wrap(t - g0, D) / 0.24;
+      if (k < 1) q.at(S.x, Y, S.z, (pp) => ((pp.z -= 2), sparkle(pp, flip ? 2 : -2, -1, 1 + 2.5 * Math.sin(Math.PI * k), E[3], E[2], 0.4 * Math.sin(Math.PI * k))));
+    }
+  },
+};

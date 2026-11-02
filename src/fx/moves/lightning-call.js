@@ -1,4 +1,5 @@
-import { chain, READY } from "../../core/index.js";
+import { chain, in3d, READY } from "../../core/index.js";
+import { recenter } from "./_lib.js";
 import * as strike from "../lightning/lightning-strike.js";
 
 const BOLT = 0.76, TX = 130;
@@ -40,3 +41,10 @@ export const act = {
 };
 
 export const create = chain([{ fx: strike, t: 0, x: TX }]);
+
+const MID = 65;
+export const three = {
+  meta: { actor: 0, duration: 3.1, size: [386, 302], origin: [193, 244], camera: { pitch: 0.3 } },
+  act: recenter(act, MID),
+  create: chain([{ fx: in3d(strike), t: 0, x: TX - MID }]),
+};

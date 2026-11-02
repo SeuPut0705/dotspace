@@ -1,7 +1,7 @@
 // The tongue, lick, flame-puff, smoke and ember recipe is adapted from Sprite Fusion's open-source fire
 // (https://www.spritefusion.com/pixel-art-vfx/fire), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { fit, mix, hex, rand, clamp } from "../../core/index.js";
-import { noiseFor, hotFirst, burn } from "./_lib.js";
+import { fit, mix, hex, rand, clamp, space, TAU, WHITE } from "../../core/index.js";
+import { noiseFor, hotFirst, burn, burn3 } from "./_lib.js";
 
 export const meta = {
   name: "Torch",
@@ -89,3 +89,55 @@ export function draw(p, t, o) {
     mid: () => wrap(p, W, I, H, t),
   });
 }
+
+// 3D: a torch on a stand, seen from any side. The head is turned round on a lathe (rags bound with a spiral of cord, charred
+// and glowing where it burns), the flame stands as tongues round the axis, and its smoke, puffs and embers leave in
+// every direction while the light pools on the floor.
+const HEAD = -38; // the top of the wrap
+const WRAP = 8; // how tall it is
+// the wrap's radius going down: a cup flaring at the top
+const wrapR = (v) => 4.6 - v * 1.9;
+
+export const three = {
+  meta: { size: [112, 140], origin: [56, 118], bg: "ground", camera: { pitch: 0.28 } },
+  draw(p, t, o) {
+    const F = fit(o.palette, 9), H = hotFirst(F), W = fit(o.wood, 6), I = fit(o.iron, 5), S = o.seed, q = space(p, o);
+    const fl = 0.74 + 0.16 * NL(t, 7.3, S + 1) + 0.1 * NL(t, 19, S + 2);
+    const face = (g) => q.view(Math.cos(g), 0, Math.sin(g));
+    // the stand: an iron pole with three feet splayed on the floor
+    for (let i = 0; i < 3; i++) {
+      const a = (i / 3) * TAU + 0.4;
+      q.beam(0, -6, 0, Math.cos(a) * 9, 0, Math.sin(a) * 9, 1.6, I[1]);
+    }
+    q.beam(0, -4, 0, 0, HEAD + WRAP - 4, 0, 2.6, (u, v) => (v > 0.7 ? W[0] : v < 0.4 ? W[4] : W[2]));
+    // the iron ring that holds the head
+    q.ring(0, HEAD + WRAP + 0.4, 0, 3.3, 2, (v, g) => (face(g)[0] < 0 ? mix(I[4], H[3], 0.3 * fl) : I[2]));
+    // the head: a core, then the wrap turned on a lathe; cord spiralling up it, charred rags glowing near the top
+    q.beam(0, HEAD + 1, 0, 0, HEAD + WRAP, 0, 5, W[1]);
+    for (let y = HEAD; y <= HEAD + WRAP; y += 0.4) {
+      const v = (y - HEAD) / WRAP, r = wrapR(v);
+      q.ring(0, y, 0, r, 2.4, (w, g) => {
+        const [nx, , nz] = face(g);
+        if (nz < 0.15) return W[0];
+        const cord = Math.floor(y - g * r * 0.6 + 80) % 3 === 0, h = rand(Math.floor(g * r * 0.8), Math.floor(y), 31);
+        if (v < 0.45) {
+          if (h < 0.42) {
+            const gl = 0.5 + 0.5 * Math.sin((t / D) * Math.PI * 4 + h * 40);
+            return gl > 0.66 ? H[2] : gl > 0.33 ? H[4] : H[5];
+          }
+          return h < 0.75 ? W[0] : W[1];
+        }
+        if (cord) return I[2];
+        return nx < -0.3 ? W[3] : nx < 0.5 ? W[2] : W[1];
+      });
+    }
+    // the burning top of the wrap, glowing coals in the cup
+    q.plane(0, HEAD + 0.5, 0, null, 4.4, (u, v, out) => {
+      const h = rand(Math.floor(u), Math.floor(v), 33), g = 0.5 + 0.5 * Math.sin((t / D) * Math.PI * 4 + h * 40);
+      out.k = 0.3 * g;
+      return h < 0.3 ? W[0] : g > 0.66 ? H[2] : g > 0.33 ? H[4] : H[5];
+    });
+    // the fire, round the axis
+    burn3(q, t, TONGUES, { H, D, NL, S, x: 0, y: HEAD + 1.5 - 0.5, z: 0, height: 20, lean: 0.12, spread: 4, puffs: 10, licks: 5, smoke: 7, smokeSize: 2.3, smokeLife: [1.3, 2.1], embers: 7, glowR: 48, glow: 1.25, wind: 2, floor: 46 });
+  },
+};

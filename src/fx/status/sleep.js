@@ -1,8 +1,8 @@
 // The shaded, outlined letters are
 // adapted from Sprite Fusion's open-source heal (https://www.spritefusion.com/pixel-art-vfx/heal),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { cycle, fit, sparkle, TAU } from "../../core/index.js";
-import { icon, bitmap, eyes, colorAt } from "./_lib.js";
+import { cycle, fit, mix, sparkle, space, TAU } from "../../core/index.js";
+import { icon, bitmap, eyes, colorAt, lift } from "./_lib.js";
 
 export const meta = {
   name: "Sleep",
@@ -101,3 +101,76 @@ export function draw(p, t, o) {
     p.glow(z.x, z.y, 7 + z.size * 3, C[3], (old ? 0.12 : 0.26) * z.k);
   }
 }
+
+// 3D: the Zs rise from the head along a real helix (they swing round it, in front and behind, growing a step at a
+// time), dream motes drift up round the head in every direction, the breathing glow lights the head and a pool on
+// the floor with a faint ring that breathes in and out. The shut eyes stay painted on the body.
+export const three = {
+  meta: { size: [80, 92], origin: [40, 78], bg: "ground", camera: { pitch: 0.32 } },
+  draw(p, t, o) {
+    const q = space(p, o), C = fit(o.palette, 6), a = o.actor, breath = 0.5 + 0.5 * Math.sin((t / D) * TAU * 2), hx = a.x + a.w * 0.5;
+    shut(p, a);
+    const dim = (c, x, y, z) => (q.depth(x, y, z) > 0 ? mix(c, C[0], 0.3) : c);
+    // where a Z is at age u: up a helix round the head, wider as it climbs
+    const zPath = (i, u) => {
+      const ang = 0.15 + 4.8 * u, rad = 6 + 10 * u, rise = 32 * (1 - Math.pow(1 - u, 1.35));
+      return [hx + Math.cos(ang) * rad, lift(q, a.y + 7 - rise), Math.sin(ang) * rad];
+    };
+    const zs = [];
+    for (let i = 0; i < NZ; i++) zs.push({ i, u: (((t - (i * D) / NZ) % D) + D) % D / D });
+    // dotted trails where they have been, then the letters (opaque, so their depth settles who is in front)
+    const live = [];
+    for (const { i, u } of zs) {
+      if (u > 0.9) continue;
+      const zz = zAt(a, i, u), [x, y, z] = zPath(i, u);
+      for (let j = 1; j <= 6; j++) {
+        const uu = u - j * 0.025;
+        if (j % 2 === 0 || uu < 0.05) continue;
+        const [tx, ty, tz] = zPath(i, uu);
+        q.dot(tx - 1, ty + 4 + zz.size, tz, dim(C[3], tx, ty, tz), (1 - j / 7) * 0.9);
+      }
+      live.push({ i, u, x, y, z, ...zz });
+    }
+    for (const z of live) {
+      const old = z.u > 0.78, R = old ? [C[0], C[1], C[2], C[3]] : [C[1], C[2], C[3], C[4]], far = q.depth(z.x, z.y, z.z) > 0;
+      q.at(z.x, z.y, z.z, (pp) => {
+        icon(pp, 0, 0, 7, ZS[z.size], far ? R.map((c, k) => (k ? mix(c, C[0], 0.25) : c)) : R, z.k);
+        if (!old) pp.px(-2 - z.size, -2 - z.size * 0.8, C[5]);
+      });
+    }
+    // dream motes, in every direction round the head
+    const motes = [];
+    cycle(t, D, 14, o.seed + 4, (r) => r.range(1.2, 2), (age, life, r) => {
+      const u = age / life, th = r.range(0, TAU), rho = a.w * r.range(0.3, 0.9), ph = r.next() * TAU;
+      const x = hx + Math.cos(th) * rho + Math.sin(age * 2 + ph) * 2, z = Math.sin(th) * rho + Math.cos(age * 2 + ph) * 1.5, y = lift(q, a.y + r.range(0, 10) - age * r.range(10, 18));
+      const tw = Math.sin(Math.PI * u) * (0.6 + 0.4 * Math.sin(age * 9 + r.next() * TAU));
+      if (tw < 0.15) return;
+      motes.push({ x, y, z, tw, big: tw > 0.7 && r.next() < 0.4 });
+    });
+    for (const m of motes) {
+      q.dot(m.x, m.y, m.z, m.tw > 0.6 ? C[5] : C[4], m.tw * 1.3);
+    }
+    // light: the breathing glow round the head and the pool it makes on the floor, soft light drifting about
+    q.glow(hx, lift(q, a.y + 10), 0, 24, C[3], 0.1 + 0.1 * breath);
+    q.glow(0, -2, 0, 30, C[2], 0.1 + 0.12 * breath);
+    cycle(t, D, 5, o.seed + 6, D, (age, life, r) => {
+      const u = age / life, th = r.range(0, TAU), rho = a.w * r.range(0.3, 0.9) + Math.sin(u * TAU + r.next() * TAU) * 3, k = Math.sin(Math.PI * u);
+      const rad = r.range(3, 5) * (0.8 + 0.4 * u);
+      q.glow(hx + Math.cos(th) * rho, lift(q, a.y + r.range(-6, 8) - u * 10), Math.sin(th) * rho, rad * 2.4, C[3], 0.1 * k);
+    });
+    for (const z of live) q.glow(z.x, z.y, z.z, 7 + z.size * 3, C[3], (z.u > 0.78 ? 0.12 : 0.26) * z.k);
+    for (const m of motes) if (m.big) q.at(m.x, m.y, m.z, (pp) => sparkle(pp, 0, 0, 1, C[4], C[3], 0.3 * m.tw));
+    // a Z that has risen far enough pops into motes, all round
+    for (const { i, u } of zs) {
+      if (u <= 0.9) continue;
+      const k = (u - 0.9) / 0.1, [x, y, z] = zPath(i, 0.9);
+      for (let j = 0; j < 7; j++) {
+        const an = (j / 7) * TAU + i, el = j % 2 ? 0.7 : -0.5, d = 3 + 6 * Math.sqrt(k);
+        q.dot(x + Math.cos(an) * Math.cos(el) * d, y + Math.sin(el) * d * 0.8, z + Math.sin(an) * Math.cos(el) * d, j % 2 ? C[4] : C[5], 1.2 - k);
+      }
+      q.glow(x, y, z, 10, C[3], 0.25 * (1 - k));
+    }
+    // the faint ring on the floor, breathing
+    q.ring(0, 0, 0, 17 + 3 * breath, 1.8, mix(C[2], C[1], 0.3 + 0.4 * (1 - breath)), 0.9);
+  },
+};

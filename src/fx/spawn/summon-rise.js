@@ -1,6 +1,6 @@
 // The rubble, dust, grit, embers and smoke recipe is adapted from Sprite Fusion's open-source explosion
 // (https://www.spritefusion.com/pixel-art-vfx/explosion), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Bits, Lights, P, PF, B, Rng, fit, clamp, smooth, ease, noise, rand, TAU, WHITE, hex, mix } from "../../core/index.js";
+import { Particles, Bits, Lights, P, PF, B, Rng, fit, clamp, smooth, ease, noise, rand, space, TAU, WHITE, hex, mix } from "../../core/index.js";
 
 export const meta = {
   name: "Summon rise",
@@ -410,3 +410,283 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the rune circle is burnt into the floor as it really is, two true circles with the glyphs laid between them
+// round the whole ring, cracks running out across the floor, a gash opening in its middle. The brute heaves up through
+// it as a billboard facing the camera (a figure the same size and shape from every side, like the stock
+// character), clipped by the floor round him; the grit, rubble and dust are thrown up and out over the whole circle.
+export const three = {
+  meta: { size: [192, 138], origin: [96, 112], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), SH = fit(o.body, 5), HR = fit(o.horn, 5), ST = fit(o.stone, 5), DUST = mix(ST[2], hex("#7a6c78"), 0.45), R = new Rng(o.seed), floor = () => 0;
+    const ps = new Particles({ rng: R, ground: floor, sparks: [C[6], C[5], C[4], C[3]] });
+    const RUB = [ST[0], ST[1], mix(ST[2], C[2], 0.3), mix(ST[3], C[4], 0.3), mix(ST[4], C[5], 0.35)];
+    const rocks = new Bits({ ground: floor }), lights = new Lights();
+    const runes = Array.from({ length: 12 }, (_, i) => ({ a: (i / 12) * TAU + 0.13, g: GLYPHS[(i * 5 + 2) % GLYPHS.length] }));
+    // cracks radiating from the middle of the circle, flat on the floor: [x, z] points
+    const cracks = [];
+    for (let i = 0; i < 7; i++) {
+      let a = (i / 7) * TAU + R.range(-0.25, 0.25), r = 3;
+      const pts = [[0, 0]], len = R.range(R1 * 0.6, R1 * 1.05);
+      while (r < len) {
+        r += R.range(2, 4);
+        a += R.range(-0.3, 0.3);
+        pts.push([Math.cos(a) * r, Math.sin(a) * r]);
+      }
+      cracks.push(pts);
+    }
+    const rise = (t) => {
+      if (t < BREAK) return 0;
+      const a = ease.outCubic(clamp((t - BREAK) / 0.4)) * 0.56, sag = 0.04 * Math.sin(Math.PI * clamp((t - BREAK - 0.42) / 0.3));
+      const b = ease.outBack(clamp((t - BREAK - 0.62) / 0.45), 1.4) * 0.44;
+      return a - sag + b;
+    };
+    const heat = (t) => smooth(0, IGN, t) * (1 - smooth(FADE, FADE + 0.8, t)) * (1 - 0.25 * smooth(EYES + 0.2, EYES + 0.9, t)) * (0.85 + 0.15 * noise(t * 9, 3) + 0.5 * Math.exp(-((t - BREAK) ** 2) / 0.02) + 0.3 * Math.exp(-((t - EYES) ** 2) / 0.01));
+    let t = 0;
+    const done = {};
+    const left = (a, b) => Math.max(0.05, Math.min(R.range(a, b), meta.duration - 0.1 - t));
+    const once = (k, at) => !done[k] && t >= at && (done[k] = true);
+    const topEdge = () => {
+      const off = BEAST.h * (1 - rise(t)), pts = [];
+      for (let x = 0; x < BEAST.w; x++)
+        for (let y = 0; y < BEAST.h; y++)
+          if (BEAST.part[y * BEAST.w + x]) {
+            const ly = y - BEAST.h + off;
+            if (ly < 0) pts.push([x - BEAST.w / 2, ly]);
+            break;
+          }
+      return pts;
+    };
+    // a point on the floor: [x, z] at angle a, radius r
+    const at2 = (a, r) => [Math.cos(a) * r, Math.sin(a) * r];
+    const disc = (r) => at2(R.range(0, TAU), Math.sqrt(R.next()) * r);
+    // a direction leaning tilt from straight up, any way round: [x, y, z] unit
+    const cone = (tilt) => {
+      const az = R.range(0, TAU);
+      return [Math.sin(tilt) * Math.cos(az), -Math.cos(tilt), Math.sin(tilt) * Math.sin(az)];
+    };
+
+    return {
+      update(dt) {
+        t += dt;
+        const h = heat(t);
+        // the rings smoulder: embers and sparks off the lines where the burning front has got to
+        if (t < IGN) {
+          const ph = (t / IGN) * Math.PI;
+          for (const s of [-1, 1]) {
+            const a = Math.PI / 2 + s * ph, [x, z] = at2(a, R0);
+            if (R.chance(0.5))
+              if (z < 0) ps.spawn3(P.SPARK, x, -0.5, z, R.range(-40, 40), -R.range(40, 130), R.range(-40, 40), R.range(0.2, 0.45));
+              else ps.spawn3(P.EMBER, x, -0.5, z, R.range(-20, 20), -R.range(30, 70), R.range(-20, 20), R.range(0.3, 0.6), C[6], 1.4);
+          }
+        }
+        if (t > 0.2 && t < FADE + 0.6 && R.chance(0.2 * h)) {
+          const [x, z] = at2(R.range(0, TAU), R.pick([R0, R1, R0]));
+          ps.spawn3(P.EMBER, x, -0.5, z, R.range(-10, 10), -R.range(20, 50), R.range(-10, 10), left(0.8, 1.6), C[5], R.range(1, 1.8));
+        }
+        if (t > 0.15 && R.chance(0.4 * Math.min(1, h))) {
+          const a = R.range(0, TAU), r = R.chance(0.7) ? R0 : R1, [x, z] = at2(a, r);
+          if (t < IGN ? Math.abs(((a - Math.PI / 2 + Math.PI * 3) % TAU) - Math.PI) < (t / IGN) * Math.PI : true)
+            ps.spawn3(P.FIRE, x, -0.5, z, R.range(-4, 4), -R.range(6, 16), R.range(-4, 4), R.range(0.18, 0.4), 0, R.range(0.8, 1.6) * Math.min(1, h), 0, R.chance(0.25) && t < meta.duration - 1.6 ? PF.SMOKES : 0);
+        }
+        if (t > 0.3 && t < FADE + 0.4 && R.chance(0.05 * h)) {
+          const [x, z] = at2(R.range(0, TAU), R0 * 0.9);
+          ps.spawn3(P.SMOKE, x, -1, z, R.range(-4, 4), -R.range(12, 24), R.range(-4, 4), left(1.4, 2.2), 0, R.range(2.2, 3.4));
+        }
+        if (once("ign", IGN)) lights.add(0, -4, 60, C[4], 0.55, 0.5, 0);
+        if (once("runes", RUNES)) lights.add(0, -4, 50, C[5], 0.5, 0.35, 0);
+        // the rumble: grit jumps on the floor, dust stirs
+        if (t > RUNES && t < BREAK && R.chance(0.35)) {
+          const [x, z] = disc(R1);
+          ps.spawn3(P.GRIT, x, -0.5, z, R.range(-20, 20), -R.range(40, 120), R.range(-20, 20), R.range(0.5, 0.9), R.pick([ST[2], ST[3], ST[4]]), 1);
+        }
+        if (t > RUNES && t < BREAK && R.chance(0.1)) {
+          const [x, z] = disc(R1);
+          ps.spawn3(P.DUST, x, -1, z, R.range(-12, 12), -R.range(4, 12), R.range(-12, 12), R.range(0.4, 0.7), DUST, R.range(1.5, 2.5));
+        }
+        // the break: the floor bursts open
+        if (once("break", BREAK)) {
+          lights.add(0, -18, 64, C[4], 0.9, 0.6, 0);
+          lights.add(0, -8, 26, C[6], 0.8, 0.14, 0);
+          for (let i = 0; i < 18; i++) {
+            const a = R.range(0, TAU), [x, z] = at2(a, Math.sqrt(R.next()) * 14), sp = R.range(0, 75);
+            rocks.add({ kind: B.CHUNK, x, y: -2, z, vx: Math.cos(a) * sp, vz: Math.sin(a) * sp, vy: -R.range(170, 320), g: 1, drag: 0.7, bounce: 0.32, life: R.range(1.6, 2.4), a: R.range(0, TAU), va: R.range(-14, 14), s: R.range(1.3, 3), ramp: RUB });
+          }
+          for (let i = 0; i < 60; i++) {
+            const u = R.range(0, 1), [dx, dy, dz] = cone(u * 0.8), sp = R.range(80, 230) * (1 - 0.4 * u), [x, z] = disc(10);
+            ps.spawn3(P.GRIT, x, -1, z, dx * sp, dy * sp, dz * sp, R.range(1, 1.8), R.pick([ST[2], ST[3], ST[3], ST[4]]), R.chance(0.4) ? 2 : 1);
+          }
+          for (let i = 0; i < 12; i++) {
+            const a = R.range(0, TAU), [x, z] = at2(a, R.range(2, 14)), sp = R.range(35, 100);
+            ps.spawn3(P.SMOKE, x, -R.range(1, 5), z, Math.cos(a) * sp, -R.range(4, 24), Math.sin(a) * sp, R.range(1.2, 2), DUST, R.range(3.5, 6), R.range(0, 0.1), PF.BIG);
+          }
+          for (let i = 0; i < 4; i++) {
+            const a = R.range(0, TAU), [x, z] = at2(a, R.range(10, 18)), sp = R.range(10, 30);
+            ps.spawn3(P.SMOKE, x, -R.range(2, 8), z, Math.cos(a) * sp, -R.range(40, 90), Math.sin(a) * sp, R.range(1.4, 2.2), DUST, R.range(4, 6.5), R.range(0, 0.12), PF.BIG);
+          }
+          for (let i = 0; i < 24; i++) {
+            const [dx, dy, dz] = cone(R.range(0, 1.1)), sp = R.range(150, 360), [x, z] = disc(6);
+            ps.spawn3(P.SPARK, x, -2, z, dx * sp, dy * sp, dz * sp, R.range(0.25, 0.65));
+          }
+        }
+        // the heave: earth slides off its shoulders, dust rolls out round its feet
+        const rv = rise(t) - rise(t - dt);
+        if (t > BREAK && t < BREAK + 1.2 && rv > 0) {
+          if (R.chance(Math.min(0.9, rv * 140))) {
+            const e = topEdge();
+            if (e.length) {
+              const [x, y] = R.pick(e);
+              ps.spawn3(P.GRIT, x, y, R.range(-4, 4), R.range(-25, 25), -R.range(10, 60), R.range(-25, 25), R.range(0.8, 1.4), R.pick([ST[2], ST[3], ST[4]]), R.chance(0.3) ? 2 : 1);
+            }
+          }
+          if (R.chance(Math.min(0.8, rv * 70))) {
+            const a = R.range(0, TAU), [x, z] = at2(a, R.range(10, 22)), sp = R.range(30, 80);
+            ps.spawn3(P.SMOKE, x, -R.range(1, 4), z, Math.cos(a) * sp, -R.range(2, 12), Math.sin(a) * sp, R.range(1, 1.8), DUST, R.range(3, 5.5), 0, PF.BIG);
+          }
+        }
+        if (once("heave2", BREAK + 0.64)) {
+          lights.add(0, -10, 56, C[4], 0.6, 0.4, 0);
+          for (let i = 0; i < 8; i++) {
+            const a = R.range(0, TAU), [x, z] = at2(a, R.range(10, 22)), sp = R.range(25, 70);
+            rocks.add({ kind: B.CHUNK, x, y: -2, z, vx: Math.cos(a) * sp, vz: Math.sin(a) * sp, vy: -R.range(90, 180), g: 1, drag: 0.7, bounce: 0.3, life: R.range(1.2, 1.8), a: R.range(0, TAU), va: R.range(-12, 12), s: R.range(1.2, 2.4), ramp: RUB });
+          }
+        }
+        // the eyes flare
+        if (once("eyes", EYES)) {
+          for (const [ex, ey] of BEAST.glints) {
+            lights.add(ex, ey, 14, C[6], 0.7, 0.3, 0);
+            for (let i = 0; i < 5; i++) {
+              const [dx, dy, dz] = cone(R.range(1.2, 3));
+              ps.spawn3(P.SPARK, ex, ey, 2, dx * R.range(30, 90), dy * R.range(30, 90) * 0.3, dz * R.range(30, 90), R.range(0.15, 0.35));
+            }
+          }
+          for (let i = 0; i < 10; i++) {
+            const a = R.range(0, TAU), [x, z] = at2(a, R.range(8, 20)), sp = R.range(30, 80);
+            ps.spawn3(P.DUST, x, -1, z, Math.cos(a) * sp, -R.range(3, 10), Math.sin(a) * sp, R.range(0.4, 0.8), DUST, R.range(1.5, 3));
+          }
+        }
+        if (t > FADE + 0.05 && t < FADE + 0.75 && R.chance(0.45)) {
+          const x = R.int(4, BEAST.w - 5), y = R.int(2, BEAST.h - 4);
+          if (BEAST.part[y * BEAST.w + x]) {
+            const lx = x - BEAST.w / 2, ly = y - BEAST.h, z = R.range(-4, 4);
+            ps.spawn3(P.SMOKE, lx, ly, z, R.range(-6, 6), -R.range(10, 26), R.range(-6, 6), left(0.9, 1.5), SOOT, R.range(2, 3.4));
+            if (R.chance(0.3)) ps.spawn3(P.EMBER, lx, ly, z, R.range(-10, 10), -R.range(15, 40), R.range(-10, 10), left(0.6, 1.2), C[4], 1);
+          }
+        }
+        rocks.update(dt);
+        for (const b of rocks.list)
+          if (b.rest && !b.dusted) {
+            b.dusted = true;
+            for (let i = 0; i < 2; i++) {
+              const a = R.range(0, TAU), sp = R.range(6, 30);
+              ps.spawn3(P.DUST, b.x + R.range(-1.5, 1.5), -0.5, b.z + R.range(-1.5, 1.5), Math.cos(a) * sp, -R.range(2, 12), Math.sin(a) * sp, R.range(0.3, 0.6), DUST, R.range(1.2, 2.4));
+            }
+          }
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), r = rise(t), off = BEAST.h * (1 - r), h = heat(t), fade = smooth(FADE + 0.1, FADE + 0.8, t);
+        // the brute: a billboard, clipped by the floor, lit from below
+        if (r > 0) {
+          const W = BEAST.w, H = BEAST.h, x0 = -W / 2, oy = off - H, k = Math.min(1, h);
+          const gone = (x, y) => fade > 0 && fade > 0.06 + 0.86 * (0.55 * (1 - y / H) + 0.45 * rand(x, y, 3));
+          q.at(0, 0, 0, (pp) => {
+            for (const [x, y] of BEAST.outline) if (y + oy < 0 && !gone(x, Math.min(H - 1, Math.max(0, y)))) pp.px(x0 + x, y + oy, SH[0]);
+            for (let y = 0; y < H; y++) {
+              const ly = y + oy;
+              if (ly >= 0) break;
+              const upRim = Math.exp(ly / 17) * k, upPlane = Math.exp(ly / 19) * k;
+              for (let x = 0; x < W; x++) {
+                const i = y * W + x, pt = BEAST.part[i];
+                if (!pt || gone(x, y)) continue;
+                const ramp = pt === 2 ? HR : SH, a = BEAST.amb[i];
+                let si = BEAST.crease[i] ? 0 : a > 0.74 ? 4 : a > 0.56 ? 3 : a > 0.36 ? 2 : 1;
+                if (pt === 2 && si > 0) si = Math.min(4, si + (y < 3 ? 2 : 1));
+                const Lr = BEAST.rim[i] * upRim, Lp = BEAST.down[i] * upPlane * 0.6;
+                let c = ramp[si];
+                if (Lr > 0.7) c = C[5];
+                else if (Lr > 0.48) c = C[4];
+                else if (Lr > 0.3 || Lp > 0.42) c = C[3];
+                else if (Lr > 0.17 || Lp > 0.26) c = mix(C[2], ramp[si], 0.3);
+                else if (Lr > 0.08 || Lp > 0.12) c = mix(ramp[si], C[1], 0.6);
+                pp.px(x0 + x, ly, c);
+              }
+            }
+            for (const [x, y] of BEAST.tusks) if (y + oy < 0 && !gone(x, y)) pp.px(x0 + x, y + oy, mix(HR[4], C[4], 0.35 * k));
+            for (const [x, y] of BEAST.eyes) if (y + oy < 0 && !gone(x, y)) pp.px(x0 + x, y + oy, t > EYES - 0.05 ? (t < EYES + 0.1 ? WHITE : C[6]) : t > BREAK + 0.5 ? C[2] : SH[0]);
+            if (t > EYES - 0.05) {
+              const ek = (1 - smooth(FADE + 0.6, FADE + 1.0, t)) * (0.85 + 0.15 * Math.sin(t * 13));
+              for (const [ex, ey0] of BEAST.glints) {
+                const ey = ey0 + off;
+                if (ey >= 0) continue;
+                pp.glow(ex + 0.5, ey, 6, C[5], 0.5 * ek);
+                const g = (t - EYES) / 0.3;
+                if (g > 0 && g < 1) {
+                  const L = 9 * Math.pow(1 - g, 1.5);
+                  pp.line(ex - L, ey, ex + L, ey, (u) => (Math.abs(u - 0.5) < 0.18 ? WHITE : Math.abs(u - 0.5) < 0.35 ? C[6] : C[5]));
+                  if (g < 0.4) pp.line(ex, ey - 2 * (1 - g), ex, ey + 2 * (1 - g), C[6]);
+                } else if (fade > 0.6 && ek > 0.05) pp.px(ex, ey, C[6]);
+              }
+            }
+          });
+          q.glow(0, -6, 0, 30, C[4], 0.25 * h * r);
+        }
+        // the floor: a warm pool under it all
+        if (h > 0.01) {
+          q.glow(0, -2, 0, 52, C[4], 0.28 * h);
+          q.glow(0, -22, 0, 72, C[4], 0.1 * h);
+          q.glow(0, -1, 0, 22, C[5], 0.2 * h);
+          // the cracks open under it and glow
+          const ck = smooth(RUNES, BREAK, t) * (1 - smooth(FADE, FADE + 0.7, t));
+          if (ck > 0)
+            for (const pts of cracks)
+              for (let i = 1; i < pts.length; i++) {
+                const u = i / pts.length;
+                if (u > ck * 1.1) break;
+                const cool = smooth(BREAK + 0.1, BREAK + 1.1, t), ci = Math.round(6 - u * 2 - cool * 2.6);
+                q.line(pts[i - 1][0], -0.2, pts[i - 1][1], pts[i][0], -0.2, pts[i][1], C[clamp(ci, 2, 6)], 1);
+              }
+          // the rings: burnt in from the front round to the back, flickering
+          const n = 300, prog = clamp(t / IGN) * Math.PI;
+          for (let j = 0; j < n; j++) {
+            const a = (j / n) * TAU, d = Math.abs(((a - Math.PI / 2 + Math.PI * 3) % TAU) - Math.PI);
+            if (d > prog) continue;
+            const fresh = prog - d < 0.25 && t < IGN + 0.1, f = noise(a * 6 + t * 5, 4) * 0.5 + 0.5, kk = h * (0.7 + 0.5 * f);
+            const ca = Math.cos(a), sa = Math.sin(a);
+            q.px(ca * R0, -0.3, sa * R0, fresh ? WHITE : kk > 0.95 ? C[6] : kk > 0.6 ? C[5] : kk > 0.35 ? C[4] : C[3]);
+            q.dot(ca * (R0 + 2.2), -0.3, sa * (R0 + 2.2), kk > 0.8 ? C[4] : C[3], 0.9);
+            if (t > RUNES - 0.15) q.dot(ca * R1, -0.3, sa * R1, kk > 0.9 ? C[5] : kk > 0.5 ? C[4] : C[3], smooth(RUNES - 0.15, RUNES + 0.05, t));
+            if (j % 14 === 0) q.glow(ca * R0, 0, sa * R0, 9, C[4], 0.22 * kk);
+          }
+          // the runes between the rings, laid round the circle
+          const rk = smooth(RUNES - 0.1, RUNES + 0.15, t);
+          if (rk > 0)
+            for (const ru of runes) {
+              const kk = h * rk * (0.75 + 0.35 * noise(t * 4 + ru.a * 5, 8)), mid = (R0 + R1) / 2 + 0.5, ta = [-Math.sin(ru.a), Math.cos(ru.a)], na = [Math.cos(ru.a), Math.sin(ru.a)];
+              const proj = ([u, v]) => [na[0] * (mid + v) + ta[0] * u * 1.1, na[1] * (mid + v) + ta[1] * u * 1.1];
+              for (const stroke of ru.g)
+                for (let i = 1; i < stroke.length; i++) {
+                  const [x0, z0] = proj(stroke[i - 1]), [x1, z1] = proj(stroke[i]);
+                  q.line(x0, -0.3, z0, x1, -0.3, z1, kk > 0.9 ? C[6] : kk > 0.55 ? C[5] : C[4], Math.min(1, kk * 1.5));
+                }
+            }
+          // the hole the brute climbs out of: a glowing gash in the floor
+          const hole = smooth(BREAK - 0.05, BREAK + 0.15, t) * (1 - smooth(BREAK + 0.95, BREAK + 1.5, t));
+          if (hole > 0) {
+            const hw = 15 * hole, hz = hw * 0.72;
+            q.plane(0, 0, 0, null, hw + 1, (u, v, out) => {
+              const d = Math.hypot(u / hw, v / hz);
+              if (d > 1) return;
+              out.c = d > 0.86 ? C[4] : d > 0.62 ? C[1] : C[0];
+            });
+            q.glow(0, 0, 0, 24, C[5], 0.3 * hole * h);
+          }
+        }
+        rocks.draw(q);
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

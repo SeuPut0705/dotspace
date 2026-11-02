@@ -1,5 +1,5 @@
-import { Particles, Lights, P, Rng, fit, sparkle, clamp, seg, smooth, ease, TAU, WHITE, scale } from "../../core/index.js";
-import { spell, drawWord, shake } from "./_lib.js";
+import { Particles, Lights, P, Rng, fit, space, sparkle, clamp, seg, smooth, ease, TAU, WHITE, scale } from "../../core/index.js";
+import { spell, drawWord, shake, shell } from "./_lib.js";
 
 export const meta = {
   name: "Countdown",
@@ -174,3 +174,157 @@ export function create(o) {
     },
   };
 }
+
+// ---- 3D: the timer ring lies on the floor as a true circle (the 2D timer drawn flat), its burning head a real
+// point that spits sparks and cinders into the air; the numbers and GO! float above its middle as billboards. Each
+// slam throws a ring of sparks out across the floor and a shell round the digit; GO! blows the ring into a
+// shockwave, with rays flung out all round the word like a halo.
+const CY = -48;
+export const three = {
+  meta: { size: [176, 164], origin: [88, 122], bg: "ground", camera: { pitch: 0.42 } },
+  create(o) {
+    const C = fit(o.palette, 8), G = fit(o.go, 8), Rg = new Rng(o.seed), n = clamp(Math.round(o.from), 1, 3), floor = () => 0;
+    const ps = new Particles({ rng: Rg, ground: floor, sparks: [C[7], C[6], C[5], C[3]] }), gs = new Particles({ rng: Rg, ground: floor, sparks: [G[7], G[6], G[5], G[3]] });
+    const lights = new Lights(), GO = n * STEP, OUT = GO + 0.78, end = meta.duration - 0.05;
+    const digits = Array.from({ length: n }, (_, i) => spell(String(n - i))), word = spell(o.word);
+    // rays: a halo round the word, flat in the air with a little rise and fall, each a direction and a length
+    const rays = Array.from({ length: 22 }, (_, i) => ({ a: (i / 22) * TAU + Rg.range(-0.06, 0.06), dy: Rg.range(-0.35, 0.35), L: i % 2 ? Rg.range(10, 16) : Rg.range(22, 30) }));
+    const sizeAt = (u, base, big) => base + big * Math.exp(-u * 26) * Math.cos(u * 38);
+    const reach = (v, d) => (v <= d * 2.2 ? 9 : -Math.log(1 - (d * 2.2) / v) / 2.2);
+    let t = 0, beat = -1, went = false, popped = false;
+    return {
+      update(dt) {
+        t += dt;
+        const i = Math.floor(t / STEP);
+        // each number slams in: the ring refills white and throws a ring of sparks out across the floor
+        if (t < GO && i !== beat) {
+          beat = i;
+          lights.add(0, -4, 54, C[5], 0.6, 0.35, 0);
+          lights.add(0, CY, 40, C[5], 0.4, 0.25, 0);
+          for (let j = 0; j < 16; j++) {
+            const a = (j / 16) * TAU + Rg.range(-0.1, 0.1), sp = Rg.range(90, 200);
+            ps.spawn3(P.SPARK, Math.cos(a) * (R + 2), -2, Math.sin(a) * (R + 2), Math.cos(a) * sp, -Rg.range(10, 90), Math.sin(a) * sp, Math.min(Rg.range(0.12, 0.3), reach(sp, 26)));
+          }
+        }
+        // the burning head of the arc spits sparks as it runs
+        if (t < GO) {
+          const k = (t % STEP) / STEP, f = 1 - seg(k, 0.06, 0.97), head = TOP + TAU * (1 - f);
+          if (f > 0.01 && f < 0.99 && Rg.chance(0.7)) {
+            const ca = Math.cos(head), sa = Math.sin(head), hx = ca * R, hz = sa * R, tx = -sa, tz = ca, out = Rg.range(-0.4, 1), sp = Rg.range(60, 150);
+            ps.spawn3(P.SPARK, hx, -1, hz, (-tx * 0.8 + ca * out) * sp, -Rg.range(30, 110), (-tz * 0.8 + sa * out) * sp, Rg.range(0.12, 0.28));
+            if (Rg.chance(0.15)) ps.spawn3(P.EMBER, hx, -1, hz, ca * Rg.range(5, 20), -Rg.range(10, 30), sa * Rg.range(5, 20), Rg.range(0.4, 0.8), C[5], 1);
+          }
+        }
+        // GO!: the ring blows out, sparks and stars everywhere
+        if (!went && t >= GO) {
+          went = true;
+          lights.add(0, CY, 70, WHITE, 0.9, 0.18, 0);
+          lights.add(0, CY, 64, G[5], 0.7, 0.8, 0);
+          lights.add(0, -4, 70, G[5], 0.6, 0.6, 0);
+          for (let j = 0; j < 40; j++) {
+            const a = Rg.range(0, TAU), sp = Rg.range(120, 300);
+            gs.spawn3(P.SPARK, Math.cos(a) * R, -2, Math.sin(a) * R, Math.cos(a) * sp, -Rg.range(20, 200), Math.sin(a) * sp, Math.min(Rg.range(0.18, 0.36), reach(sp, 24)));
+          }
+          for (let j = 0; j < 20; j++) {
+            const a = Rg.range(0, TAU), sp = Rg.range(30, 80), r = Rg.range(10, 28);
+            gs.spawn3(P.STAR, Math.cos(a) * r, CY + Rg.range(-14, 14), Math.sin(a) * r, Math.cos(a) * sp, -Rg.range(0, 40), Math.sin(a) * sp, Rg.range(0.5, 1), Rg.pick([G[7], G[6], G[5]]), Rg.chance(0.4) ? Rg.range(1.5, 2.5) : 0.6);
+          }
+        }
+        // it twinkles while it holds
+        if (t > GO + 0.2 && t < OUT - 0.1 && Rg.chance(0.12)) {
+          const a = Rg.range(0, TAU), r = Rg.range(30, 46);
+          gs.spawn3(P.STAR, Math.cos(a) * r, CY + Rg.range(-18, 18), Math.sin(a) * r, 0, -Rg.range(4, 12), 0, Rg.range(0.3, 0.6), Rg.pick([G[7], G[6]]), Rg.chance(0.3) ? 1.6 : 0.6);
+        }
+        if (!popped && t >= OUT + 0.05) {
+          popped = true;
+          lights.add(0, CY, 40, G[6], 0.6, 0.25, 0);
+          for (let j = 0; j < 16; j++) {
+            const a = (j / 16) * TAU + Rg.range(-0.15, 0.15), sp = Rg.range(60, 130);
+            gs.spawn3(P.STAR, Math.cos(a) * 12, CY + Rg.range(-6, 6), Math.sin(a) * 12, Math.cos(a) * sp, Rg.range(-30, 20), Math.sin(a) * sp, Math.min(Rg.range(0.3, 0.45), end - t), Rg.pick([G[7], G[6], G[5]]), j % 3 ? 0.6 : Rg.range(1.3, 2));
+          }
+        }
+        ps.update(dt);
+        gs.update(dt);
+        lights.update(dt);
+      },
+
+      draw(p) {
+        const q = space(p, o);
+        if (t < GO) {
+          const i = Math.floor(t / STEP), u = t - i * STEP, k = u / STEP;
+          const [sx, sy] = shake(t, 3, i * STEP, 0.22, o.seed + i);
+          const f = 1 - seg(k, 0.06, 0.97), flash = u < 0.07;
+          // the timer ring on the floor (the 2D timer, laid flat), the slam's white-hot frame filling it
+          q.decal(sx * 0.6, 0, sy * 0.6, null, R + 10, (pp) => {
+            timer(pp, C, 0, 0, f, flash, t);
+            if (u < 0.035) pp.circle(0, 0, R - 3, WHITE);
+            else if (u < 0.07) pp.ring(0, 0, R - 3, 3, C[6]);
+          });
+          // a shock ring off each slam, along the floor and round the digit
+          const rk = u / 0.3;
+          if (rk < 1) {
+            q.ring(0, 0, 0, R + 6 + 22 * ease.outCubic(rk), 1.5 * (1 - rk) + 1, rk < 0.3 ? WHITE : C[5], 1.3 * (1 - rk));
+            shell(q, 0, CY, 0, 14 + 20 * ease.outCubic(rk), 1.4, rk < 0.3 ? WHITE : C[5], 1.2 * (1 - rk));
+          }
+          // the burning head: a point of light on the ring, a column of light climbing from the ring to the digit
+          const head = TOP + TAU * (1 - f);
+          if (f > 0.01 && f < 0.999) {
+            const hx = Math.cos(head) * (R - 0.5), hz = Math.sin(head) * (R - 0.5);
+            q.glow(hx, -2, hz, 14, C[5], 0.5);
+            q.beam(hx, 0, hz, hx, -7 - 3 * Math.sin(t * 40), hz, 1.4, (v) => (v < 0.5 ? WHITE : C[5]), (v) => 1 - v * 0.2);
+          }
+          // the number: huge and white for a frame, then a stiff spring down to size
+          const s = sizeAt(u, 5, 2), d = digits[i], W = d.w * s, H = 7 * s;
+          q.at(sx, CY + sy, 0, (pp) => {
+            const items = d.letters.filter((L) => L.g).map((L) => ({ g: L.g, x: -W / 2 + L.x * s, y: -H / 2, sx: s, sy: s, flash: u < 0.035 ? 1 : u < 0.07 ? 0.4 : 0 }));
+            drawWord(pp, items, { fill: [C[4], C[5], C[6], C[7]], edge: WHITE, under: C[3], outline: C[0], ow: 2, shadow: scale(C[0], 0.5) });
+          });
+          q.glow(sx, CY + sy, 0, 30, C[4], 0.22 + (u < 0.12 ? 0.6 * (1 - u / 0.12) : 0));
+          q.glow(0, -2, 0, R + 8, C[3], 0.2 * (1 - k) + 0.08);
+          q.glowLine(0, -2, 0, 0, CY + 12, 0, 8, C[4], 0.06 + 0.1 * (1 - k));
+        } else {
+          const u = t - GO, [sx, sy] = shake(t, 4, GO, 0.3, o.seed + 9);
+          // the ring blows out into a shockwave on the floor
+          const bk = u / 0.4;
+          if (bk < 1) {
+            const r = R + 4 + 30 * ease.outCubic(bk), w = Math.max(1, 7 * (1 - bk));
+            q.ring(0, 0, 0, r, w, (v) => (bk < 0.2 || v > 0.6 ? WHITE : G[6]), 1.4 * (1 - bk));
+            q.glow(0, -2, 0, r + 8, G[5], 0.35 * (1 - bk));
+          }
+          const ik = (u - 0.05) / 0.3;
+          if (ik > 0 && ik < 1) {
+            q.ring(0, 0, 0, R + 22 * ease.outCubic(ik), 1, G[5], 1.2 * (1 - ik));
+            shell(q, 0, CY, 0, 18 + 28 * ease.outCubic(ik), 1.2, G[6], 1.1 * (1 - ik));
+          }
+          // rays: shoot out from a ring just outside the word, turn slowly, draw back in
+          const rk = ease.outExpo(clamp(u / 0.18)) * (1 - ease.inQuad(seg(t, OUT - 0.25, OUT + 0.05)));
+          for (const ry of rays) {
+            if (rk <= 0.02) break;
+            const an = ry.a + u * 0.35, ca = Math.cos(an), sa = Math.sin(an), r0 = 46 + 3 * rk, r1 = r0 + ry.L * 0.7 * rk;
+            q.line(ca * r0, CY + ry.dy * r0, sa * r0, ca * r1, CY + ry.dy * r1, sa * r1, (v) => (v < 0.3 ? WHITE : v < 0.65 ? G[6] : G[5]), (v) => (v < 0.6 ? 1.3 : (1.3 * (1 - v)) / 0.4));
+          }
+          // GO!: slams in bigger than the numbers, throbs while it holds, then pops
+          const pu = (t - OUT) / 0.06;
+          if (pu < 1) {
+            let s = sizeAt(u, 5, 3.5), flash = u < 0.035 ? 1 : u < 0.07 ? 0.4 : 0;
+            const throb = Math.max(0, Math.sin((u - 0.25) * 9)) * smooth(0.25, 0.35, u);
+            if (pu > 0) (s = 5 * (1 + 0.25 * pu)), (flash = 1);
+            const W = word.w * s, H = 7 * s;
+            q.at(sx, CY + sy, 0, (pp) => {
+              const items = word.letters.filter((L) => L.g).map((L) => ({ g: L.g, x: -W / 2 + L.x * s, y: -H / 2, sx: s, sy: s, slant: 1, flash }));
+              const sh = seg(u, 0.32, 0.56);
+              drawWord(pp, items, { fill: [G[4], G[5], G[6], G[7]], edge: WHITE, under: G[3], outline: G[0], ow: 2, shadow: scale(G[0], 0.5), shine: sh > 0 && sh < 1 ? -W / 2 - 8 + (W + 22) * ease.inOutSine(sh) : null, shineY: -H / 2, glint: G[6] });
+            });
+            q.glow(sx, CY + sy, 0, 46, G[5], 0.25 + 0.15 * throb + (u < 0.12 ? 0.7 * (1 - u / 0.12) : 0));
+          } else {
+            const k = (t - OUT - 0.06) / 0.22;
+            if (k > 0 && k < 1) shell(q, 0, CY, 0, 8 + 26 * ease.outCubic(k), 1.2, k < 0.4 ? WHITE : G[6], 1.3 * (1 - k));
+          }
+        }
+        ps.draw(q);
+        gs.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

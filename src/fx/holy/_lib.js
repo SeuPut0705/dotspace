@@ -186,3 +186,173 @@ export function plus(p, x, y, L, th, R, a = 1, glint = false) {
       p.dot(X + i, Y + j, c, a);
     }
 }
+
+// ---- 3D: parts the Space has no call for (src/core/space.js: q.at, q.decal, q.ring, q.beam are used as they are)
+
+const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const unit3 = (a) => {
+  const l = Math.hypot(a[0], a[1], a[2]) || 1;
+  return [a[0] / l, a[1] / l, a[2] / l];
+};
+
+/** The axes (u, v) of the plane with normal n, as q.decal and q.plane lay a drawing on it. */
+export function planeAxes(n) {
+  const N = unit3(n), e1 = Math.abs(N[1]) > 0.9 ? unit3(cross3(cross3(N, [1, 0, 0]), N)) : unit3(cross3(N, [0, -1, 0]));
+  return [e1, cross3(N, e1)];
+}
+
+/** How many px nearer the camera a point is than (cx, cy, cz) (negative: behind it). Brighten what is near, dim what is far. */
+export const nearer = (q, x, y, z, cx = 0, cy = 0, cz = 0) => q.depth(cx, cy, cz) - q.depth(x, y, z);
+
+const SHADER = { c: 0, a: 1, l: 0, k: 0, blend: true };
+
+/**
+ * A tapered rod from (x0, y0, z0), width w0, to (x1, y1, z1), width w1, with flat ends: a ray, a shaft of light.
+ * A pixel shader along it: fn(u, v, out), u 0..1 along it, v 0 on the axis to 1 at the edge; return a color or set
+ * out.c, out.a, out.l (light color), out.k (light), out.blend (default true: translucent, false: solid).
+ * Depth is the axis's, bulged like a tube, so what is solid in front of it hides it.
+ */
+export function rod(q, x0, y0, z0, x1, y1, z1, w0, w1, fn) {
+  if (!q.project(x0, y0, z0)) return;
+  const ax = q.x, ay = q.y, ad = q.d, ka = q.k;
+  if (!q.project(x1, y1, z1)) return;
+  const bx = q.x, by = q.y, bd = q.d, kb = q.k, p = q.p, o = SHADER, zp = p.z;
+  // long rods go in pieces, so each one's bounding box stays tight (the pieces tile: flat ends, half open)
+  const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / 18));
+  for (let i = 0; i < n; i++) {
+    const f0 = i / n, f1 = (i + 1) / n, last = i === n - 1;
+    const sx0 = ax + (bx - ax) * f0, sy0 = ay + (by - ay) * f0, sx1 = ax + (bx - ax) * f1, sy1 = ay + (by - ay) * f1;
+    const r0 = ((w0 + (w1 - w0) * f0) / 2) * (ka + (kb - ka) * f0), r1 = ((w0 + (w1 - w0) * f1) / 2) * (ka + (kb - ka) * f1);
+    const dx = sx1 - sx0, dy = sy1 - sy0, L2 = dx * dx + dy * dy, R = Math.max(r0, r1);
+    p.each(Math.min(sx0, sx1) - R, Math.min(sy0, sy1) - R, Math.max(sx0, sx1) + R, Math.max(sy0, sy1) + R, (lx, ly, sx, sy) => {
+      const t = L2 < 1e-4 ? 0.5 : ((lx - sx0) * dx + (ly - sy0) * dy) / L2;
+      if (t < 0 || t > 1 || (t === 1 && !last)) return;
+      const rr = r0 + (r1 - r0) * t, ex = sx0 + dx * t - lx, ey = sy0 + dy * t - ly, d = Math.sqrt(ex * ex + ey * ey);
+      if (d > rr || rr <= 0) return;
+      const v = d / rr, u = f0 + (f1 - f0) * t;
+      o.c = 0; o.a = 1; o.l = 0; o.k = 0; o.blend = true;
+      const c = fn(u, v, o) || o.c;
+      p.z = ad + (bd - ad) * u - Math.sqrt(1 - v * v) * ((w0 + (w1 - w0) * u) / 2);
+      if (c) o.blend ? p.blendPx(sx, sy, c, o.a) : p.put(sx, sy, c, o.a);
+      if (o.k > 0) p.add(sx, sy, o.l || c, o.k);
+    });
+  }
+  p.z = zp;
+}
+
+/**
+ * A sphere's skin, both halves: fn(nx, ny, nz, out) for every pixel, (nx, ny) across the disc (screen right, down),
+ * nz > 0 on the half facing the camera and < 0 on the far half; set out.c, out.a (translucent), out.l and out.k
+ * (light). The far half is drawn first, at its own depth, so a character inside it shows through the near half and
+ * hides the far one. Nothing below y = clipY (the floor) is drawn.
+ */
+export function shell(q, cx, cy, cz, r, fn, clipY = Infinity) {
+  if (!q.project(cx, cy, cz)) return;
+  const p = q.p, sx0 = q.x, sy0 = q.y, d0 = q.d, R = r * q.k, zp = p.z, cp = q.cp, sp = q.sp, o = SHADER;
+  p.each(sx0 - R, sy0 - R, sx0 + R, sy0 + R, (lx, ly, sx, sy) => {
+    const nx = (lx - sx0) / R, ny = (ly - sy0) / R, s = nx * nx + ny * ny;
+    if (s > 1) return;
+    const nz = Math.sqrt(1 - s);
+    for (const tw of [-nz, nz]) {
+      // the point's height: the screen's down axis and the toward-the-camera axis, back in world y
+      if (cy + (ny * cp - tw * sp) * r > clipY) continue;
+      o.c = 0; o.a = 1; o.l = 0; o.k = 0;
+      fn(nx, ny, tw, o);
+      p.z = d0 - tw * r;
+      if (o.c) p.blendPx(sx, sy, o.c, o.a);
+      if (o.k > 0) p.add(sx, sy, o.l || o.c, o.k);
+    }
+  });
+  p.z = zp;
+}
+
+// the normal of a leaf whose tip points along h, rolled by roll about its length (0: lying flat, up facing up)
+function leafNormal(h, roll) {
+  const d = -h[1];
+  let n0 = [-h[0] * d, -1 - h[1] * d, -h[2] * d];
+  n0 = Math.hypot(n0[0], n0[1], n0[2]) < 0.05 ? [0, 0, 1] : unit3(n0);
+  const s = cross3(h, n0), c = Math.cos(roll), sn = Math.sin(roll);
+  return [n0[0] * c + s[0] * sn, n0[1] * c + s[1] * sn, n0[2] * c + s[2] * sn];
+}
+
+/**
+ * Feathers in the air, as Feathers but with a depth: thrown, braking hard, then rocking as they sink, banking and
+ * tipping with each swing, each swinging along its own horizontal line; on the floor they lie flat and fade. Each is
+ * a flat leaf with a heading and a facing, drawn with the 2D feather() as a billboard that has the leaf's projected
+ * length and width, so it turns edge on to a line and shows its face as the camera goes round.
+ * add({ x, y, z, vx, vy, vz, dir: [dx, dy, dz] (where the tip points), len, wid, life, delay }); update(dt); draw(q, R).
+ */
+export class Feathers3 {
+  constructor(rng, floor = 0) {
+    this.R = rng;
+    this.floor = floor;
+    this.list = [];
+  }
+  add(f) {
+    const R = this.R, d = unit3(f.dir ?? [1, 0, 0]), wa = R.range(0, TAU);
+    this.list.push({ vx: 0, vy: 0, vz: 0, len: 7, wid: 2, delay: 0, side: R.sign(), ph: R.range(0, TAU), w: R.range(3.2, 4.6), amp: R.range(6, 11), sink: R.range(14, 24), va: R.range(-9, 9), tilt: R.range(-0.35, 0.35), wx: Math.cos(wa), wz: Math.sin(wa), psi: Math.atan2(d[2], d[0]), el: Math.asin(clamp(-d[1], -1, 1)), roll: 0, ...f, max: f.life, age: 0, landed: false });
+  }
+  get count() {
+    return this.list.length;
+  }
+  update(dt) {
+    for (let i = this.list.length - 1; i >= 0; i--) {
+      const f = this.list[i];
+      if (f.delay > 0) {
+        f.delay -= dt;
+        continue;
+      }
+      if ((f.life -= dt) <= 0) {
+        this.list.splice(i, 1);
+        continue;
+      }
+      f.age += dt;
+      if (f.landed) {
+        const k = Math.min(1, dt * 10);
+        f.el -= f.el * k;
+        f.roll -= f.roll * k;
+        continue;
+      }
+      f.vx -= f.vx * 3.4 * dt;
+      f.vy -= f.vy * 3.4 * dt;
+      f.vz -= f.vz * 3.4 * dt;
+      const s = smooth(0.1, 0.6, f.age), ph = f.age * f.w + f.ph, c = Math.cos(ph), sw = Math.sin(ph) * f.amp * s * 0.9;
+      f.x += (f.vx + f.wx * sw) * dt;
+      f.z += (f.vz + f.wz * sw) * dt;
+      f.y += (f.vy + f.sink * s * (c * c * 1.5 - 0.2)) * dt;
+      f.psi += f.va * dt * (1 - s);
+      f.el += (f.tilt + Math.sin(ph) * 0.5 - f.el) * Math.min(1, dt * 5 * s);
+      f.roll = Math.sin(ph + 1.2) * 0.9 * s;
+      if (f.y >= this.floor - 0.5) {
+        f.y = this.floor - 0.5;
+        f.landed = true;
+        f.life = Math.min(f.life, 0.6);
+      }
+    }
+  }
+  draw(q, R) {
+    const n = R.length;
+    for (const f of this.list) {
+      if (f.delay > 0) continue;
+      const k = f.life / f.max, a = Math.min(1, f.life / 0.45, f.age / 0.06), ce = Math.cos(f.el);
+      const h = [ce * Math.cos(f.psi), -Math.sin(f.el), ce * Math.sin(f.psi)];
+      leaf(q, f.x, f.y, f.z, h, leafNormal(h, f.roll), f.len, f.wid, R, a, f.side, f.age < 0.06 ? 1 : 0, 0.2, 0.5);
+      q.glow(f.x, f.y, f.z, 4 + f.len * 0.5, R[n - 3], 0.22 * a * (0.4 + 0.6 * k));
+    }
+  }
+}
+
+/**
+ * One feather in space: its quill at (x, y, z) (mid: how far along it that point is, 0 the quill, 0.5 the middle),
+ * the tip pointing along h, the face turned to n (both unit). It is drawn with the 2D feather() as a billboard with
+ * the length and width the leaf has on the screen: seen edge on it is a line, end on a stub, and the vane that
+ * trails flips when you see its back.
+ */
+export function leaf(q, x, y, z, h, n, len, wid, R, a, side, hot, quill = 0.02, mid = 0) {
+  const V = q.view(...h), W = q.view(...n), ang = Math.atan2(V[1], V[0]), lp = Math.max(Math.hypot(V[0], V[1]), 0.3), face = Math.abs(W[2]);
+  q.at(x, y, z, (p, s) => {
+    const L = len * lp * s, ca = Math.cos(ang), sa = Math.sin(ang);
+    feather(p, -ca * L * mid, -sa * L * mid, ang, L, wid * (0.45 + 0.55 * face) * s, R, a, W[2] >= 0 ? side : -side, hot, quill);
+  });
+}

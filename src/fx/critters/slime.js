@@ -1,8 +1,8 @@
 // The puddle (a domed wet surface with glints sliding along it, bubbles that swell and pop) is adapted from
 // Sprite Fusion's open-source poison puddle (https://www.spritefusion.com/pixel-art-vfx/poison),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { fit, clamp, wrap, smooth, seg, ease, lerp, rng, cycle, sparkle, TAU } from "../../core/index.js";
-import { Grid, shift, curve, spring, toss, lnoise } from "./_lib.js";
+import { fit, clamp, wrap, smooth, seg, ease, lerp, mix, rng, cycle, sparkle, space, TAU } from "../../core/index.js";
+import { Grid, shift, curve, spring, toss, lnoise, floorShadow, floorPool } from "./_lib.js";
 
 export const meta = {
   name: "Slime",
@@ -273,3 +273,223 @@ export function drawBack(p, time, o) {
     for (let j = 0; j < nub; j++) p.px(-1, P.by + j, j === 0 ? C[3] : C[4]);
   }
 }
+
+// ---- 3D: it hops across the floor from one puddle to a splash, droplets fly out all round, then it oozes back
+// along a wet trail to the first puddle so the loop closes. It is a jelly blob that faces the camera, so it never flips.
+const SDIR = [Math.cos(0.6), Math.sin(0.6)], SPERP = [-SDIR[1], SDIR[0]], HALF = 14;
+const SA = [-SDIR[0] * HALF, -SDIR[1] * HALF], SB = [SDIR[0] * HALF, SDIR[1] * HALF];
+const CS = 1.74, CD = D + T_SQ - CS, R_AIR = W0 / Math.sqrt(1.36) / 2 + 3;
+
+// how far through its ooze back it is (0..1), or -1 when it isn't oozing
+const creepW = (t) => (t >= CS ? (t - CS) / CD : t < T_SQ ? (t + D - CS) / CD : -1);
+
+// where it stands (u: 0 at the first puddle, 1 at the splash), and how fast it is travelling (+ towards the splash)
+function place3(t) {
+  const w = creepW(t);
+  let u = 0, mv = 0;
+  if (t >= T_LIFT && t < T_LAND) {
+    u = (t - T_LIFT) / (T_LAND - T_LIFT);
+    mv = Math.sin(Math.PI * u);
+  } else if (t >= T_LAND && t < CS) u = 1;
+  else if (w >= 0) {
+    u = 1 - smooth(0, 1, w);
+    mv = -Math.sin(Math.PI * w);
+  }
+  return { x: lerp(SA[0], SB[0], u), z: lerp(SA[1], SB[1], u), u, w, mv };
+}
+
+// the 2D pose, flattened and leaning into its travel (which way is right depends on the camera)
+function pose3(t, hop, S, q) {
+  const P = pose(t, hop), cm = S.w >= 0 ? Math.sin(Math.PI * S.w) : 0, s = P.s - 0.12 * cm;
+  return { ...P, s, W: W0 / Math.sqrt(1 + s), H: H0 * (1 + s), lean: P.lean + (SDIR[0] * q.cy - SDIR[1] * q.sy) * 0.12 * S.mv };
+}
+
+// the first puddle: it sat in it, leaves it behind, and it fills back as the slime oozes home
+function puddleA(t) {
+  const w = creepW(t), rest = pose(T_SQ, 0).W / 2 + 3;
+  if (t >= T_SQ && t < T_LIFT) return pose(t, 0).W / 2 + 3;
+  if (t >= T_LIFT && t < T_LAND) {
+    const q = (t - T_LIFT) / (T_LAND - T_LIFT);
+    return lerp(pose(T_LIFT, 0).W / 2 + 3, R_AIR * (1 - 0.22 * q), smooth(0, 0.08, t - T_LIFT));
+  }
+  return w < 0 ? R_AIR * 0.78 : lerp(R_AIR * 0.78, rest, smooth(0, 1, w));
+}
+// the splash it lands in: it spreads out, then drains away as the slime oozes off
+function puddleB(t, P) {
+  const w = creepW(t), age = wrap(t - T_LAND, D);
+  if (t < T_LAND && t >= T_SQ) return 0;
+  return puddleR(t, P) * (1 - smooth(0, 0.7, Math.max(0, w))) * smooth(0, 0.05, age);
+}
+
+// a puddle seen from above: a dark rim, a lit crescent, glints sliding over it, the slime's shadow on it
+function puddleFlat(q, x, z, R, t, C, shade) {
+  if (R < 2) return;
+  q.plane(x, 0, z, null, R * 1.12 + 2, (u, v, o) => {
+    const d = Math.hypot(u, v), e = R * (1 + 0.07 * lnoise(t, D, 3, (u + 2 * v) * 0.03, 5));
+    if (d > e) return;
+    let c = d > e - 1.5 ? C[2] : d > e - 3.2 ? C[3] : C[4];
+    if (d <= e - 3.2) {
+      if ((-u * 0.55 - v * 0.83) / e > 0.3 && d > e * 0.4) c = C[5];
+      if (d < e * 0.82 && lnoise(t, D, 7, (u * 0.8 + v) * 0.12, 3) + lnoise(t, D, 4, (u - v) * 0.06, 4) * 0.6 > 0.62) c = C[6];
+    }
+    const s = shade(x + u, z + v);
+    return s > 0.03 ? mix(c, C[0], s) : c;
+  });
+}
+
+// the goo it drags along the floor from the splash to where it is now, thinning behind it
+function trailFlat(q, a, b, k, t, C) {
+  const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  if (L < 2 || k <= 0.02) return;
+  const dx = (b[0] - a[0]) / L, dz = (b[1] - a[1]) / L;
+  q.plane((a[0] + b[0]) / 2, 0, (a[1] + b[1]) / 2, null, L / 2 + 6, (u, v, o) => {
+    const s = u * dx + v * dz + L / 2, n = Math.abs(-u * dz + v * dx), f = s / L;
+    if (s < 0 || s > L) return;
+    const wd = lerp(1.6, 6, f) + lnoise(t, D, 5, s * 0.1, 8) * 0.8;
+    if (n > wd) return;
+    o.c = n > wd - 1.2 ? C[2] : f > 0.5 && lnoise(t, D, 6, s * 0.2, 9) > 0.45 ? C[5] : C[3];
+    o.a = k * (0.3 + 0.7 * f);
+    o.blend = true;
+  });
+}
+
+// a droplet in space: the 2D arc turned round a random direction, and when it has landed it creeps to the slime
+function drop3(i, o, age, S) {
+  const f = droplet(i, o, age), a = rng(o.seed, i, 77).range(0, TAU), cx = Math.cos(a), cz = Math.sin(a);
+  if (!f.landed) return { ...f, X: SB[0] + cx * f.x, Y: f.y + 1, Z: SB[1] + cz * f.x, VX: cx * f.vx, VY: f.vy, VZ: cz * f.vx };
+  const u = 1 - f.k, sg = Math.sign(f.lx || 1), e = ease.inOutSine(u);
+  const X = lerp(SB[0] + cx * f.lx, S.x + cx * sg * (W0 / 2 - 2), e), Z = lerp(SB[1] + cz * f.lx, S.z + cz * sg * (W0 / 2 - 2), e);
+  return { ...f, X, Y: 0, Z, LX: SB[0] + cx * f.lx, LZ: SB[1] + cz * f.lx };
+}
+
+export const three = {
+  meta: { size: [152, 124], origin: [76, 92], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, time, o) {
+    const t = shift(time, D, o.seed), C = fit(o.palette, 7), q = space(p, o), g = GRID, S = place3(t), P0 = pose(t, o.hop), P = pose3(t, o.hop, S, q);
+    const yb = P.by - 1, age = P0.age, hgt = clamp(-P.by / (o.hop * 1.1)), RA = puddleA(t), RB = puddleB(t, P0);
+    // its shadow on the floor and on the goo: a true circle that shrinks as it rises
+    const sr = (P.W / 2 + 1) * (1 - 0.35 * hgt), sa = 0.55 * (1 - 0.5 * hgt);
+    const shade = (x, z) => {
+      const d = Math.hypot(x - S.x, z - S.z) / sr;
+      return d >= 1 ? 0 : sa * (1 - d) ** 0.7;
+    };
+    floorShadow(q, S.x, S.z, sr, C[0], sa);
+    puddleFlat(q, SA[0], SA[1], RA, t, C, shade);
+    puddleFlat(q, SB[0], SB[1], RB, t, C, shade);
+    // the slime: a billboard facing the camera
+    body(g, C, P);
+    face(g, C, P, t);
+    bubbleIn(g, C, P, t);
+    g.outline((x, y, nx, ny) => (ny < 0 && nx <= 0 && y < yb - P.H * 0.5 ? C[1] : C[0]));
+    q.at(S.x, 0, S.z, (pp) => {
+      g.draw(pp);
+      // the bubble pops out of the top: a ring and two flecks
+      if (t >= POP && t < POP + 0.16) {
+        const k = (t - POP) / 0.16, x = P.lean * P.H - halfW(0.86, P) * 0.05, y = yb - P.H - 0.5;
+        for (let a = 0; a < TAU; a += 0.6) pp.dot(x + Math.cos(a) * (1 + k * 3), y + Math.sin(a) * (1 + k * 3) * 0.7, C[6], 1.2 - k);
+        for (const s2 of [-1, 1]) pp.dot(x + s2 * (1 + k * 4), y - 1 - k * 6 + k * k * 4, C[5], 1.3 - k);
+        pp.glow(x, y, 6, C[5], 0.4 * (1 - k));
+      }
+      // a glint on the dome at the top of the hop
+      if (P.q > 0.4 && P.q < 0.64) {
+        const k = Math.sin(Math.PI * seg(P.q, 0.4, 0.64));
+        sparkle(pp, P.lean * 0.8 * P.H - P.W * 0.21, yb - P.H * 0.8, 1 + 2.5 * k, C[6], C[5], 0.5 * k);
+      }
+    });
+    // the goo string it pulls off the floor as it leaves; when it snaps, a drip falls back and a nub hangs from it
+    if (t >= T_LIFT && t < SNAP) {
+      const u = (t - T_LIFT) / (SNAP - T_LIFT), N = 6;
+      for (let k = 0; k < N; k++) {
+        const s0 = k / N, s1 = (k + 1) / N, wd = 2.2 * (1 - 0.8 * u * Math.sin(Math.PI * (s0 + s1) / 2));
+        q.beam(lerp(SA[0], S.x, s0), lerp(0, P.by, s0), lerp(SA[1], S.z, s0), lerp(SA[0], S.x, s1), lerp(0, P.by, s1), lerp(SA[1], S.z, s1), wd, (uu, v) => (v > 0.5 ? C[3] : C[4]));
+      }
+    } else if (t >= SNAP && t < SNAP + 0.3) {
+      const a2 = t - SNAP, ys = pose(SNAP, o.hop).by - 1, f = toss(0, ys * 0.45, 0, 0, a2, G * 1.3, -2);
+      const sp = place3(SNAP);
+      if (!f.landed) q.ball(sp.x, f.y + 2, sp.z, 1.1, (nx, ny) => (nx < 0 && ny < 0 ? C[6] : C[5]));
+      if (a2 < 0.12) q.beam(S.x, P.by - 0.5, S.z, S.x, P.by - 0.5 + 3 * (1 - a2 / 0.12), S.z, 2, C[4]);
+    }
+    // droplets in flight, round it in a full circle
+    const drops = [];
+    for (let i = 0; i < NDROP; i++) drops.push(drop3(i, o, age, S));
+    for (const f of drops) {
+      if (f.landed) continue;
+      const sv = Math.hypot(f.VX, f.VY, f.VZ) || 1, L = Math.min(2.5, Math.hypot(f.vx, f.vy) / 50), r = f.size >= 3 ? 1.9 : f.size >= 2 ? 1.4 : 0.9;
+      q.line(f.X - (f.VX / sv) * L, f.Y - (f.VY / sv) * L, f.Z - (f.VZ / sv) * L, f.X, f.Y, f.Z, C[3]);
+      q.ball(f.X, f.Y, f.Z, r, (nx, ny) => (nx < 0 && ny < -0.2 ? C[6] : ny > 0.3 ? C[3] : nx < 0 ? C[5] : C[4]));
+    }
+    // landed droplets: a flattened splat on the floor, a bead creeping home, a wet trail behind it
+    for (const f of drops) {
+      if (!f.landed || f.gone) continue;
+      const w = f.size + (f.splat > 0 ? 1 : 0), rr = w / 2 + 0.4;
+      q.plane(f.X, 0, f.Z, null, rr + 1, (u, v, out) => {
+        const d = Math.hypot(u, v);
+        if (d > rr) return;
+        out.c = u + v < 0 ? C[5] : C[4];
+        out.a = 1;
+      });
+      const tx = f.LX - f.X, tz = f.LZ - f.Z, tl = Math.hypot(tx, tz);
+      for (let j = 1; j < Math.min(8, tl); j++) q.dot(f.X + (tx / tl) * j, 0, f.Z + (tz / tl) * j, C[2], 0.7 - j * 0.08);
+      q.glow(f.X, -1, f.Z, 5, C[4], 0.25 * f.k + 0.1);
+    }
+    // the wet trail it leaves oozing home, and the goo wave that rolls out of the splat
+    if (S.w >= 0) trailFlat(q, SB, [S.x, S.z], 0.85 * (1 - smooth(0.55, 1, S.w)), t, C);
+    if (age < 0.45) {
+      const k = age / 0.45, rr = 8 + 36 * (1 - Math.exp(-age * 6));
+      q.plane(SB[0], 0, SB[1], null, rr + 1, (u, v, out) => {
+        const d = Math.hypot(u, v);
+        if (d > rr || d < rr - 1.6) return;
+        out.c = C[5];
+        out.a = 0.95 * (1 - k);
+        out.blend = true;
+      });
+    }
+    // drips let go of its underside while it's in the air and plop into the puddle
+    for (const [t0, dx] of DRIPS) {
+      const a2 = wrap(t - t0, D);
+      if (a2 > 0.6) continue;
+      const P1 = pose(t0, o.hop), s0 = place3(t0), X = s0.x + SPERP[0] * dx, Z = s0.z + SPERP[1] * dx, f = toss(0, P1.by - 0.5, 0, 12, a2, G, -1);
+      if (!f.landed) q.ball(X, f.y + 1, Z, 1.1, (nx, ny) => (nx < 0 && ny < 0 ? C[6] : C[4]));
+      else if (a2 - f.at < 0.14) {
+        const k = (a2 - f.at) / 0.14;
+        for (let j = 0; j < 6; j++) {
+          const a = (j / 6) * TAU + dx;
+          q.dot(X + Math.cos(a) * (1 + k * 4), -1 - k * 2 + k * k * 2, Z + Math.sin(a) * (1 + k * 4), C[5], 1.2 - k);
+        }
+      }
+    }
+    // bubbles swell out of the first puddle and pop, flicking flecks round in a ring
+    cycle(t, D, 4, o.seed * 17 + 3, (r) => r.range(0.45, 0.75), (ag, L, r) => {
+      const bx = r.range(-0.85, 0.85) * RA, k = ag / L, rb = r.range(1.4, 2.6) * (0.3 + 0.7 * ease.outCubic(Math.min(1, k * 1.25))), bz = r.range(-0.85, 0.85) * RA;
+      const X = SA[0] + bx, Z = SA[1] + bz;
+      if (bx * bx + bz * bz > (0.85 * RA) ** 2 || (Math.hypot(X - S.x, Z - S.z) < P.W / 2 + 1 && P.q < 0)) return;
+      if (k < 0.85) {
+        q.ball(X, -rb * 0.45, Z, rb, (nx, ny, nz) => (nx < 0 && ny < -0.3 ? C[6] : nz < 0.55 ? C[4] : C[5]), (nx, ny, nz) => (nz > 0.6 ? 0.3 : 1));
+        q.glow(X, -rb, Z, rb * 2 + 3, C[5], 0.2);
+      } else {
+        const f = (k - 0.85) / 0.15;
+        for (let j = 0; j < 6; j++) {
+          const a = (j / 6) * TAU;
+          q.dot(X + Math.cos(a) * (2 + 3 * f), -1 - 2.5 * f + 1.5 * f * f, Z + Math.sin(a) * (2 + 3 * f), C[6], 1.2 - f);
+        }
+      }
+    });
+    // spores drifting up out of the puddles, glowing, in a volume
+    cycle(t, D, 9, o.seed * 13 + 1, (r) => r.range(1.2, 1.8), (ag, L, r, i) => {
+      const k = ag / L, x = r.range(-24, 24) + Math.sin(ag * 2.1 + i * 1.7) * 3, y = -2 - r.range(9, 17) * ag - 5 * ag * ag;
+      const a = Math.min(1, k * 4) * Math.min(1, (1 - k) * 2.5), tw = 0.6 + 0.4 * Math.sin(ag * 7 + i * 2.3), big = r.chance(0.35), z = r.range(-24, 24);
+      if (x * x + z * z > 576) return;
+      q.dot(x, y, z, tw > 0.8 ? C[6] : C[5], a);
+      if (big) q.dot(x + 1, y, z, C[5], a), q.dot(x, y + 1, z, C[4], a);
+      q.glow(x, y, z, big ? 9 : 6, C[5], (big ? 0.45 : 0.32) * a * tw);
+    });
+    // light: the slime glows through and tints the air round it, the puddles light the floor, a flash on the splat
+    const cy = yb - P.H * 0.45, near = clamp(1 + P.by / (o.hop * 1.1)), br = 0.9 + 0.1 * Math.sin((t / D) * TAU * 2);
+    q.glow(S.x, -14, S.z, 64, C[3], 0.3 * br);
+    q.glow(S.x, cy, S.z, 30 + P.W * 0.3, C[4], 0.2);
+    q.glow(S.x, cy + 3, S.z, 14, C[5], 0.16);
+    floorPool(q, SA[0], SA[1], RA * 1.3 + 6, C[4], 0.3 + 0.2 * near);
+    if (RB > 2) floorPool(q, SB[0], SB[1], RB * 1.3 + 6, C[4], 0.3 + 0.2 * near);
+    if (t >= T_LAND || t < T_SQ) q.glow(SB[0], -3, SB[1], 40, C[5], 0.42 * Math.exp(-age * 9));
+  },
+};

@@ -1,6 +1,7 @@
 // The soft, top-lit smoke puffs (a body, a denser core, a lit cap) follow Sprite Fusion's open-source explosion
 // (https://www.spritefusion.com/pixel-art-vfx/explosion), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, flare, clamp, smooth, ease, TAU, WHITE, hex } from "../../core/index.js";
+import { Particles, Lights, P, Rng, fit, flare, clamp, smooth, ease, space, TAU, WHITE, hex } from "../../core/index.js";
+import { sphere } from "./_lib.js";
 
 export const meta = {
   name: "Poof",
@@ -139,3 +140,125 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the pop in the middle of a room. The balls fly out over a whole sphere (the ones thrown down stop at the
+// floor) and stay soft billboards, sorted far to near; the speed lines are rays in space, the pop's ring a true
+// circle round it, the stars and the skid of dust leave in every direction.
+export const three = {
+  meta: { size: [112, 112], origin: [56, 94], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 6), S = fit(o.stars, 3), R = new Rng(o.seed), floor = () => 0;
+    const ps = new Particles({ rng: R, ground: floor, sparks: [WHITE, S[1], S[0], C[2]] }), lights = new Lights();
+    const balls = [], lines = [];
+    const add = (dir, sp, r0, r1, life, delay, off = 3) => {
+      const [dx, up, dz] = dir, dy = -up;
+      balls.push({ x: dx * off, y: CY + dy * off, z: dz * off, vx: dx * sp, vy: dy * sp * 0.8 - 12, vz: dz * sp, r0, r1, life, delay });
+    };
+    for (let i = 0; i < 12; i++) {
+      const r = R.range(5, 7);
+      add(sphere(i, 12, 0.7, R.range(-0.2, 0.2)), R.range(120, 175), r * 0.5, r, R.range(0.7, 1.05), R.range(0, 0.03));
+    }
+    for (let i = 0; i < 5; i++) add(sphere(i + 4, 5, 1, R.range(-0.3, 0.3)), R.range(20, 60), 4, R.range(6.5, 8.5), R.range(0.85, 1.2), R.range(0.02, 0.06), 2);
+    for (let i = 0; i < 7; i++) {
+      const r = R.range(2.2, 3.6);
+      add(sphere(i, 7, 0.9, 1 + R.range(-0.4, 0.4)), R.range(170, 240), r * 0.6, r, R.range(0.32, 0.5), R.range(0.01, 0.04), 4);
+    }
+    for (const b of balls) b.max = b.life;
+    // speed lines between the balls: rays over the sphere, the ones that point down stop at the floor
+    for (let i = 0; i < 12; i++) {
+      const d = sphere(i, 12, 0.95, 0.13 + R.range(-0.12, 0.12)), down = -d[1];
+      lines.push({ d: [d[0], down, d[2]], r1: Math.min(R.range(24, 34), down > 0.1 ? (-2 - CY) / down : 99), at: R.range(0, 0.04) });
+    }
+    // little stars spun off the pop, up and out every way round
+    for (let i = 0; i < 7; i++) {
+      const az = R.range(0, TAU), e = R.range(-0.2, 1.3), sp = R.range(70, 125), h = Math.cos(e) * sp;
+      ps.spawn3(P.STAR, Math.cos(az) * 6, CY - Math.sin(e) * 6, Math.sin(az) * 6, Math.cos(az) * h, -Math.sin(e) * sp - 30, Math.sin(az) * h, R.range(0.55, 0.95), R.pick([S[2], S[1], S[1], S[0]]), R.range(1.3, 2.4), R.range(0.02, 0.1));
+    }
+    for (let i = 0; i < 10; i++) {
+      const [dx, up, dz] = sphere(i, 10, 1, R.range(0, 1)), sp = R.range(40, 110);
+      ps.spawn3(P.STAR, dx * 5, CY - up * 5, dz * 5, dx * sp, -up * sp - 20, dz * sp, R.range(0.3, 0.6), R.pick([WHITE, S[1]]), 0.6, R.range(0, 0.08));
+    }
+    // the feet go too: a skid of dust all round along the floor
+    for (let i = 0; i < 9; i++) {
+      const az = (i / 9) * TAU + R.range(-0.3, 0.3), sp = R.range(25, 70);
+      ps.spawn3(P.DUST, Math.cos(az) * R.range(1, 6), -1, Math.sin(az) * R.range(1, 6), Math.cos(az) * sp, -R.range(2, 10), Math.sin(az) * sp, R.range(0.4, 0.7), C[2], R.range(1.6, 3), R.range(0.02, 0.08));
+    }
+    lights.add(0, CY, 46, C[4], 0.8, 0.4, 0);
+    lights.add(0, CY, 22, WHITE, 0.8, 0.1, 0);
+    let t = 0;
+
+    const radius = (b) => {
+      const age = b.max - b.life, u = age / b.max;
+      const grow = b.r0 + (b.r1 - b.r0) * ease.outBack(clamp(age / 0.22), 2), breathe = 1 + 0.06 * Math.sin(age * 14 + b.r1);
+      return grow * breathe * (u < 0.62 ? 1 : 1 - ease.inBack(clamp((u - 0.62) / 0.38), 1.4));
+    };
+    // one ball as a billboard (a puff looks the same from every side): shade, body, cap, lit from above
+    const drawBall = (p, b, k) => {
+      const age = b.max - b.life, r = radius(b) * k, a = Math.min(1, age * 20), lit = age < 0.12;
+      if (r < 0.6) return;
+      const hy = (b.y - CY + 6) / 14, lo = hy > 0.4, hi = hy < -0.3;
+      p.disc(r * 0.16, r * 0.2, r, lit ? C[3] : lo ? C[1] : C[2], 0.8 * a);
+      p.disc(-r * 0.06, -r * 0.08, r * 0.86, lit ? C[4] : lo ? C[2] : C[3], 0.88 * a);
+      if (!lo || lit) {
+        p.disc(-r * 0.28, -r * 0.34, r * 0.42, lit || hi ? WHITE : C[4], 0.85 * a);
+        if (age < 0.25) p.disc(-r * 0.3, -r * 0.38, r * 0.2, WHITE, 0.9 * a * (1 - age / 0.25));
+      }
+    };
+
+    return {
+      update(dt) {
+        t += dt;
+        for (let i = balls.length - 1; i >= 0; i--) {
+          const b = balls[i];
+          if (b.delay > 0) {
+            b.delay -= dt;
+            continue;
+          }
+          if ((b.life -= dt) <= 0) {
+            if (b.r1 > 4) ps.spawn3(P.STAR, b.x, b.y, b.z, 0, -8, 0, 0.22, WHITE, 0.6);
+            balls.splice(i, 1);
+            continue;
+          }
+          b.vx -= b.vx * 7 * dt;
+          b.vz -= b.vz * 7 * dt;
+          b.vy -= b.vy * 7 * dt + 30 * dt;
+          b.x += b.vx * dt;
+          b.z += b.vz * dt;
+          b.y = Math.min(b.y + b.vy * dt, -radius(b) * 0.7);
+        }
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), s = 1 - smooth(0.1, 0.9, t);
+        // solid first: the pop's white heart, the flare on it, the rays and the shock ring
+        if (t < 0.07) {
+          const k = t / 0.07;
+          q.ball(0, CY, 0, 9 + 3 * k, (nx, ny, nz) => (nz > 0.5 ? WHITE : C[4]));
+          q.at(0, CY, 0, (pp, kk) => {
+            pp.z -= 14;
+            flare(pp, 0, 0, 20 * (1 - k * 0.5) * kk, 1 - k, C);
+          });
+        }
+        for (const l of lines) {
+          const u = (t - l.at) / 0.2;
+          if (u <= 0 || u >= 1) continue;
+          const head = 8 + (l.r1 - 8) * ease.outExpo(clamp(u / 0.6)), tail = 8 + (l.r1 - 8) * ease.inCubic(u), [dx, dy, dz] = l.d;
+          q.line(dx * tail, CY + dy * tail, dz * tail, dx * head, CY + dy * head, dz * head, (v) => (v > 0.6 ? WHITE : C[4]));
+          q.glowLine(dx * tail, CY + dy * tail, dz * tail, dx * head, CY + dy * head, dz * head, 3, C[4], 0.25);
+        }
+        const rk = (t - 0.03) / 0.2;
+        if (rk > 0 && rk < 1) {
+          const r = 8 + 18 * ease.outCubic(rk), th = Math.max(1, 2.5 * (1 - rk)), c = rk < 0.3 ? WHITE : C[4], a = 1.1 - rk;
+          q.ring(0, CY, 0, r, th, c, a);
+          q.at(0, CY, 0, (pp, k) => pp.ring(0, 0, r * k, th, c, a));
+        }
+        if (s > 0) q.glow(0, -1, 0, 26, C[4], 0.25 * s);
+        // the cloud: soft balls, far to near
+        for (const b of q.sort(balls.filter((b) => b.delay <= 0), (b) => [b.x, b.y, b.z])) q.at(b.x, b.y, b.z, (pp, k) => drawBall(pp, b, k));
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

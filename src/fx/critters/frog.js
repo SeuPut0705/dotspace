@@ -1,5 +1,5 @@
-import { fit, hex, mix, clamp, wrap, lerp, smooth, seg, ease, rng, P, TAU } from "../../core/index.js";
-import { Grid, Swarm, shift, shadow, toss, spring } from "./_lib.js";
+import { fit, hex, mix, clamp, wrap, lerp, smooth, seg, ease, rng, P, space, TAU } from "../../core/index.js";
+import { Grid, Swarm, shift, shadow, toss, spring, mirrored, floorShadow } from "./_lib.js";
 
 export const meta = {
   name: "Frog",
@@ -166,3 +166,116 @@ export function drawBack(p, time, o) {
   const t = shift(time, D, o.seed), C = fit(o.palette, 7), Pz = pose(t), hgt = clamp(-Pz.by / HOP);
   shadow(p, 0, -0.2, 13 * (1 - 0.35 * hgt), 1.6, C[0], 0.6 - 0.3 * hgt);
 }
+
+// ---- 3D: the leap carries it over the floor, the landing rings out as a true circle, the tongue is a real beam
+// to a fly buzzing round a loop in space; after the gulp it turns and hops back so the loop closes
+const HOPD = 19, DIR = [Math.cos(0.32), Math.sin(0.32)], PERP = [-DIR[1], DIR[0]];
+const FA = [-DIR[0] * HOPD, -DIR[1] * HOPD], FB = [DIR[0] * HOPD, DIR[1] * HOPD];
+const T_TURN = 2.0, T_RUP = 2.08, T_RLAND = 2.4, T_FACE = 2.5, RHOP = 12, FC = [DIR[0] * 22, -38, DIR[1] * 22];
+const TONGUE_D = mix(TONGUE, hex("#0a160c"), 0.4);
+
+// where the frog stands at loop time t, its pose, and which way it faces (+1 along DIR, -1 back)
+function frog3(t) {
+  let pz = pose(t), x = FA[0], z = FA[1], face = 1;
+  if (t >= T_UP && t < T_LAND) {
+    const u = (t - T_UP) / (T_LAND - T_UP);
+    x = lerp(FA[0], FB[0], u);
+    z = lerp(FA[1], FB[1], u);
+  } else if (t >= T_LAND && t < T_RLAND) {
+    x = FB[0];
+    z = FB[1];
+    if (t >= T_TURN) face = -1;
+    if (t >= T_TURN && t < T_RUP) pz = { ...pz, sq: pz.sq - 0.12 * smooth(T_TURN, T_RUP, t) };
+    else if (t >= T_RUP) {
+      const u = (t - T_RUP) / (T_RLAND - T_RUP);
+      x = lerp(FB[0], FA[0], u);
+      z = lerp(FB[1], FA[1], u);
+      pz = { ...pz, by: -RHOP * 4 * u * (1 - u), rot: lerp(0.3, -0.2, u), sq: lerp(0.14, 0.02, Math.min(1, u * 2)), leg: u < 0.7 ? 1 : 1 - (u - 0.7) / 0.3, air: true };
+    }
+  } else if (t >= T_RLAND) {
+    const a = t - T_RLAND;
+    pz = { ...pz, by: 0, rot: 0, leg: 0, air: false, sq: -0.14 * Math.sin(Math.PI * clamp(a / 0.2)) };
+    if (t < T_FACE) face = -1;
+  }
+  return { x, z, face, pz };
+}
+
+// the fly buzzes a little loop in the air above and ahead of where the frog lands, then comes back in from the side
+function fly3(t) {
+  if (t > T_SNAP && t < T_BACK) return null;
+  const a = (t / D) * TAU * 3, s = Math.sin(a), c = Math.cos(a);
+  const home = [FC[0] + DIR[0] * 6 * s + PERP[0] * 8 * c, FC[1] + 3 * Math.sin(2 * a), FC[2] + DIR[1] * 6 * s + PERP[1] * 8 * c];
+  const inn = wrap(t - T_BACK, D);
+  if (inn < 0.45) {
+    const u = ease.outCubic(inn / 0.45), S0 = [FC[0] - DIR[0] * 46 - PERP[0] * 30, -46, FC[2] - DIR[1] * 46 - PERP[1] * 30];
+    return [lerp(S0[0], home[0], u), lerp(S0[1], home[1], u) + Math.sin(inn * 30) * 1.5, lerp(S0[2], home[2], u)];
+  }
+  return home;
+}
+
+// dust and grit thrown out all round it where it takes off and lands: [time, spot, grains, strength]
+const KICKS = [[T_UP, FA, 7, 0.6], [T_LAND, FB, 18, 1], [T_RUP, FB, 6, 0.45], [T_RLAND, FA, 10, 0.6]];
+
+export const three = {
+  meta: { size: [150, 124], origin: [75, 100], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, time, o) {
+    const t = shift(time, D, o.seed), C = fit(o.palette, 7), Bl = fit(o.belly, 3), q = space(p, o), g = GRID;
+    const S = frog3(t), pz = S.pz, flip = mirrored(q, DIR[0] * S.face, DIR[1] * S.face), hgt = clamp(-pz.by / HOP), F = fly3(t);
+    // its shadow on the floor: a true circle that shrinks and fades as it rises
+    floorShadow(q, S.x, S.z, 12 * (1 - 0.35 * hgt), C[0], 0.8 - 0.35 * hgt);
+    if (F) floorShadow(q, F[0], F[2], 3.5, C[0], 0.3);
+    // the frog, a billboard turned to face where it is going
+    frog(g, C, Bl, pz, t);
+    q.at(S.x, Math.round(pz.by), S.z, (pp) => g.draw(pp, 1, 0, 0, flip));
+    // the tongue whips from the drawn mouth to the fly in space and back
+    const ts = (t - T_SNAP + 0.06) / 0.14;
+    if (ts > 0 && ts < 1) {
+      const f = fly3(T_SNAP - 0.001), e = Math.sin(Math.PI * ts), side = flip ? -11 : 11;
+      const M = [S.x + q.cy * side, pz.by - 8, S.z - q.sy * side], T = [lerp(M[0], f[0], e), lerp(M[1], f[1], e), lerp(M[2], f[2], e)];
+      q.beam(M[0], M[1], M[2], T[0], T[1], T[2], 2, (u, v) => (v > 0.45 ? TONGUE_D : TONGUE));
+      q.ball(T[0], T[1], T[2], 1.7, TONGUE);
+    }
+    // the fly, buzzing
+    if (F) {
+      const flap = Math.sin(t * 90) > 0;
+      q.at(F[0], F[1], F[2], (pp) => {
+        pp.px(0, 0, FLY); pp.px(1, 0, FLY);
+        pp.dot(0, flap ? -1 : 0, WINGS, 0.8); pp.dot(1, flap ? 0 : -1, WINGS, 0.8);
+      });
+      q.glow(F[0], F[1], F[2], 6, WINGS, 0.3);
+      // its buzzing loop hangs behind it in the air
+      for (let k = 1; k <= 7; k++) {
+        const Fk = fly3(t - k * 0.025);
+        if (Fk) q.dot(Fk[0], Fk[1], Fk[2], WINGS, 0.55 * (1 - k / 8));
+      }
+    }
+    // dust thrown out in a full circle along the floor, rings spreading, grit bouncing
+    const sw = SWARM.begin(t);
+    for (const [t0, at, n, pow] of KICKS) {
+      const age = wrap(t - t0, D);
+      for (let i = 0; i < n; i++) {
+        const r = rng(o.seed, i, t0 * 100), L = r.range(0.6, 1.1) * pow;
+        if (age > L) continue;
+        const a = r.range(0, TAU), v = r.range(24, 70) * pow, d = 7 + (v / 3.5) * (1 - Math.exp(-age * 3.5)), y = -1.5 - r.range(1, 5) * age;
+        sw.add3(P.SMOKE, at[0] + Math.cos(a) * d, y, at[1] + Math.sin(a) * d, 0, 0, 0, age, L, DUST, r.range(2.2, 4.2) * (0.65 + 0.35 * pow), 2);
+      }
+      if (age < 0.55 && pow > 0.5) {
+        const k = age / 0.55, rr = pow * (6 + 26 * (1 - Math.exp(-age * 5)));
+        q.plane(at[0], 0, at[1], null, rr + 1, (u, v, out) => {
+          const dd = Math.hypot(u, v);
+          if (dd > rr || dd < rr - 1.6) return;
+          out.c = DUST;
+          out.a = 0.95 * (1 - k) * pow;
+          out.blend = true;
+        });
+      }
+      if (pow === 1)
+        for (let i = 0; i < 8; i++) {
+          const r = rng(o.seed, i, 909), a = r.range(0, TAU), h = r.range(6, 40), b = toss(0, -1, 0, -r.range(30, 70), age, 700, -0.5);
+          const run = h * Math.min(age, b.at);
+          if (age < 0.7) q.dot(at[0] + Math.cos(a) * (8 + run), b.y, at[1] + Math.sin(a) * (8 + run), i % 2 ? hex("#6a6074") : hex("#9a90a4"), b.landed ? 1.4 - age * 2 : 1);
+        }
+    }
+    sw.draw(q);
+  },
+};

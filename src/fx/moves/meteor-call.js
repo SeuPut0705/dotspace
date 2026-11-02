@@ -1,4 +1,5 @@
-import { chain, READY } from "../../core/index.js";
+import { chain, in3d, READY } from "../../core/index.js";
+import { recenter } from "./_lib.js";
 import * as circle from "../arcane/magic-circle-cast.js";
 import * as meteor from "../fire/meteor.js";
 
@@ -48,3 +49,13 @@ export const create = chain([
   { fx: circle, t: 0 },
   { fx: meteor, t: HIT - 0.62, x: TX },
 ]);
+
+const MID = 85;
+export const three = {
+  meta: { actor: 0, size: [396, 297], origin: [198, 226], camera: { pitch: 0.34 } },
+  act: recenter(act, MID),
+  create: chain([
+    { fx: in3d(circle), t: 0, x: -MID },
+    { fx: in3d(meteor), t: HIT - 0.62, x: TX - MID },
+  ]),
+};

@@ -1,5 +1,5 @@
-import { Particles, Lights, P, Rng, fit, sparkle, clamp, smooth, seg, lerp, ease, TAU, WHITE, mix, luma, rgb, READY } from "../../core/index.js";
-import { shapeOf, recolor, oval } from "./_lib.js";
+import { Particles, Lights, P, Rng, fit, sparkle, space, clamp, smooth, seg, lerp, ease, TAU, WHITE, mix, luma, rgb, READY } from "../../core/index.js";
+import { shapeOf, recolor, oval, planeAxes, nearer } from "./_lib.js";
 
 export const meta = {
   name: "Heal",
@@ -187,3 +187,149 @@ export function create(o) {
     }
   }
 }
+
+// 3D: the lotus is eight leaves, each laid in its own plane, rooted on a ring on the floor and leaning out;
+// the hoop is a true circle round the body, its far half behind him; the motes spiral up round him in the round
+export const three = {
+  meta: { size: [80, 104], origin: [40, 92], camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), A = o.actor, S = shapeOf(A), R = new Rng(o.seed);
+    const ps = new Particles({ rng: R, ground: () => 0, sparks: [WHITE, C[6], C[5], C[4]] });
+    const lights = new Lights();
+    const rows = new Map();
+    for (const [x, y] of S.edge) (rows.get(y) ?? rows.set(y, []).get(y)).push(x);
+    const petals = Array.from({ length: NP }, (_, k) => ({ a: (k / NP) * TAU + 0.2, t0: 0.02 + ((k * 3) % NP) * 0.035, w: R.range(4.2, 5.2) }));
+    const motes = [];
+    for (let k = 0; k < NP; k++) motes.push({ t0: 0.2 + k * 0.05, th0: petals[k].a, r0: PR * 0.9, y0: -1, w: 4.2 * (k % 2 ? 1 : -1), v: R.range(46, 58), life: R.range(0.75, 0.95), kind: k % 2 });
+    for (let k = 0; k < 8; k++) motes.push({ t0: LIFT1 + R.range(0, 0.06), th0: (k / 8) * TAU, r0: R.range(12, 18), y0: TOPY + R.range(-2, 4), w: 3.6 * (k % 2 ? 1 : -1), v: R.range(14, 34), life: R.range(0.35, 0.6), kind: (k + 1) % 2 });
+    let t = 0, burst = false, lastRow = 1;
+
+    const hoopY = (tt) => lerp(0, TOPY, ease.inOutSine(seg(tt, LIFT0, LIFT1)));
+    const hoopR = (tt) => lerp(PR, 12, seg(tt, LIFT0, LIFT1));
+    const bloom = (k, tt) => {
+      const pe = petals[k];
+      return ease.outBack(seg(tt, pe.t0, pe.t0 + 0.3), 1.8) * (1 - ease.inBack(seg(tt, 1.25 + k * 0.02, 1.6 + k * 0.02), 1.4));
+    };
+
+    // a petal of a lotus of light: rooted on a ring on the floor, leaning out as it opens; a lit rim, a white vein,
+    // a translucent warm body, a white tip. It is laid in the plane of the root, the tip and the ring's tangent.
+    function petal(q, k) {
+      const pe = petals[k], g = pe.a + t * 0.4, b = bloom(k, t);
+      if (b <= 0.02) return;
+      const ca = Math.cos(g), sa = Math.sin(g), rb = 6, rt = rb + 9 * Math.min(1.2, b), h = (k % 2 ? 7 : 9) * b, L = Math.hypot(rt - rb, h);
+      if (L < 1.5) return;
+      const s = [(ca * (rt - rb)) / L, -h / L, (sa * (rt - rb)) / L], n = [-ca * s[1], ca * s[0] + sa * s[2], -sa * s[1]], [e1, e2] = planeAxes(n);
+      const ux = s[0] * e1[0] + s[1] * e1[1] + s[2] * e1[2], uy = s[0] * e2[0] + s[1] * e2[1] + s[2] * e2[2], W = pe.w * Math.min(1, b);
+      q.decal(((rb + rt) * ca) / 2, -h / 2, ((rb + rt) * sa) / 2, n, L / 2 + W + 2, (p) => {
+        const bx = (-ux * L) / 2, by = (-uy * L) / 2, tx = (ux * L) / 2, ty = (uy * L) / 2, pad = W + 1;
+        p.each(Math.min(bx, tx) - pad, Math.min(by, ty) - pad, Math.max(bx, tx) + pad, Math.max(by, ty) + pad, (x, y, sx, sy) => {
+          const dx = x - bx, dy = y - by, u = (dx * ux + dy * uy) / L;
+          if (u < 0 || u > 1) return;
+          const hw = W * Math.pow(Math.sin(Math.PI * Math.pow(u, 0.6)), 0.7) + 0.2, v = Math.abs(-dx * uy + dy * ux) / hw;
+          if (v > 1) return;
+          if (u > 0.9) return p.put(sx, sy, WHITE, 1);
+          if (v > 0.7) return p.put(sx, sy, u < 0.3 ? C[3] : u < 0.7 ? C[5] : C[6], 1);
+          if (v < 0.2 && u > 0.15 && u < 0.85) return p.put(sx, sy, u < 0.55 ? C[5] : C[6], 0.85);
+          p.blendPx(sx, sy, u < 0.45 ? C[3] : C[4], 0.45);
+        });
+      });
+      q.glow(rt * ca, -h, rt * sa, 5, C[5], 0.35 * Math.min(1, b));
+    }
+
+    // the hoop of light rising up the body: far half behind, near half in front, a soft glow round it
+    function hoop(q) {
+      if (t < LIFT0 || t > LIFT1 + 0.12) return;
+      const y = hoopY(t), r = hoopR(t) * (t > LIFT1 ? 1 - (t - LIFT1) / 0.12 : 1);
+      for (let j = 0, n = Math.ceil(r * TAU * 1.4); j < n; j++) {
+        const g = (j / n) * TAU, x = Math.cos(g) * r, z = Math.sin(g) * r, f = nearer(q, x, y, z, 0, y, 0) / r;
+        if (f >= 0) {
+          q.px(x, y, z, f > 0.5 ? WHITE : C[6]);
+          q.px(Math.cos(g) * (r - 0.5), y + 1, Math.sin(g) * (r - 0.5), C[4]);
+        } else q.dot(x, y, z, C[6], 0.8);
+      }
+      for (let i = 0; i < 6; i++) q.glow(Math.cos((i / 6) * TAU) * r, y, Math.sin((i / 6) * TAU) * r, 8, C[5], 0.32);
+    }
+
+    // the spiralling motes, each popping into a heart or a sparkle at the end of its ride
+    function riders(q) {
+      for (const m of motes) {
+        const a = t - m.t0;
+        if (a < 0) continue;
+        const at = (aa) => {
+          const th = m.th0 + m.w * aa, r = m.r0 * (1 - 0.45 * (aa / m.life));
+          return [Math.cos(th) * r, m.y0 - m.v * aa, Math.sin(th) * r];
+        };
+        if (a < m.life) {
+          const [x, y, z] = at(a);
+          for (let j = 0; j < 7; j++) {
+            const aj = a - j * 0.03;
+            if (aj < 0) break;
+            const [tx, ty, tz] = at(aj);
+            q.dot(tx, ty, tz, j === 0 ? WHITE : j < 3 ? C[6] : C[5], (1 - j / 7) * (nearer(q, tx, ty, tz, 0, ty, 0) < 0 ? 0.6 : 1));
+          }
+          q.glow(x, y, z, 4, C[5], 0.4);
+          continue;
+        }
+        // the pop: a quick sparkle, then a heart (or a star) that floats up and fades
+        const u = (a - m.life) / 0.36;
+        if (u >= 1) continue;
+        const [x, y, z] = at(m.life), k = 1 - smooth(0.5, 1, u);
+        if (u < 0.12) q.at(x, y, z, (pp) => sparkle(pp, 0, 0, 3, WHITE, C[6], 0.5));
+        else if (m.kind) q.at(x, y - u * 6, z, (pp) => heart(pp, 0, 0, C, k));
+        else q.at(x, y - u * 5, z, (pp) => sparkle(pp, 0, 0, 1 + 2 * k * (0.7 + 0.3 * Math.sin(a * 30)), WHITE, C[5], 0.45 * k));
+      }
+    }
+
+    return {
+      update(dt) {
+        t += dt;
+        // the hoop leaves sparkles on the body as it passes each row
+        if (t > LIFT0 && t < LIFT1) {
+          const Y = Math.round(hoopY(t));
+          for (let y = lastRow; y > Y; y--) {
+            const xs = rows.get(y);
+            if (!xs || !R.chance(0.45)) continue;
+            ps.spawn3(P.STAR, R.pick(xs) + R.range(-1, 1) * 2, y, R.range(-3, 3), R.range(-4, 4), -R.range(4, 12), R.range(-4, 4), R.range(0.3, 0.55), R.chance(0.5) ? WHITE : C[6], R.range(0.6, 1.6));
+          }
+          lastRow = Math.min(lastRow, Y);
+        }
+        if (!burst && t >= LIFT1) {
+          burst = true;
+          lights.add(0, TOPY, 26, C[5], 0.55, 0.3);
+          lights.add(0, TOPY, 10, WHITE, 0.45, 0.08);
+        }
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o);
+        // drained of colour above the hoop, restored below it with a warm glow at the line
+        const drain = smooth(0, 0.08, t);
+        if (t < LIFT1 + 0.35) {
+          const Y = t < LIFT0 ? 1 : hoopY(t), done = t >= LIFT1;
+          recolor(p, A, (c, x, y) => {
+            const d = y - Y;
+            if (!done && d < -0.5) {
+              const l = luma(c) * 0.88;
+              return mix(c, rgb(l * 236, l * 226, l * 222), 0.68 * drain);
+            }
+            if (!done && d < 1) return WHITE;
+            if (!done && d < 2.5) return C[6];
+            const k = done ? 0.45 * (1 - seg(t, LIFT1, LIFT1 + 0.35)) : 0.5 * Math.exp(-(d - 2.5) / 5);
+            return k > 0.05 ? mix(c, C[5], k) : 0;
+          });
+          if (t > LIFT0 && !done) q.glow(0, Y, 0, 18, C[5], 0.35);
+        }
+        // a warm pool under the flower
+        const pool = smooth(0, 0.2, t) * (1 - smooth(1.3, 1.75, t));
+        if (pool > 0) q.glow(0, -2, 0, 30, C[4], 0.3 * pool);
+        for (let k = 0; k < NP; k++) petal(q, k);
+        hoop(q);
+        if (t >= LIFT1 && t < LIFT1 + 0.25) q.at(0, TOPY, 0, (pp) => sparkle(pp, 0, 0, 8 * (1 - (t - LIFT1) / 0.25), WHITE, C[5], 0.6));
+        riders(q);
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

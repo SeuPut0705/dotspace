@@ -1,8 +1,8 @@
 // The column recipe (ramp bands out from a white core, drifting strands, dithered edges, light every few rows)
 // is adapted from Sprite Fusion's open-source holy light (https://www.spritefusion.com/pixel-art-vfx/holy-light),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { fit, clamp, smooth, ease, rand, cycle, band, flare, TAU, WHITE, hex, mix, scale } from "../../core/index.js";
-import { Layer, glint, pool, blobShadow } from "./_lib.js";
+import { fit, clamp, smooth, ease, rand, cycle, band, flare, space, TAU, WHITE, hex, mix, scale } from "../../core/index.js";
+import { Layer, glint, pool, blobShadow, trace, sdfHit, rotZ, toObject, sdSeg, sdBox, glint3, floorShadowOval, floorPool } from "./_lib.js";
 
 export const meta = {
   name: "Loot beam",
@@ -183,3 +183,107 @@ function motes(p, C, t, T, seed) {
     p.glow(x + 0.5, y + 0.5, 3.5, C[5], 0.35 * k);
   });
 }
+
+// The same loot drop in space: the sword is a real blade lying on the floor (pommel, wrapped grip, cross guard, a
+// flat blade that tapers to a point), the pulses are true rings spreading over the floor, strands of light wind up
+// the column round its axis, and motes spiral up on every side. The column itself is the same from every side, so it
+// is the 2D column, upright.
+const SW_TILT = 0.13, SWX = 4, SWY = -2.3;
+const SM = rotZ(SW_TILT);
+// the sword in its own frame: u along it (pommel at -10.4, point at 10), y up and down, z across
+const SWORD = (u, y, z) => {
+  const hw = u > 6 ? (1.9 * (10 - u)) / 4 : 1.9, dz = Math.abs(z) - hw, dy = Math.abs(y) - 0.6, du = Math.max(-3 - u, u - 10);
+  const blade = Math.hypot(Math.max(dz, 0), Math.max(dy, 0), Math.max(du, 0)) + Math.min(Math.max(dz, dy, du), 0);
+  const guard = sdBox(u + 4, y, z, 0.7, 0.6, 3.4, 0.3);
+  const grip = sdSeg(u, y, z, -9, 0, 0, -5, 0, 0, 0.95);
+  return Math.min(blade, guard, grip, Math.hypot(u + 10.4, y, z) - 1.5);
+};
+export const three = {
+  meta: { size: [112, 176], origin: [56, 160], camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const q = space(p, o), C = fit(o.palette, 8), T = meta.duration, ph = t / T, ET = (u) => (u > 0.5 ? 1 : 0);
+    // the floor: a pool of rarity light, a bright spot right under the item, the sword's shadow dark in the middle of it
+    floorPool(q, 0.5, 0, 34, C[4], 0.14);
+    floorPool(q, 0.5, 0, 30, C[5], 0.4);
+    q.plane(0.5, 0, 0, null, 17, (u, v, out) => {
+      const r = Math.hypot(u, v) / 16.5;
+      if (r > 1) return;
+      out.c = r < 0.12 ? WHITE : r < 0.45 ? C[6] : r < 0.75 ? C[5] : C[4];
+      out.a = (1.2 - r * 1.25) * 0.9;
+    });
+    floorShadowOval(q, SWX - 0.5, 0, 1, 0, 12.5, 4.2, 0.95);
+    // the pulses: rings of light spreading over the floor from the item's foot
+    for (let k = 0; k < RINGS.length; k++) {
+      const a = since(ph, k) * T, L1 = 1.1, kk = a / L1;
+      if (kk >= 1) continue;
+      const r = 3 + 24 * ease.outCubic(kk), th = Math.max(1, 3.2 * (1 - kk)), al = Math.min(1, 1.25 * (1 - kk));
+      q.plane(0.5, 0, 0, null, r + 6, (u, v, out) => {
+        const d = Math.hypot(u, v), e = d - (r - th);
+        if (e >= 0 && e <= th) {
+          const b = e / th;
+          out.c = b > 0.66 ? C[6] : b > 0.33 ? C[5] : C[4];
+          out.a = al;
+        } else if (e > -th * 0.6 && e < 0) {
+          out.c = C[2];
+          out.a = al * 0.7;
+        }
+        const ee = Math.abs(d - r + th / 2);
+        if (ee < 5) (out.l = C[5]), (out.k = 0.3 * (1 - kk) * (1 - ee / 5) ** 2);
+      });
+    }
+    // the column, drawn upright a little behind the sword's plane; strands wind up it round its axis
+    q.at(0, 0, 0, (pp) => ((pp.z += 2), column(pp, C, t, T)));
+    const H3 = 150, steps = 36;
+    for (let s0 = 0; s0 < 3; s0++) {
+      let prev = null;
+      for (let i = 4; i <= steps; i++) {
+        const h = (i / steps) * H3 * 0.62, u = h / H3, w = (4.2 * (1 - 0.45 * u) + 3.2 * Math.exp(-h / 7)) * 0.8, ang = h * 0.075 + ph * TAU * (s0 + 1) + s0 * 2.1;
+        const pt = [0.5 + Math.cos(ang) * w, -h, Math.sin(ang) * w];
+        if (prev) q.line(...prev, ...pt, u < 0.25 ? WHITE : C[6], 1.2 * (1 - u / 0.7));
+        prev = pt;
+      }
+    }
+    // the sword, lying where it fell: it rests on its guard and its point, so the hilt lifts off the floor
+    const f = (x, y, z) => {
+      const X = x - SWX, Y = y - SWY;
+      return SWORD(SM[0] * X + SM[3] * Y, -(SM[1] * X + SM[4] * Y) * -1, z);
+    };
+    trace(q, SWX, SWY, 0, 16, sdfHit((x, y, z) => f(x + SWX, y + SWY, z), { grad: 0.3 }), (h) => {
+      const X = h.x, Y = h.y, u = SM[0] * X + SM[3] * Y, yy = SM[1] * X + SM[4] * Y, z = h.z, l = h.nx * h.L[0] + h.ny * h.L[1] + h.nz * h.L[2];
+      const uu = u - 0.0;
+      // the pommel: a stone that holds the beam's colour
+      if (u < -8.8) return l > 0.5 ? C[6] : l > 0 ? C[5] : C[3];
+      // the grip, wrapped in leather
+      if (u < -4.8) return LEATHER[Math.floor((u + 12) * 1.4) % 2 ? 2 : 1];
+      // the guard, gold catching the beam, a small stone at its heart
+      if (u < -3.2) return Math.abs(z) < 0.8 && yy < -0.3 ? C[4] : l > 0.55 ? mix(GOLD[4], C[6], 0.3) : l > 0.1 ? GOLD[3] : l > -0.3 ? GOLD[1] : GOLD[0];
+      // the blade: a lit edge on top, steel, a dark spine, tapering to the point; backlit by the beam
+      const edge = Math.abs(z) > (u > 6 ? (1.9 * (10 - u)) / 4 : 1.9) - 0.5;
+      if (edge) return z < 0 ? mix(STEEL[3], C[6], 0.5) : mix(STEEL[2], C[4], 0.35);
+      if (Math.abs(z) < 0.4) return STEEL[0];
+      return l > 0.62 ? STEEL[3] : l > 0.2 ? mix(STEEL[2], C[4], 0.15) : l > -0.2 ? STEEL[1] : STEEL[0];
+    }, { ink: INK });
+    // a glint slides down the blade's edge once a loop
+    const g = (ph - 0.72) / 0.16;
+    if (g > 0 && g < 1) {
+      const u = -1 + 9 * ease.inOutSine(g), X = SWX + u * SM[0], Y = SWY + u * SM[1];
+      glint3(q, X, Y - 0.8, 1.4, 2.6 * Math.sin(g * Math.PI), WHITE, 0.5);
+    }
+    // motes spiralling up round the beam, a few twinkling
+    cycle(t, T, 30, o.seed, (gg) => gg.range(1.0, 2.2), (age, life, r) => {
+      const inner = r.chance(0.3), rad = inner ? r.range(0, 3) : r.range(4, 15), vy = r.range(22, 52) * (inner ? 1.5 : 1), a0 = r.range(0, TAU), w = r.range(0.6, 1.4) * (r.chance(0.5) ? 1 : -1);
+      const a = a0 + age * w, x = 0.5 + Math.cos(a) * rad + Math.sin(age * r.range(1.5, 3.5) + r.range(0, TAU)) * 1.2, z = Math.sin(a) * rad, y = -r.range(1, 10) - vy * age;
+      const k = Math.min(1, age / 0.25, (life - age) / 0.5);
+      if (k <= 0 || y < -H) return;
+      if (r.chance(0.22)) {
+        const tw = 0.5 + 0.5 * Math.sin(age * r.range(9, 14) + r.range(0, TAU));
+        if (tw * k > 0.3) glint3(q, x, y, z, tw > 0.75 ? 2 : 1, C[6], 0.4 * k);
+        return;
+      }
+      q.dot(x, y, z, inner ? WHITE : C[6], k * 1.5);
+      q.dot(x, y + 1, z, inner ? C[6] : C[4], k);
+      q.dot(x, y + 2, z, C[3], k * 0.6);
+      q.glow(x, y, z, 3.5, C[5], 0.35 * k);
+    });
+  },
+};

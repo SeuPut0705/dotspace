@@ -1,4 +1,4 @@
-import { fit, clamp, rand, hex, mix, luma, WHITE } from "../../core/index.js";
+import { fit, space, clamp, rand, hex, mix, luma, TAU, WHITE } from "../../core/index.js";
 
 export const meta = {
   name: "Glitch",
@@ -127,3 +127,118 @@ export function draw(p, t, o) {
   }
   if (Math.abs(bar - (A.y + A.h / 2)) < A.h / 2 + 3) p.glowLine(A.x - 2, bar, A.x + A.w + 2, bar, 4, C[4], 0.12);
 }
+
+// 3D: the hero's signal comes apart in space. His body is still drawn clean or broken, row by row, with the red and cyan
+// copies split to either side and one behind the other in depth; in a burst his outline fans out into cards standing on
+// planes round him (they face you from the sides and thin to a sliver head on), junk blocks hang in the air at all angles,
+// dead pixels fly off in every direction, and a ring of the rolling bar runs down round him.
+export const three = {
+  meta: { size: [112, 76], origin: [56, 60], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const C = fit(o.palette, 7), A = o.actor, S = o.seed, RED = C[2], CYAN = C[4], f = Math.floor(t * FPS + 1e-6) % NF, q = space(p, o);
+    const burst = BURSTS.find(([a, b]) => f >= a && f <= b), k = burst ? burst[2] : 0, r = (...n) => rand(S, f, ...n);
+    const split = burst ? Math.round(1 + r(1) * 3 * k) * (r(2) < 0.5 ? -1 : 1) : 0;
+    const tears = [];
+    if (burst) for (let i = 0; i < 1 + Math.floor(r(3) * 4 * k); i++) tears.push([A.y + Math.floor(r(4, i) * A.h), 1 + Math.floor(r(5, i) * 5), Math.round((r(6, i) - 0.5) * 16 * k), r(7, i)]);
+    if (!burst && r(8) < 0.07) tears.push([A.y + Math.floor(r(9) * A.h), 1, r(10) < 0.5 ? -2 : 2, 1]);
+    const interlace = burst && r(11) < 0.3, roll = burst && r(12) < 0.15 ? -2 - Math.floor(r(13) * 2) : 0, poster = burst && r(14) < 0.15 * k;
+    const tearAt = (y) => {
+      for (const [y0, h, dx, tint] of tears) if (y >= y0 && y < y0 + h) return [dx, tint];
+      return null;
+    };
+    const bar = A.y + ((t / meta.duration) * 2 * (A.h + 12)) % (A.h + 12) - 6;
+    const on = (x, y) => x >= 0 && y >= 0 && x < A.w && y < A.h && A.mask.data[y * A.w + x];
+    // the split: the red and cyan copies, offset either side and a little behind him, the red one further back
+    if (split)
+      for (const [dir, col, dz] of [[-1, RED, 2.5], [1, CYAN, 1.2]]) {
+        p.z = dz;
+        for (let my = 0; my < A.h; my++)
+          for (let mx = 0; mx < A.w; mx++) {
+            if (!on(mx, my)) continue;
+            const tr = tearAt(A.y + my);
+            p.px(A.x + mx + (tr ? tr[0] : 0) + dir * split, A.y + my + roll, col);
+          }
+        p.z = 0;
+      }
+    // the body itself, row by row: torn, interlaced, rolled, posterised, tinted where the bar passes
+    for (let my = 0; my < A.h; my++) {
+      const ry = A.y + my, y = ry + roll;
+      if (interlace && (my & 1)) continue;
+      const tr = tearAt(ry), dx = tr ? tr[0] : 0, tint = tr && tr[1] < 0.35 ? (tr[1] < 0.18 ? RED : CYAN) : 0, near = Math.abs(ry - bar);
+      for (let mx = 0; mx < A.w; mx++) {
+        const c = A.pixels[my * A.w + mx];
+        if (!c) continue;
+        let col = c;
+        if (poster) col = luma(c) > 0.32 ? C[5] : C[1];
+        else if (tint) col = mix(c, tint, 0.6);
+        else if (near < 1) col = mix(c, C[5], 0.35);
+        p.px(A.x + mx + dx, y, col);
+      }
+      if (tr && Math.abs(dx) > 2 && rand(S, f, ry) < 0.6) {
+        const right = dx > 0, mx = right ? A.w - 1 - [...Array(A.w)].findIndex((_, i) => A.mask.data[my * A.w + A.w - 1 - i]) : [...Array(A.w)].findIndex((_, i) => A.mask.data[my * A.w + i]);
+        if (mx >= 0 && mx < A.w) {
+          const c = A.pixels[my * A.w + mx], L = 4 + Math.floor(rand(S, f, ry, 1) * 10);
+          for (let i = 1; i <= L; i++) p.dot(A.x + mx + dx + (right ? i : -i), y, c, 1 - i / (L + 1));
+        }
+      }
+    }
+    if (roll)
+      for (let my = 0; my < -roll; my++)
+        for (let mx = 0; mx < A.w; mx++) {
+          const c = A.pixels[my * A.w + mx];
+          if (c && ((mx + my) & 1)) p.px(A.x + mx, A.y + A.h + roll + my, mix(c, C[1], 0.5));
+        }
+    // the signal fanning out: echoes of his outline on planes standing round him, facing him, red and cyan by turns
+    if (burst) {
+      const n = k > 0.6 ? 3 : 2, azc = Math.atan2(q.cy, q.sy);
+      for (let i = 0; i < n; i++) {
+        // standing round him in the world, but never between the camera and him
+        let az = (i / n) * TAU + r(30, i) * 1.2;
+        const d = ((((az - azc) % TAU) + TAU + Math.PI) % TAU) - Math.PI;
+        if (Math.abs(d) < 1) az = azc + (d < 0 ? -1 : 1) * 1;
+        const col = i % 2 ? CYAN : RED, RR = 20 + 6 * r(31, i);
+        q.decal(Math.cos(az) * RR, A.y + A.h / 2, Math.sin(az) * RR, [Math.cos(az), 0, Math.sin(az)], A.h / 2 + 4, (pp) => {
+          for (let my = 0; my < A.h; my++)
+            for (let mx = 0; mx < A.w; mx++) {
+              if (!on(mx, my)) continue;
+              const rim = !on(mx - 1, my) || !on(mx + 1, my) || !on(mx, my - 1) || !on(mx, my + 1);
+              if (rim) pp.px(A.x + mx + 0.5 - (A.x + A.w / 2), A.y + my - (A.y + A.h / 2), col);
+              else if (my % 4 === 0) pp.dot(A.x + mx + 0.5 - (A.x + A.w / 2), A.y + my - (A.y + A.h / 2), mix(col, C[0], 0.5), 0.6);
+            }
+        });
+      }
+    }
+    // junk blocks hanging round the body in the air, on planes at every angle
+    if (burst)
+      for (let i = 0; i < 2 + Math.floor(r(20) * 5 * k); i++) {
+        const w = 2 + Math.floor(r(21, i) * 9), h = 1 + Math.floor(r(22, i) * 3), az = r(23, i) * TAU, rad = 8 + r(27, i) * 16, y = A.y + Math.floor(r(24, i) * A.h);
+        const c = [WHITE, RED, CYAN, C[5], C[3]][Math.floor(r(25, i) * 5)], face = r(28, i) * Math.PI, chk = r(26, i) < 0.4;
+        q.decal(Math.cos(az) * rad, y, Math.sin(az) * rad, [Math.sin(face), 0, Math.cos(face)], w + 2, (pp) => {
+          for (let yy = 0; yy < h; yy++) for (let xx = 0; xx < w; xx++) pp.px(xx - w / 2, yy - h / 2, chk ? ((xx + yy) & 1 ? c : C[0]) : c);
+        });
+      }
+    // dead pixels thrown off by a burst, drifting every way and blinking out
+    for (const [a, b, kk] of BURSTS) {
+      const age = (f - a + NF) % NF;
+      if (age > b - a + 8) continue;
+      for (let i = 0; i < 10 * kk; i++) {
+        const life = 4 + Math.floor(rand(S, a, i) * 6), at = Math.floor(rand(S, a, i, 1) * (b - a + 1)), qq = age - at;
+        if (qq < 0 || qq > life || (qq > life / 2 && (qq & 1))) continue;
+        const x0 = A.x + rand(S, a, i, 2) * A.w, y0 = A.y + rand(S, a, i, 3) * A.h, az = rand(S, a, i, 4) * TAU, v = qq * (1 + rand(S, a, i, 5) * 2);
+        q.px(x0 + Math.cos(az) * v, y0 - qq * 0.5, Math.sin(az) * v, [WHITE, RED, CYAN][i % 3]);
+      }
+    }
+    // the calm signal's bar: a ring rolling down round him
+    if (bar > A.y - 4 && bar < 2)
+      q.decal(0, bar, 0, null, 20, (pp) => {
+        pp.ring(0, 0, 16, 1, C[4], 0.6);
+      });
+    // light: a cold flicker in the bursts, the split's colors glowing at its edges
+    if (burst) {
+      if (f === burst[0]) q.glow(0, A.y + A.h / 2, 0, 26, C[5], 0.4);
+      q.glow(-split * 4, A.y + A.h / 2, 0, 18, RED, 0.18 * k);
+      q.glow(split * 4, A.y + A.h / 2, 0, 18, CYAN, 0.18 * k);
+    }
+    if (Math.abs(bar - (A.y + A.h / 2)) < A.h / 2 + 3) q.glowLine(-12, bar, 0, 12, bar, 0, 4, C[4], 0.12);
+  },
+};

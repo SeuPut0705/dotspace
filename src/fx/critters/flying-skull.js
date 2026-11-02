@@ -1,8 +1,8 @@
 // The fire (nested flame tongues with leaps and flicker, licks, flame puffs cooling to smoke, wandering embers,
 // layered warm light) is adapted from Sprite Fusion's open-source fire
 // (https://www.spritefusion.com/pixel-art-vfx/fire), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { fit, hex, mix, clamp, wrap, lerp, rand, rng, cycle, fly, P, PF, TAU } from "../../core/index.js";
-import { Grid, Swarm, shift, lnoise, tongue, firePuff, shadow, bounce } from "./_lib.js";
+import { fit, hex, mix, clamp, wrap, lerp, rand, rng, cycle, fly, space, P, PF, TAU } from "../../core/index.js";
+import { Grid, Swarm, shift, lnoise, tongue, firePuff, shadow, bounce, mirrored, floorShadow, floorPool } from "./_lib.js";
 
 export const meta = {
   name: "Flying skull",
@@ -220,3 +220,133 @@ export function drawBack(p, time, o) {
   shadow(p, S.x, 0, 9, 1.6, hex("#0d0a12"), 0.6);
   for (let x = -30; x <= 30; x += 6) p.glow(S.x + x, -1, 20, mix(F[4], F[5], 0.5), 0.15 * k * (1 - Math.abs(x) / 40));
 }
+
+// ---- 3D: the skull flies a looping path through the air, turning its fire into a head of flame and trailing smoke
+const FLY = { x: 32, z: 28 };
+function at3(t, hover) {
+  const a = (t / D) * TAU, w = TAU / D;
+  return {
+    x: FLY.x * Math.sin(a),
+    z: FLY.z * Math.cos(a),
+    y: -hover + 4 * Math.sin(2 * a + 0.5) - 6 * Math.cos(a + 0.6),
+    vx: FLY.x * w * Math.cos(a),
+    vz: -FLY.z * w * Math.sin(a),
+    vy: w * (8 * Math.cos(2 * a + 0.5) + 6 * Math.sin(a + 0.6)),
+  };
+}
+// the 2D crown's tongues set out round the top of the skull instead of in a row: a full ring at the rim, a second
+// inside it and a few in the middle (tallest), so the fire is as full from every side
+function crown3(seed) {
+  const out = [], put = (rho, th, f) => out.push({ ...f, ox: rho * Math.cos(th), oz: rho * Math.sin(th), h: 13 + 13 * (1 - (rho / 11) ** 2) });
+  let a = 0, b = 0, c = 0;
+  for (const f of crown(seed)) {
+    if (f.y !== undefined) out.push({ ...f, ox: f.x, oz: 0 });
+    else if (f.front) out.push({ ...f, ox: (5 + 4 * rand(f.x + 3, seed, 9)) * Math.cos(f.x * 1.7 + seed * 2), oz: (5 + 4 * rand(f.x + 3, seed, 9)) * Math.sin(f.x * 1.7 + seed * 2) });
+    else {
+      const ax = Math.abs(f.x);
+      if (ax >= 7) put(10, (a++ * TAU) / 12 + seed, f);
+      else if (ax >= 3) put(6.5, (b++ * TAU) / 4 + 0.4 + seed, f);
+      else put(2.5, (c++ * TAU) / 3 + seed * 2, f);
+    }
+  }
+  for (let i = 0; i < 8; i++) put(10, (a++ * TAU) / 12 + seed, { x: 10, w: 2.3 + rand(i + 20, seed, 3) * 0.8, n: 150 + i * 13 + seed * 7, front: false });
+  return out;
+}
+
+export const three = {
+  meta: { size: [176, 164], origin: [88, 134], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, time, o) {
+    const t = shift(time, D, o.seed), F = fit(o.palette, 9), heat = [...F].reverse(), B = fit(o.bone, 7), q = space(p, o);
+    const S = at3(t, o.hover), k = flick(t), rx = q.cy, rz = -q.sy, sv = S.vx * rx + S.vz * rz;
+    const lean = clamp(-sv / 110, -0.8, 0.8), stretch = clamp(S.vy / 90, -0.3, 0.45), flip = mirrored(q, S.vx, S.vz);
+    const hgt = clamp(-S.y / 60), open = jaw(t), dS = q.depth(S.x, S.y, S.z);
+    // its shadow glides over the floor
+    floorShadow(q, S.x, S.z, 11 + 5 * (1 - hgt), "#0d0a12", 0.8);
+    // the skull: the 2D sprite, standing up and flipped to face where it flies; the burning eyes on it
+    const g = GRID;
+    skull(g, B, F, open, t);
+    q.at(S.x, S.y, S.z, (pp) => {
+      g.draw(pp, 1, 0, 0, flip);
+      pp.z -= 0.3;
+      for (const s of [-1, 1]) {
+        const fl = 0.75 + 0.25 * lnoise(t, D, 30, s * 9, 12), ex0 = s * 5.1 - 0.5, ex = flip ? -ex0 - 1 : ex0, ey = -2.4;
+        pp.px(ex, ey, heat[0]); pp.px(ex + 1, ey, heat[1]); pp.px(ex, ey + 1, heat[2]); pp.px(ex + 1, ey + 1, heat[3]);
+        if (fl > 0.8) pp.px(ex, ey - 1, heat[3]), pp.px(ex + 1, ey - 1, heat[5]);
+      }
+    });
+    // the fire on its crown: tongues standing round the top of the skull, each rooted on its outline, layer by layer
+    // so overlapping ones merge into one flame; those behind the skull sink into it
+    const tongues = crown3(o.seed).map((f) => {
+      const sx = f.ox * rx + f.oz * rz, wx = S.x + f.ox, wz = S.z + f.oz, front = q.depth(wx, S.y, wz) < dS;
+      return { f, sx, wx, wz, y: S.y + topY(clamp(sx, -10.8, 10.8)) + (front ? 1.5 : 3), front };
+    });
+    for (let li = 0; li < 4; li++)
+      for (const { f, sx, wx, wz, y } of tongues) {
+        const h = height(f, t, k) * (1 + stretch), lick = lnoise(t, D, 5, f.n, 40) * 2 + lean * h * 0.9 - clamp(sx * 0.25, -2, 2);
+        q.at(wx, y, wz, (pp) => tongue(pp, 0, 0, h, f.w * (1 - 0.25 * Math.abs(lean)), lick, t, D, f.n, heat, li));
+      }
+    // a gout of flame breathed out of its mouth, the way it flies, when the jaw gapes
+    const hs = Math.hypot(S.vx, S.vz) || 1, hx = S.vx / hs, hz = S.vz / hs;
+    for (let i = 0; i < 9; i++) {
+      const r = rng(o.seed, i, 21), born = 1.98 + i * 0.03, age = wrap(t - born, D), L = r.range(0.25, 0.45);
+      if (age >= L) continue;
+      const S0 = at3(born, o.hover), a = r.range(-3, 3), v = r.range(25, 55), vy = r.range(18, 40), va = r.range(-12, 12);
+      const [x, y] = fly(S0.x + hx * 6 + a, S0.y + 11, hx * v + S0.vx * 0.4 - hz * va, vy, age, -70, 3.5);
+      const z = fly(S0.z + hz * 6 + a * 0.5, 0, hz * v + S0.vz * 0.4 + hx * va, 0, age, 0, 3.5)[0];
+      const sz = r.range(1.1, 2), sd = r.next() * 100;
+      q.at(x, y, z, (pp) => firePuff(pp, 0, 0, 1 - age / L, sz, sd, heat));
+    }
+    // flame puffs off the tongue tips that cool into smoke, licks of flame breaking away: all round the crown
+    cycle(t, D, 40, o.seed * 7 + 2, (r) => r.range(0.18, 0.36), (age, L, r) => {
+      const S0 = at3(wrap(t - age, D), o.hover), side = r.chance(0.3), a = side ? r.sign() * r.range(0.9, 1.45) : r.range(-0.8, 0.8), ph = r.range(0, TAU);
+      const rad = Math.sin(a) * 10.5, x0 = S0.x + Math.cos(ph) * rad, z0 = S0.z + Math.sin(ph) * rad, y0 = S0.y - 6 - Math.cos(a) * 10 - (side ? 0 : r.range(2, 10));
+      const vr = r.range(-6, 6) + Math.sin(a) * 6, vyy = -r.range(18, 34), sz = r.range(1, 2.2), sd = r.next() * 100, wob = r.next() * 6;
+      const [x, y] = fly(x0, y0, vr * Math.cos(ph), vyy, age, -95, 3.2), z = fly(z0, 0, vr * Math.sin(ph), 0, age, 0, 3.2)[0];
+      q.at(x + Math.sin(age * 17 + wob) * 0.8, y, z, (pp) => firePuff(pp, 0, 0, 1 - age / L, sz, sd, heat));
+    });
+    cycle(t, D, 18, o.seed * 7 + 3, 0.26, (age, L, r) => {
+      const S0 = at3(wrap(t - age, D), o.hover), fx = r.range(-10, 10), ph = r.range(0, TAU), rad = Math.abs(fx);
+      const x0 = S0.x + Math.cos(ph) * rad, z0 = S0.z + Math.sin(ph) * rad, y0 = S0.y + topY(fx) - r.range(4, 16) * (1 - rad / 14);
+      const kk = 1 - age / L, dx = r.range(-3, 3) * age, dz = r.range(-3, 3) * age, y = y0 - r.range(12, 20) * age, rr = r.range(0.9, 1.7) * (0.4 + 0.6 * kk);
+      q.at(x0 + dx, y, z0 + dz, (pp) => {
+        pp.circle(0, 0, rr + 0.6, kk > 0.5 ? heat[5] : heat[6]);
+        if (kk > 0.35) pp.circle(0, -0.3, rr * 0.6, kk > 0.7 ? heat[2] : heat[4]);
+      });
+    });
+    // smoke from the tips left hanging along its flight, embers wandering up, sparks falling and skipping on the floor
+    const sw = SWARM.begin(t);
+    sw.ps.sparks = [F[7], F[6], F[4], F[2]];
+    cycle(t, D, 15, o.seed * 7 + 1, (r) => r.range(1.7, 2.5), (age, L, r) => {
+      const S0 = at3(wrap(t - age, D), o.hover), x0 = S0.x + r.range(-6, 6), z0 = S0.z + r.range(-6, 6), y0 = S0.y - 22 - r.range(0, 8);
+      const vx = r.range(-5, 5), vy = -r.range(16, 26), vz = r.range(-5, 5), s = r.next() * 6, sz = r.range(2.8, 4.4) * 1.15;
+      const [x, y] = fly(x0, y0, vx, vy, age, -12, 1.2), z = fly(z0, 0, vz, 0, age, 0, 1.2)[0];
+      sw.add3(P.SMOKE, x + Math.sin(age * 1.3 + s) * 3 * age, y, z + Math.cos(age * 1.3 + s) * 3 * age, 0, 0, 0, age, L, mix(hex("#5b5566"), F[2], 0.3), sz, PF.BIG);
+    });
+    cycle(t, D, 24, o.seed * 7 + 4, (r) => r.range(1, 2.4), (age, L, r) => {
+      const S0 = at3(wrap(t - age, D), o.hover), x0 = S0.x + r.range(-11, 11), z0 = S0.z + r.range(-11, 11), y0 = S0.y - r.range(6, 24), s = r.next() * 100;
+      const vx = r.range(-22, 22), vy = -r.range(25, 70), vz = r.range(-22, 22);
+      const [x, y] = fly(x0, y0, vx, vy, age, -20, 1.6), z = fly(z0, 0, vz, 0, age, 0, 1.6)[0], w = Math.min(1, age);
+      sw.add3(P.EMBER, x + Math.sin(age * 2.3 + s) * 4 * w, y, z + Math.cos(age * 2.1 + s) * 4 * w, 0, 0, 0, age, L, F[4], r.chance(0.3) ? 2 : 1, 0, s);
+    });
+    if (o.floor)
+      cycle(t, D, 5, o.seed * 7 + 5, (r) => r.range(0.9, 1.4), (age, L, r) => {
+        const S0 = at3(wrap(t - age, D), o.hover), x0 = S0.x + r.range(-6, 6), z0 = S0.z + r.range(-6, 6), y0 = S0.y - r.range(10, 18);
+        const vx = r.range(-28, 28) + S0.vx * 0.5, vy = -r.range(50, 110), vz = r.range(-28, 28) + S0.vz * 0.5;
+        const b = bounce(x0, y0, vx, vy, age, 430, -0.5, 0.42), bz = bounce(z0, y0, vz, vy, age, 430, -0.5, 0.42);
+        sw.add3(P.SPARK, b.x, b.y, bz.x, b.rest ? 0.1 : b.vx, b.rest ? 0 : b.vy, b.rest ? 0 : bz.vx, age, L, 0, 1, 0, r.next() * 100);
+      });
+    sw.draw(q);
+    // light: a big warm pool, a hot core over the crown, the eyes, the fire in its mouth, a warm floor
+    const br = 0.92 + 0.08 * Math.sin((t / D) * TAU * 2), warm = mix(F[4], F[5], 0.5);
+    q.glow(S.x + rx * lean * 4, S.y - 20, S.z + rz * lean * 4, 74 * br * (0.9 + 0.1 * k), warm, 0.48 * k);
+    q.glow(S.x, S.y - 21, S.z, 24, F[6], 0.3 * k);
+    q.glow(S.x, S.y - 15, S.z, 9, F[8], 0.16 * k);
+    for (const s of [-1, 1]) {
+      const fl = 0.75 + 0.25 * lnoise(t, D, 30, s * 9, 12), e = s * 5.1;
+      q.glow(S.x + rx * e, S.y - 1.4, S.z + rz * e, 6, F[5], 0.45 * fl);
+      q.glow(S.x + rx * e, S.y - 1.9, S.z + rz * e, 3, F[7], 0.5 * fl);
+    }
+    if (open > 0) q.glow(S.x, S.y + 8 + open * 0.5, S.z, 4 + open * 2, F[5], 0.25 * open);
+    floorPool(q, S.x, S.z, 44, warm, 0.36 * k * (1 - hgt * 0.3));
+  },
+};

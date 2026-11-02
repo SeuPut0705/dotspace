@@ -1,8 +1,8 @@
 // The wave (spikes punching up one after another, each bigger, with overshoot, a white frame, a burst of debris
 // and glints, a line running along the floor ahead of them) is adapted from Sprite Fusion's open-source ice
 // spikes (https://www.spritefusion.com/pixel-art-vfx/ice), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, clamp, smooth, ease, rand, TAU, WHITE } from "../../core/index.js";
-import { drawRock, stoneShape, drawLeaf } from "./_lib.js";
+import { Particles, Bits, Lights, P, B, Rng, fit, space, clamp, smooth, ease, rand, TAU, WHITE } from "../../core/index.js";
+import { drawRock, stoneShape, drawLeaf, tube, shade3, leaf3, bits3, rock3 } from "./_lib.js";
 
 export const meta = {
   name: "Thorns",
@@ -156,3 +156,124 @@ export function create(o) {
     },
   };
 }
+
+// ---- 3D: each thorn is a round hooked horn, hooking on along +x, rising out of a seam in the floor; a smaller one
+// stands beside each, further in and out of the row, and the dirt and green light fly out every way round.
+export const three = {
+  meta: { size: [240, 150], origin: [120, 78], camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), G = fit(o.glow, 4), S = fit(o.soil, 8), R = new Rng(o.seed), floor = () => 0, n = Math.max(2, o.count);
+    const ps = new Particles({ rng: R, ground: floor, sparks: [G[3], G[2], G[1], G[0]] });
+    const bits = new Bits({ ground: floor }), lights = new Lights();
+    const X0 = -58, SPAN = 108;
+    const list = [];
+    for (let i = 0; i < n; i++) {
+      const k = i / (n - 1), h = 12 + 36 * k + R.range(-1.5, 1.5), at = 0.12 + i * 0.075, sink = 1.45 + i * 0.06, x = X0 + i * (SPAN / (n - 1)) + R.range(-3, 3);
+      list.push({ x, z: (i % 2 ? 1 : -1) * R.range(2, 7), h, w: 6 + 9 * k, lean: R.range(-1, 1.5) + k * 2, hook: h * R.range(0.14, 0.22), bend: R.range(-0.14, 0.14) * h, at, sink, seed: R.int(1, 999), up: false, down: false });
+      // a smaller one standing off to the side, a beat later
+      const sd = i % 2 ? -1 : 1, hh = h * R.range(0.42, 0.55);
+      list.push({ x: x + R.range(3, 9), z: sd * R.range(15, 21), h: hh, w: (6 + 9 * k) * 0.62, lean: R.range(-1, 1), hook: hh * R.range(0.14, 0.22), bend: sd * R.range(0.1, 0.25) * hh, at: at + 0.04, sink: sink - 0.05, seed: R.int(1, 999), up: false, down: false });
+    }
+    let t = 0;
+    const dir = (cone) => {
+      const e = R.range(0, cone), h = R.range(0, TAU);
+      return [Math.sin(e) * Math.cos(h), -Math.cos(e), Math.sin(e) * Math.sin(h)];
+    };
+    const chip = (x, z, sp, nn) => {
+      for (let i = 0; i < nn; i++) {
+        const d = dir(1.1), v = R.range(60, 210) * sp;
+        bits.add({ kind: B.CHUNK, x: x + R.range(-3, 3), y: -1, z: z + R.range(-3, 3), vx: d[0] * v, vy: d[1] * v, vz: d[2] * v, a: R.range(0, TAU), va: R.range(-15, 15), s: R.range(1.3, 2.6) * Math.sqrt(sp), g: 1, drag: 0.1, bounce: 0.3, life: Math.min(R.range(0.7, 1.1), meta.duration - 0.05 - t), ...rock3(R, 8) });
+      }
+    };
+    const grown = (s) => (t < s.at ? 0 : ease.outBack(clamp((t - s.at) / RISE), 2.4));
+    const sunk = (s) => smooth(s.sink, s.sink + SINK, t);
+    // the thorn's centre line: up from its foot, leaning, curving to the side, the point hooked on forward
+    const spine = (s, h, base) => {
+      const pts = [];
+      for (let i = 0; i <= 16; i++) {
+        const u = i / 16;
+        pts.push([s.x + s.lean * u + s.hook * Math.pow(u, 2.4), base - u * h, s.z + s.bend * u * u]);
+      }
+      return pts;
+    };
+    return {
+      update(dt) {
+        t += dt;
+        const f = Math.min(1, dt * 120);
+        for (const s of list) {
+          const k = s.h / 48;
+          if (!s.up && t >= s.at) {
+            s.up = true;
+            lights.add(s.x, -s.h * 0.5, 18 + 18 * k, WHITE, 0.3, 0.08, s.z);
+            lights.add(s.x, -s.h * 0.4, 26 + 26 * k, G[2], 0.28, 0.4, s.z);
+            chip(s.x, s.z, 0.6 + 0.6 * k, 3 + Math.round(5 * k));
+            for (let i = 0; i < 10 + 18 * k; i++) {
+              const d = dir(1), v = R.range(60, 230) * (0.6 + 0.6 * k);
+              ps.spawn3(P.GRIT, s.x + R.range(-s.w / 3, s.w / 3), -1, s.z + R.range(-s.w / 3, s.w / 3), d[0] * v, d[1] * v, d[2] * v, R.range(0.6, 1.1), R.pick([S[5], S[4], S[3]]), R.chance(0.3) ? 2 : 1);
+            }
+            for (let i = 0; i < 3 + 5 * k; i++) {
+              const a = R.range(0, TAU), v = R.range(20, 80);
+              ps.spawn3(P.SMOKE, s.x + R.range(-4, 4), -R.range(1, 4), s.z + R.range(-4, 4), Math.cos(a) * v, -R.range(5, 25), Math.sin(a) * v, R.range(0.7, 1.2), S[5], R.range(3, 5.5) * (0.6 + 0.5 * k), 0, 0);
+            }
+            for (let i = 0; i < 2 + 3 * k; i++) ps.spawn3(P.STAR, s.x + s.hook * 0.8 + R.range(-3, 3), -s.h * R.range(0.5, 1), s.z + R.range(-4, 4), R.range(-10, 10), -R.range(5, 20), R.range(-10, 10), R.range(0.3, 0.6), G[3], R.range(0.8, 2), R.range(0, 0.12));
+            for (let i = 0; i < 4; i++) ps.spawn3(P.MOTE, s.x + R.range(-3, 3), -R.range(2, s.h * 0.6), s.z + R.range(-3, 3), R.range(-20, 20), -R.range(30, 70), R.range(-20, 20), R.range(0.4, 0.8), G[3], 0.7);
+          }
+          if (!s.down && t >= s.sink) {
+            s.down = true;
+            chip(s.x, s.z, 0.35, 2 + Math.round(2 * k));
+            for (let i = 0; i < 3 + 3 * k; i++) {
+              const a = R.range(0, TAU), v = R.range(15, 50);
+              ps.spawn3(P.DUST, s.x + R.range(-s.w / 2, s.w / 2), -R.range(0, 3), s.z + R.range(-s.w / 2, s.w / 2), Math.cos(a) * v, -R.range(2, 10), Math.sin(a) * v, Math.min(R.range(0.4, 0.7), meta.duration - 0.05 - t), S[5], R.range(2, 4));
+            }
+          }
+          // while they stand, glints run up their lit edges
+          if (s.up && !s.down && t > s.at + 0.2 && R.chance(0.05 * f)) ps.spawn3(P.STAR, s.x + s.lean * 0.5 - s.w * 0.15, -s.h * R.range(0.3, 0.8), s.z + s.w * 0.3, 0, -3, 0, R.range(0.25, 0.45), C[7], R.range(0.8, 1.8));
+        }
+        bits.update(dt);
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), reach = X0 + ease.outCubic(clamp((t - 0.04) / 0.5)) * (SPAN + 14), fade = 1 - smooth(1.9, 2.3, t);
+        // the seam racing ahead along the floor: a dark split with a green glow in it, closing up again at the end
+        for (let x = X0 - 4; x <= reach; x++) {
+          const hot = clamp(1 - (reach - x) / 18) * (1 - smooth(0.6, 1.2, t)), h = rand(x, 31), z = Math.sin(x * 0.21) * 1.2 + (h - 0.5) * 1.2;
+          q.dot(x, 0, z, hot > 0.4 ? G[3] : hot > 0.1 ? G[2] : S[0], fade);
+          if (h < 0.5) q.dot(x, 0, z + 1.2, S[1], fade * 0.8);
+          if (h < 0.15) q.dot(x, 0, z - 1.4, S[4], fade);
+          if (hot > 0.3 && (x & 3) === 0) q.glow(x, 0, z, 6, G[2], 0.3 * hot);
+        }
+        for (const s of list) {
+          const g = grown(s), k = sunk(s);
+          if (g <= 0 || k >= 1) continue;
+          const h = s.h * g, base = k * s.h * 1.05, white = t - s.at < 0.035, pts = spine(s, h, base);
+          // the horn: a round shaft, lit down its left, a pale point; grain flecks along it
+          tube(q, pts, (u) => (s.w / 2) * Math.pow(1 - u, 0.9) + 0.25, (nx, ny, nz, u) => {
+            if (white) return WHITE;
+            if (nz < 0.18) return C[0];
+            const c = u > 0.86 ? shade3(C.slice(3), nx, ny, nz) : shade3(C.slice(1), nx, ny, nz);
+            return u < 0.86 && rand(Math.floor(u * 36), s.seed + Math.floor(nx * 3)) < 0.1 ? C[Math.max(1, C.indexOf(c) - 1)] : c;
+          }, 0);
+          // a barb off its back, raking up and away
+          if (h > 14 && base < h * 0.3) {
+            const a = pts[5], b = pts[7], L = s.w * 0.5, bx = a[0] - s.w * 0.28;
+            q.beam(bx, a[1], a[2], b[0] - L - s.w * 0.2, b[1] - L * 0.7, b[2], 1.6, (u, v) => (u > 0.8 ? C[7] : v > 0.5 ? C[3] : C[5]));
+          }
+          if (t - s.at < 0.3) q.glow(s.x, -s.h * 0.5 * g, s.z, s.h * 0.6 + 6, G[2], 0.2 * (1 - (t - s.at) / 0.3));
+          // a collar of leaves round its foot, unfurling as it comes up and folding away as it sinks
+          const lk = clamp((t - s.at - 0.04) / 0.18) * (1 - k), lw = s.w * 0.5;
+          if (lk > 0.05) {
+            for (let j = 0; j < 4; j++) {
+              const a = (j / 4) * TAU + s.seed * 0.7, e = 0.55 - 0.35 * lk + Math.sin(t * 4 + s.x + j) * 0.05, L = (5 + s.w * 0.45) * (j % 2 ? 0.8 : 1) * lk;
+              leaf3(q, s.x + Math.cos(a) * lw, -1, s.z + Math.sin(a) * lw, [Math.cos(a) * Math.cos(e), -Math.sin(e), Math.sin(a) * Math.cos(e)], L, 1.4 + s.w * 0.1, 0.25, [G[0], G[1], G[2], G[3]]);
+            }
+          }
+          q.glow(s.x, -2, s.z, s.w + 6, G[2], 0.1 * lk);
+        }
+        bits3(q, bits, S);
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

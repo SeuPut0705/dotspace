@@ -1,8 +1,8 @@
 // The flame tongues, embers and thin smoke are
 // adapted from Sprite Fusion's open-source fire (https://www.spritefusion.com/pixel-art-vfx/fire),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { cycle, fit, hex, mix, rand, Rng, clamp, WHITE } from "../../core/index.js";
-import { shape, colorAt, tnoise, travel, tongue, smoke, ember } from "./_lib.js";
+import { cycle, fit, hex, mix, rand, Rng, clamp, space, TAU, WHITE } from "../../core/index.js";
+import { shape, colorAt, tnoise, travel, tongue, smoke, ember, lift } from "./_lib.js";
 import { luma } from "../../core/index.js";
 
 export const meta = {
@@ -86,9 +86,10 @@ export function drawBack(p, t, o) {
   });
 }
 
-export function draw(p, t, o) {
-  const F = fit(o.palette, 9).reverse(), CH = fit(o.char, 3), a = o.actor, S = shape(a), { list, scorch } = spots(a, o.seed);
-  const ph = since(t), tick = Math.floor(t / TICK) % 2, fl = flare(t);
+// the body's own recolouring: the tick's flash and the scorch marks (painted on the sprite, 2D and 3D alike)
+function onBody(p, t, o) {
+  const F = fit(o.palette, 9).reverse(), CH = fit(o.char, 3), a = o.actor, S = shape(a), { scorch } = spots(a, o.seed);
+  const ph = since(t), tick = Math.floor(t / TICK) % 2;
   // the tick: the body's own pixels flash white for a frame, then orange, fading
   if (ph < 0.034) for (const [mx, my] of S.body) p.px(a.x + mx, a.y + my, WHITE);
   else if (ph < 0.22) {
@@ -108,6 +109,12 @@ export function draw(p, t, o) {
     }
     p.glow(sc.x, sc.y, 6, F[4], 0.3 * fade);
   }
+}
+
+export function draw(p, t, o) {
+  const F = fit(o.palette, 9).reverse(), a = o.actor, { list } = spots(a, o.seed);
+  const ph = since(t), tick = Math.floor(t / TICK) % 2, fl = flare(t);
+  onBody(p, t, o);
   // the hot spots: little tongues licking up, flaring on the tick
   for (const sp of list) {
     for (const tg of sp.tongues) {
@@ -131,3 +138,67 @@ export function draw(p, t, o) {
         p.light(x, y, F[3], 0.4 * (1 - ph / 0.3));
       }
 }
+
+// 3D: the flames stand round the body on real hot spots (sides, back and chest), sparks and smoke leave in every
+// direction, and the warm flicker on the floor is a true circle of light.
+const EXTRA = [
+  { name: "chest", fx: 0.58, fy: 0.5, z: 5, tongues: [{ dx: -0.8, h: 3.6, n: 101 }, { dx: 0.8, h: 3, n: 102 }] },
+  { name: "back", fx: 0.42, fy: 0.46, z: -5, tongues: [{ dx: -0.8, h: 3.4, n: 111 }, { dx: 0.8, h: 3.8, n: 112 }] },
+];
+export const three = {
+  meta: { size: [96, 96], origin: [48, 80], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const q = space(p, o), F = fit(o.palette, 9).reverse(), a = o.actor, S = shape(a), { list } = spots(a, o.seed);
+    const ph = since(t), tick = Math.floor(t / TICK) % 2, fl = flare(t), flick = 0.8 + 0.2 * tnoise(t, D, 7.5, 3);
+    onBody(p, t, o);
+    // the hot spots in the world: the 2D ones sit on the outline (z 0), two more on the chest and the back
+    const hot = [
+      ...list.map((sp) => ({ x: sp.x, y: sp.y, z: 0, side: sp.side, tongues: sp.tongues })),
+      ...EXTRA.map((e) => ({ x: a.x + a.w * e.fx, y: a.y + S.h * e.fy, z: e.z, side: 0, tongues: e.tongues })),
+    ];
+    // flame tongues, upright and the same from every side
+    for (const sp of hot)
+      for (const tg of sp.tongues) {
+        const h = tg.h * (0.85 + 0.25 * tnoise(t, D, 5, tg.n)) * (1 + 1.6 * fl);
+        q.at(sp.x + tg.dx, lift(q, sp.y), sp.z, (pp) => tongue(pp, 0, 0, h, 1.1 + 0.3 * fl, (WIND * 0.08 * h) / 4 + tnoise(t, D, 3, tg.n + 9) * 0.8, F, t, D, tg.n));
+      }
+    // sparks streaming up and away, out in a full circle
+    cycle(t, D, 26, o.seed + 6, (r) => r.range(0.5, 0.9), (age, life, r, i) => {
+      const sp = hot[i % hot.length], x0 = r.range(-1.5, 1.5), vw = r.range(-10, 6), vy = r.range(25, 55), th = r.range(0, TAU), s = r.range(6, 30), d = travel(s, 0, 2, age);
+      const x = sp.x + x0 + travel(WIND + vw, WIND * 0.6, 1.2, age) + Math.sin(age * 9 + i) * 1.2 * age + Math.cos(th) * d, z = sp.z + Math.sin(th) * d;
+      q.at(x, lift(q, sp.y - 2) + travel(-vy, -18, 1.4, age), z, (pp) => ember(pp, 0, 0, age / life, [F[1], F[3], F[5]], age + i));
+    });
+    // the tick throws a burst off every spot: a cone of sparks round the vertical
+    if (ph < 0.3) {
+      const bursts = [];
+      for (const [k, sp] of hot.entries())
+        for (let j = 0; j < 4; j++) {
+          const psi = Math.abs(rand(k, j, tick) - 0.5) * 2.2 + 0.15, v = 50 + 50 * rand(k, j, 2), th = rand(k, j, 5 + tick) * TAU, d = travel(v, 0, 3, ph);
+          bursts.push([sp.x + Math.sin(psi) * Math.cos(th) * d, lift(q, sp.y - 2) - Math.cos(psi) * d + 60 * ph * ph, sp.z + Math.sin(psi) * Math.sin(th) * d]);
+        }
+      for (const [x, y, z] of bursts) q.px(x, y, z, ph < 0.12 ? F[1] : F[3]);
+      for (const [x, y, z] of bursts) q.light(x, y, z, F[3], 0.4 * (1 - ph / 0.3));
+    }
+    // the tick's heat ring racing out over the floor
+    if (ph < 0.3) {
+      const rr = 8 + 24 * Math.sqrt(ph / 0.3), fade = 1 - ph / 0.3;
+      q.plane(0, 0, 0, null, rr + 2, (u, v, out) => {
+        const w = 1 - Math.abs(Math.hypot(u, v) - rr) / 1.6;
+        if (w > 0) (out.c = F[4]), (out.a = 0.55 * w * fade), (out.blend = true);
+      });
+    }
+    // light: at every hot spot, and warm flicker on the floor, a true circle
+    for (const sp of hot) q.glow(sp.x, lift(q, sp.y - 2), sp.z, 9 + 6 * fl, F[4], 0.22 + 0.35 * fl);
+    q.plane(0, 0, 0, null, 28, (u, v, out) => {
+      const d = Math.hypot(u, v) / 26;
+      if (d < 1) (out.l = mix(F[3], F[4], 0.5)), (out.k = (0.16 + 0.22 * fl) * flick * (1 - d) * (1 - d));
+    });
+    // thin smoke drifting up and away from each spot, every way round; far to near
+    const smokeC = mix(hex(o.smoke), F[6], 0.2), puffs = [];
+    cycle(t, D, 20, o.seed + 4, (r) => r.range(0.8, 1.2), (age, life, r, i) => {
+      const sp = hot[i % hot.length], size = r.range(1.1, 1.9) * 1.5, th = r.range(0, TAU), d = travel(12, 0, 1.2, age);
+      puffs.push({ x: sp.x + travel(WIND * 0.6, WIND * 0.5, 0.8, age) + Math.sin(age * 4 + i) * 1.2 + Math.cos(th) * d, y: lift(q, sp.y - 3) - travel(18, 6, 1, age), z: sp.z + Math.sin(th) * d, size, u: age / life });
+    });
+    for (const s of q.sort(puffs, (s) => [s.x, s.y, s.z])) q.at(s.x, s.y, s.z, (pp) => smoke(pp, 0, 0, s.size, s.u, smokeC, 0.9));
+  },
+};

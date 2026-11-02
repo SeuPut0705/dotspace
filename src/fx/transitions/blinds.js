@@ -1,7 +1,7 @@
 // The dust drifting in the light and the light squeezing through follow Sprite Fusion's open-source holy light
 // (https://www.spritefusion.com/pixel-art-vfx/holy-light), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, P, Rng, fit, hex, clamp, ease, WHITE } from "../../core/index.js";
-import { W, H, screenMeta, clipTo, glint, rect } from "./_lib.js";
+import { Particles, P, Rng, fit, hex, mix, clamp, ease, space, TAU, WHITE } from "../../core/index.js";
+import { W, H, screenMeta, clipTo, glint, glint3, poly, rect } from "./_lib.js";
 
 export const meta = screenMeta({
   name: "Blinds",
@@ -93,3 +93,92 @@ export function create(o) {
     },
   };
 }
+
+// 3D: a louvred cage. Eight panels of slats stand round the stage in an octagon (posts at the corners, a rail on top),
+// every slat hinged on its own axis. They catch the light edge-on, then tilt shut top to bottom, lit rims glinting
+// as warm light squeezes through the closing gaps with dust drifting in it inside; then they tilt open and fade.
+const SP3 = 6, A3 = 52, TIP = A3 / Math.cos(Math.PI / 8), PW = 2 * A3 * Math.tan(Math.PI / 8), HT = N * SP3;
+const PANELS = Array.from({ length: 8 }, (_, k) => {
+  const a = Math.PI / 2 + (k * Math.PI) / 4;
+  return { nx: Math.cos(a), nz: Math.sin(a), tx: -Math.sin(a), tz: Math.cos(a), lit: 0.5 + 0.5 * Math.max(0, -0.6 * Math.cos(a) + 0.8 * Math.sin(a)) };
+});
+
+export const three = {
+  meta: { size: [144, 124], origin: [72, 100], bg: "ground", camera: { pitch: 0.34 } },
+  create(o) {
+    const C = fit(o.palette, 8), ink = hex(o.color), R = new Rng(o.seed), IRON = [C[1], C[2], C[3]], EDGE = mix(ink, C[1], 0.7);
+    const ps = new Particles({ rng: R, ground: () => 0, sparks: [WHITE, C[6], C[5], C[4]] });
+    let t = 0;
+    const end = meta.duration - 0.05, yOf = (i) => -(N - i - 0.5) * SP3;
+    return {
+      update(dt) {
+        t += dt;
+        // dust drifts in the light coming through
+        if (t < FADE0 && R.chance(0.8)) {
+          const i = R.int(0, N - 1), th = angle(i, t);
+          if (th > 0.2 && th < 1.45) {
+            const a = R.range(0, TAU), d = Math.sqrt(R.next()) * (A3 - 8);
+            ps.spawn3(P.EMBER, Math.cos(a) * d, yOf(i) + SP3 / 2 + R.range(-1, 1), Math.sin(a) * d, R.range(-5, 5), -R.range(1, 4), R.range(-5, 5), Math.min(R.range(0.5, 1), end - t), 0, 1);
+          }
+        }
+        ps.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), fade = 1 - clamp((t - FADE0) / (FADE1 - FADE0)), appear = clamp(t / SHUT0), al = Math.min(fade, appear);
+        if (al <= 0) return;
+        // the frame: posts at the corners, a rail round the top, a plinth round the foot
+        for (let k = 0; k < 8; k++) {
+          const a = Math.PI / 2 + (k * Math.PI) / 4 + Math.PI / 8, x = Math.cos(a) * TIP, z = Math.sin(a) * TIP;
+          q.beam(x, 1, z, x, -HT - 2, z, 2.6, (u, v) => (v > 0.6 ? IRON[0] : u < 0.5 ? IRON[2] : IRON[1]), al);
+        }
+        const ring = (y, r, c, w) => q.ring(0, y, 0, r, w, c, al);
+        ring(-HT - 2, TIP + 1.5, IRON[1], 2);
+        ring(-HT - 3, TIP + 1.5, IRON[2], 1);
+        ring(0, TIP + 1.5, IRON[0], 3);
+        // the slats
+        const open = [];
+        for (let i = 0; i < N; i++) {
+          const th = angle(i, t), s = Math.sin(th), c = Math.cos(th), under = th > Math.PI / 2, yc = yOf(i);
+          const u = t < OPEN0 ? clamp((t - SHUT0 - i * STEP) / TURN) : clamp((t - OPEN0 - i * OSTEP) / OTURN);
+          for (let k = 0; k < 8; k++) {
+            const Pn = PANELS[k], lit = under ? 0 : c * Pn.lit, cx = Pn.nx * A3, cz = Pn.nz * A3;
+            // the slat's width runs from its inner top rim, up and in, to its outer lower rim; edge-on it lies along the normal
+            const hw = (SP3 + 1) / 2, wx = Pn.nx * c, wy = s, wz = Pn.nz * c, tw = (PW - 0.5) / 2;
+            const A = [cx + Pn.tx * tw - wx * hw, yc - wy * hw, cz + Pn.tz * tw - wz * hw], B = [cx - Pn.tx * tw - wx * hw, yc - wy * hw, cz - Pn.tz * tw - wz * hw];
+            const Cc = [cx - Pn.tx * tw + wx * hw, yc + wy * hw, cz - Pn.tz * tw + wz * hw], D = [cx + Pn.tx * tw + wx * hw, yc + wy * hw, cz + Pn.tz * tw + wz * hw];
+            poly(q, [A, B, Cc, D], (x, y, z) => {
+              // v: 0 at the lit top rim, 1 at the lower one
+              const v = (((x - cx) * wx + (y - yc) * wy + (z - cz) * wz) / hw) * 0.5 + 0.5;
+              const f = lit * (1 - v * 0.8);
+              return v < 0.14 ? (lit > 0.55 ? WHITE : lit > 0.3 ? C[6] : lit > 0.12 ? C[4] : EDGE)
+                : v < 0.3 ? (lit > 0.45 ? C[5] : lit > 0.2 ? C[3] : ink)
+                  : v > 0.9 ? ink
+                    : f > 0.55 ? C[3] : f > 0.35 ? C[2] : f > 0.15 ? C[1] : ink;
+            }, al);
+            // light squeezes through the gap under the slat, brighter as it narrows
+            const gap = SP3 - (SP3 + 1) * Math.abs(s);
+            if (gap > 0.5 && th > 0.12 && !under && al > 0.5) {
+              const kk = (0.2 + 0.45 * (1 - gap / SP3) ** 1.5) * Math.min(1, th / 0.4) * 0.5;
+              q.glowLine(A[0], A[1] + SP3 / 2, A[2], B[0], B[1] + SP3 / 2, B[2], 4, C[6], kk);
+            }
+            // a glint runs along the lit rim as the slat turns, one panel at a time
+            if (k === i % 8 && lit > 0.3 && u > 0.05 && u < 0.95) open.push([A[0] + (B[0] - A[0]) * (t < OPEN0 ? u : 1 - u), A[1], A[2] + (B[2] - A[2]) * (t < OPEN0 ? u : 1 - u), 4 * Math.sin(Math.PI * u), u * 3]);
+          }
+        }
+        // inside: a column of light, a pool on the floor, the dust in it; shown only through the gaps
+        const lightK = al * Math.min(1, t / 0.3);
+        q.glowLine(0, -2, 0, 0, -HT + 2, 0, 20, C[5], 0.12 * lightK);
+        q.glow(0, -2, 0, 40, C[5], 0.18 * lightK);
+        for (const e of ps.list) {
+          const k = e.life / e.max, tw = e.seed % 1 < 0.3 && Math.sin(t * 14 + e.seed) > 0;
+          q.at(e.x, e.y, e.z, (pp) => {
+            pp.px(0, 0, tw || k > 0.5 ? WHITE : C[5]);
+            if (tw) for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) pp.px(dx, dy, C[6]);
+          });
+          q.glow(e.x, e.y, e.z, 4, C[6], (tw ? 0.7 : 0.4) * k * 0.5);
+        }
+        for (const [x, y, z, L, ang] of open) glint3(q, x, y, z, L, ang, C[6], C[5]);
+      },
+    };
+  },
+};

@@ -1,7 +1,7 @@
 // The stepped leader, the stroke flicker, the cooling channel and the scorch follow Sprite Fusion's open-source
 // lightning (https://www.spritefusion.com/pixel-art-vfx/lightning), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, sparkle, clamp, smooth, ease, rand, rng, TAU, WHITE, hex, mix } from "../../core/index.js";
-import { VOLT, PLASMA, SOOT, SOOT2, zigzag, bend, stroke, crackle, trace, scorch, heat } from "./_lib.js";
+import { Particles, Lights, P, Rng, fit, sparkle, clamp, smooth, ease, rand, rng, space, TAU, WHITE, hex, mix } from "../../core/index.js";
+import { VOLT, PLASMA, SOOT, SOOT2, zigzag, bend, stroke, crackle, trace, scorch, heat, zigzag3, bend3, stroke3, crackle3, trace3, scorchDisc } from "./_lib.js";
 
 export const meta = {
   name: "Lightning strike",
@@ -257,3 +257,235 @@ export function create(o) {
     },
   };
 }
+
+// ---- 3D: a strike on the floor of a round arena. The sigil is a true circle turning on the ground, the stepped leader
+// feels its way down out of the dark through space, the strokes are a forked bolt that lights everything round it, the
+// cracks are a Lichtenberg tree spreading across the floor in every direction with arcs racing out along them, the
+// veil is a dark dome that darkens the arena for a beat before the flash.
+function cracks3(R) {
+  const out = [];
+  const grow = (x, z, a, len, w, d, depth) => {
+    const pts = [[x, z, d]];
+    for (let s = 0; s < len; s += 1.5) {
+      a += R.range(-0.32, 0.32);
+      x += Math.cos(a) * 1.5;
+      z += Math.sin(a) * 1.5;
+      d += 1.5;
+      pts.push([x, z, d]);
+      if (depth < 2 && s > 3 && R.chance(0.09)) grow(x, z, a + R.sign() * R.range(0.5, 1.2), (len - s) * R.range(0.3, 0.6), w * 0.6, d, depth + 1);
+    }
+    out.push({ pts, w });
+  };
+  for (let i = 0; i < 7; i++) grow(R.range(-1, 1), R.range(-1, 1), (i / 7) * TAU + R.range(-0.3, 0.3), REACH * 1.1 * R.range(0.55, 1), 1, 0, 0);
+  return out;
+}
+
+// the sigil, drawn flat as it is on the ground (a true circle): a ring of dashes turning slowly, crosshair ticks, an inner ring
+function sigil3(p, t, C, k) {
+  const reveal = clamp(t / 0.22), spin = t * 0.8, burnt = t > S1 ? t - S1 : -1;
+  if (burnt > 0.45) return;
+  const a0 = burnt < 0 ? 1 : burnt < 0.07 ? 1 : 1 - (burnt - 0.07) / 0.38, hot = burnt >= 0 && burnt < 0.07;
+  const from = (a) => Math.abs((((a - Math.PI / 2) % TAU) + TAU + Math.PI) % TAU - Math.PI) / Math.PI;
+  for (let i = 0; i < 22; i++) {
+    const a = (i / 22) * TAU + spin;
+    if (from(a) > reveal) continue;
+    for (const da of [0, 0.06, 0.12]) p.dot(Math.cos(a + da) * RX, Math.sin(a + da) * RX, hot ? WHITE : k > 0.7 ? C[6] : C[5], a0);
+    if (i % 3 === 0) p.glow(Math.cos(a) * RX, Math.sin(a) * RX, 5, C[4], 0.3 * k * a0);
+  }
+  for (let j = 0; j < 4; j++) {
+    const a = spin * -0.5 + (j * TAU) / 4 + Math.PI / 4;
+    if (reveal < 1) continue;
+    p.line(Math.cos(a) * (RX - 5), Math.sin(a) * (RX - 5), Math.cos(a) * (RX + 5), Math.sin(a) * (RX + 5), hot ? WHITE : C[6], a0);
+  }
+  if (t > 0.3) for (let a = 0; a < TAU; a += 0.09) p.dot(Math.cos(a) * 14, Math.sin(a) * 14, hot ? WHITE : C[4], a0 * clamp((t - 0.3) / 0.12));
+  if (burnt < 0) {
+    const pulse = 0.6 + 0.4 * Math.sin(t * (10 + 30 * k));
+    p.px(0, 0, k > 0.5 ? WHITE : C[6]);
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, -1], [0, 1]]) p.px(dx, dy, C[5]);
+    p.glow(0, 0, 10 + 10 * k, C[5], 0.3 + 0.4 * k * pulse);
+  }
+}
+
+// keep forks in the arena and above the floor
+function keep3(b) {
+  const paths = [];
+  for (const q of b.paths) {
+    const pts = [];
+    for (const pt of q.pts) {
+      if (Math.hypot(pt[0], pt[2]) > W - 25 || pt[1] > -3 || pt[1] < TOP + 6) break;
+      pts.push(pt);
+    }
+    if (q.w >= 1 || pts.length > 3) paths.push({ w: q.w, pts: q.w >= 1 ? q.pts : pts });
+  }
+  return { paths };
+}
+
+export const three = {
+  meta: { size: [272, 276], origin: [136, 236], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), R = new Rng(o.seed), floor = () => 0;
+    const ps = new Particles({ rng: R, ground: floor, sparks: o.sparks }), hot = new Particles({ rng: R, ground: floor }), lights = new Lights();
+    const X0 = R.range(8, 18) * (R.chance(0.5) ? 1 : -1), Z0 = R.range(-16, 16);
+    const main = keep3(zigzag3(R, [X0, TOP, Z0], [0, -1, 0], 0.17, 0.5)), trunk = main.paths[0].pts;
+    const drift = (dx, dz) => (x, y, z) => [x + dx * Math.sin((Math.PI * y) / TOP), y, z + dz * Math.sin((Math.PI * y) / TOP)];
+    const bolts = [main, bend3({ paths: [{ pts: trunk, w: 1 }] }, drift(1.5, -1)), bend3({ paths: [{ pts: trunk, w: 1 }] }, drift(3, 2))];
+    const chan = (i) => bolts[i].paths[0].pts, last = STROKES[STROKES.length - 1], end = chan(STROKES.length - 1);
+    const tree = cracks3(R);
+    // the spent channel breaks up from the top down, each piece at its own moment
+    const gone = end.map(([, y], i) => last.t + 0.25 + 0.75 * (0.55 * rand(o.seed, i, 5) + 0.45 * (1 - y / TOP)));
+    const cone = (spread, sp0, sp1) => {
+      const a = -Math.PI / 2 + R.range(-spread, spread), sp = R.range(sp0, sp1), phi = R.range(0, TAU), h = Math.cos(a) * sp;
+      return [h * Math.cos(phi), Math.sin(a) * sp, h * Math.sin(phi)];
+    };
+    const ring = (r) => {
+      const a = R.range(0, TAU);
+      return [Math.cos(a) * r, Math.sin(a) * r];
+    };
+    let t = 0, struck = -1;
+    const now = () => {
+      for (let i = STROKES.length - 1; i >= 0; i--) if (t >= STROKES[i].t) return { i, s: STROKES[i], a: t - STROKES[i].t, k: level(t - STROKES[i].t) * STROKES[i].k };
+      return null;
+    };
+    const charge = () => clamp(t / S1) ** 1.5;
+    const heatAt = () => (struck < 0 ? 0 : Math.max(...STROKES.slice(0, struck + 1).map((s) => s.k * Math.pow(clamp(1 - (t - s.t) / 1.6), 1.4))));
+    return {
+      update(dt) {
+        t += dt;
+        for (const [i, s] of STROKES.entries()) {
+          if (struck >= i || t < s.t) continue;
+          struck = i;
+          const k = s.k;
+          lights.add(0, -50, 120, C[4], 0.55 * k, 0.4);
+          lights.add(0, -3, 24, WHITE, 0.5 * k, 0.1);
+          for (let j = 0; j < Math.round(44 * k); j++) {
+            const [vx, vy, vz] = cone(1.3, 110 * (0.65 + 0.35 * k), 320 * (0.65 + 0.35 * k));
+            ps.spawn3(P.SPARK, R.range(-1.5, 1.5), -2, R.range(-1.5, 1.5), vx, vy, vz, R.range(0.2, 0.55));
+          }
+          for (let j = 0; j < Math.round(12 * k); j++) {
+            const [vx, vy, vz] = cone(1.2, 70, 220);
+            hot.spawn3(P.SPARK, R.range(-2, 2), -1, R.range(-2, 2), vx, vy, vz, R.range(0.5, 1));
+          }
+          for (let j = 0; j < Math.round(5 * k); j++) hot.spawn3(P.EMBER, R.range(-4, 4), -2, R.range(-4, 4), R.range(-25, 25), -R.range(30, 80), R.range(-25, 25), R.range(0.8, 1.5));
+          for (let j = 0; j < Math.round(18 * k); j++) {
+            const [vx, vy, vz] = cone(1.1, 50, 190);
+            ps.spawn3(P.GRIT, R.range(-3, 3), -1, R.range(-3, 3), vx, vy, vz, R.range(1, 1.5), R.pick(STONE), R.chance(0.35) ? 2 : 1);
+          }
+          for (let j = 0; j < 8; j++) {
+            const [dx, dz] = ring(1), v = R.range(30, 110);
+            ps.spawn3(P.DUST, R.range(-3, 3), -1, R.range(-3, 3), dx * v, -R.range(4, 24), dz * v, R.range(0.4, 0.8), DUST, R.range(1.5, 3));
+          }
+          for (let j = 0; j < Math.round(4 * k); j++) ps.spawn3(P.SMOKE, R.range(-8, 8), -4, R.range(-8, 8), R.range(-10, 10), -R.range(10, 25), R.range(-10, 10), R.range(1.1, 1.6), mix(ASH, C[2], 0.3), R.range(3, 6), R.range(0.05, 0.25));
+        }
+        if (struck >= 0 && t < 1.7 && R.chance(6 * dt)) ps.spawn3(P.SMOKE, R.range(-8, 8), -2, R.range(-8, 8), R.range(-4, 4), -R.range(9, 17), R.range(-4, 4), R.range(1, 1.3), 0, R.range(2, 3.5));
+        for (let i = 0; i < gone.length - 1; i++)
+          if (gone[i] <= t && gone[i] > t - dt && rand(o.seed, i, 6) < 0.5) {
+            const [x, y, z] = end[i];
+            ps.spawn3(P.MOTE, x, y, z, R.range(-8, 8), R.range(6, 22), R.range(-8, 8), R.range(0.4, 0.8), R.chance(0.5) ? C[5] : C[4], R.range(0.5, 0.9));
+          }
+        ps.update(dt);
+        hot.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), s = now(), f = Math.floor(t * 30 + 1e-4), k = charge();
+        // everything that lies on the floor, in one decal: the sigil charging, the cracks glowing and cooling, the scorch
+        const T0 = heatAt(), fade = 1 - smooth(2.3, 2.95, t), front = REACH * 1.1 * ease.outCubic(clamp((t - S1) / 0.35)), elec = s && s.a < 0.14 ? s.s.k * (1 - s.a / 0.14) : 0;
+        q.decal(0, 0, 0, null, 66, (pp) => {
+          sigil3(pp, t, C, k);
+          if (struck < 0) return;
+          for (const br of tree)
+            for (const [x, z, d] of br.pts) {
+              if (d > front) break;
+              const u = d / (REACH * 1.1), n = rand(Math.round(x * 2), Math.round(z * 2), 9), fresh = d > front - 6 && front < REACH * 1.1;
+              const T = T0 * (1.15 - u) * (br.w < 1 ? 0.8 : 1) - n * 0.25, c = fresh || (elec > 0.3 && n < 0.85) ? (u < 0.5 ? WHITE : C[6]) : heat(T) || SOOT2;
+              pp.dot(x, z + 1, SOOT, fade);
+              pp.dot(x, z, c, fade);
+              if (br.w >= 1 && d < 9) pp.dot(x, z + 2, SOOT, fade);
+              if ((fresh || elec > 0.3) && (Math.round(d) & 3) === 0) pp.glow(x, z, 7, C[5], 0.4);
+              else if (T > 0.2 && (Math.round(d) & 3) === 0) pp.glow(x, z, 5, c, 0.2 * T);
+            }
+          scorchDisc(pp, 12, T0, fade);
+        });
+        if (struck >= 0 && T0 > 0) q.glow(0, -2, 0, 34, heat(0.55), 0.3 * T0);
+        // static rising off the charging sigil, more and more of it
+        if (t > 0.15 && t < S1) {
+          const r = rng(o.seed, 61, f);
+          for (let i = 0; i < Math.round(1 + 4 * k); i++) {
+            const a = r.range(0, TAU), x = Math.cos(a) * RX, z = Math.sin(a) * RX, up = r.range(4, 9) * (0.6 + k);
+            crackle3(q, zigzag3(r, [x, -1, z], [x + r.range(-2.5, 2.5), -1 - up, z + r.range(-2.5, 2.5)], 0.45, 0.3), 0.45 + 0.4 * k, C, 0.3);
+          }
+          q.glow(0, -2, 0, 36, C[4], 0.12 + 0.3 * k);
+        }
+        // the stepped leader feels down from above; a streamer climbs out of the sigil to meet it
+        if (t >= LEAD0 && t < S1) {
+          const u = clamp((t - LEAD0) / (S1 - LEAD0)), st = Math.min(STEPS, Math.floor(u * STEPS) + 1), fresh = 1 - ((u * STEPS) % 1);
+          const reach = TOP + (MEET - TOP) * Math.pow(st / STEPS, 1.2), prev = TOP + (MEET - TOP) * Math.pow((st - 1) / STEPS, 1.2);
+          for (const br of main.paths) {
+            const tk = br.w >= 1;
+            for (let i = 0; i < br.pts.length - 1; i++) {
+              const A = br.pts[i], B = br.pts[i + 1];
+              if (B[1] > reach) {
+                if (A[1] <= reach && i > 0) {
+                  q.ball(...A, 1, WHITE);
+                  q.glow(...A, 7, C[5], 0.5 * fresh + 0.15);
+                }
+                break;
+              }
+              const young = B[1] > prev;
+              q.line(...A, ...B, young ? (fresh > 0.4 ? (tk ? C[6] : C[5]) : C[4]) : tk ? C[3] : C[2]);
+              if (i % 4 === 0 && A[1] > TOP + 14) q.glow(...A, young ? 8 : 5, C[4], young ? 0.3 * fresh + 0.1 : 0.12);
+            }
+          }
+          if (t > 0.62) {
+            const h = -MEET * ease.outQuad((t - 0.62) / (S1 - 0.62)), r = rng(o.seed, 77, f);
+            const b = zigzag3(r, [0, -1, 0], [r.range(-2, 2), -Math.max(3, h), r.range(-2, 2)], 0.3, 0.3), tip = b.paths[0].pts.at(-1);
+            crackle3(q, b, 0.85, C, 0.45);
+            q.ball(...tip, 1, WHITE);
+            q.glow(...tip, 9, C[5], 0.5);
+          }
+        }
+        // the strokes, the dart that runs down the channel before each flicker, the channel cooling and crumbling
+        const next = STROKES.find((qq) => qq.t > t);
+        if (next && next !== STROKES[0] && t > next.t - 0.06) {
+          const tr = chan(STROKES.indexOf(next)), u = (t - (next.t - 0.06)) / 0.06, i1 = Math.floor(u * tr.length);
+          trace3(q, tr, C[3], 1);
+          trace3(q, tr, C[6], 1, i1 - 18, i1);
+          for (let i = Math.max(0, i1 - 18); i < Math.min(tr.length, i1); i += 4) if (tr[i][1] > TOP + 14) q.glow(...tr[i], 9, C[4], 0.35);
+        } else if (s && s.k > 0) {
+          const hero = s.i === 0 && s.a < 1 / 30;
+          stroke3(q, bolts[s.i], s.k, C, s.i === 0 ? 1.5 : 1.2, { hero, core: s.k > 0.6 ? (hero ? 1.2 : 0.8) : 0, minY: TOP + 14 });
+          const r = 4.5 * s.k;
+          q.plane(0, -0.6, 0, null, r + 1.5, (u, v) => { const d = Math.hypot(u, v); return d > r + 0.5 ? C[2] : d > r * 0.65 ? C[5] : WHITE; });
+          if (s.a < 0.07) q.at(0, -3, 0, (pp) => sparkle(pp, 0, 0, Math.round(12 * s.k * (1 - s.a / 0.07)), C[6], C[4], 0.25));
+          q.glow(0, -16, 0, 96, C[3], 0.42 * s.k);
+          q.glow(0, -3, 0, 22, C[5], 0.3 * s.k);
+          if (hero) q.glow(X0 * 0.5, -110, 0, 170, C[3], 0.3);
+        } else if (s) {
+          const crumble = s.i === STROKES.length - 1, cool = clamp((s.a - 0.23) / 0.45), tr = chan(s.i);
+          for (let i = 0; i < tr.length - 1; i++) {
+            if (crumble && t >= gone[i]) continue;
+            const h = crumble ? 1 - clamp((t - last.t - 0.23) / (gone[i] - last.t - 0.23)) : 1 - cool;
+            q.line(...tr[i], ...tr[i + 1], h > 0.7 ? C[5] : h > 0.4 ? C[4] : h > 0.15 ? C[3] : C[2]);
+            if (i % 6 === 0 && h > 0.3 && tr[i][1] > TOP + 14) q.glow(...tr[i], 6, C[4], 0.15 * h);
+          }
+        }
+        // arcs crawl out along the cracks as they split, and again with every flicker
+        if (s && s.a < 0.4) {
+          const r = rng(o.seed, 91, f), run = s.i === 0 ? REACH * 1.1 * ease.outCubic(clamp(s.a / 0.35)) : REACH * 1.1 * clamp(s.a / 0.22);
+          for (const br of tree) {
+            if (br.w < 1 || r.next() < 0.3) continue;
+            const i1 = br.pts.findIndex(([, , d]) => d > run), j1 = i1 < 0 ? br.pts.length : i1, j0 = Math.max(0, j1 - r.int(7, 13));
+            const pts = br.pts.slice(j0, j1).map(([x, z]) => [x + r.range(-0.6, 0.6), -1.5 - r.range(0, 2.5), z + r.range(-0.6, 0.6)]);
+            if (pts.length > 1) crackle3(q, { paths: [{ pts, w: 1 }] }, 0.9 * (1 - s.a / 0.4) + 0.1, C, 0.35);
+          }
+        }
+        ps.draw(q);
+        hot.draw(q);
+        lights.draw(q);
+        // the scene darkens a beat before the strike: a dark dome over the arena, deepest round the bolt's path, gone at the flash
+        const dark = 0.5 * smooth(0.46, 0.66, t) * (1 - smooth(S1 - 0.01, S1 + 0.02, t));
+        if (dark > 0.01) q.disc(0, -96, 0, 128, () => NIGHT, (d) => dark * (1 - smooth(0.55, 1, d)));
+      },
+    };
+  },
+};

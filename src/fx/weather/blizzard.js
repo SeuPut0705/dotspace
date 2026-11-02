@@ -1,6 +1,6 @@
 // Snow driven near-flat by the wind (depth layers of streaks, a gusty wind) after Sprite Fusion's open-source snow
 // (https://www.spritefusion.com/pixel-art-vfx/snow), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { fit, clamp, smooth, rand, wrap, mix, TAU, WHITE } from "../../core/index.js";
+import { fit, clamp, smooth, rand, wrap, mix, space, lit, TAU, WHITE } from "../../core/index.js";
 import { clip, rows, field, sample, trips } from "./_lib.js";
 
 export const meta = {
@@ -114,3 +114,143 @@ function ground(p, q, t, S, C) {
     q.px(x - 1, y, C[5]);
   });
 }
+
+// ---- 3D: the gale blows along +x through a cylinder of air (radius R3, height H3) over a round snowfield. Streaks
+// cross it at real depths, each one's z weaving a little; gusts are slabs of blown snow sliding across the volume,
+// thick where the wind is, with soft haze discs that whiten the far side; dunes of snow whip on the floor and grains
+// skip along them. Wherever it ends, snow fades out by its distance from the axis.
+const R3 = 96, H3 = 100;
+const L3 = [
+  { n: 300, m: [4, 6], len: [2, 4], drop: [10, 40], col: [3, 4, 5] },
+  { n: 220, m: [6, 8], len: [5, 8], drop: [20, 60], col: [4, 5, 6] },
+  { n: 90, m: [10, 13], len: [10, 16], drop: [30, 70], col: [5, 6, 7], near: true },
+];
+const edge3 = (x, z, r = R3) => clamp((r - 5 - Math.sqrt(x * x + z * z)) / 14);
+
+// streaks: each slot crosses the volume a whole number of times a loop at its own height and depth, dipping as it
+// goes; the gusts stretch and brighten it
+function streaks3(q, t, S, C, L) {
+  const Ly = L3[L], sd = S * 17 + L + 40, [c0, c1, c2] = Ly.col.map((i) => C[i]);
+  trips(t, D, Ly.n, sd, Ly.m[0], Ly.m[1], (u, k, m, i) => {
+    const j = wrap(k, m), R = (n) => rand(sd, i, j, n), drop = Ly.drop[0] + R(3) * (Ly.drop[1] - Ly.drop[0]);
+    const z0 = (R(8) * 2 - 1) * (R3 - 6), X = Math.sqrt(R3 * R3 - z0 * z0), ph = u * TAU * (1 + R(5)) + R(6) * 6, per = D / m;
+    const x = -X + 2 * X * u, y = -(3 + R(1) * (H3 - 3)) + drop * u + 3 * Math.sin(ph), z = z0 + 4 * Math.sin(ph + 1.3);
+    if (y > -1) return;
+    const g = gustAt(x, t);
+    if (!Ly.near && R(7) > 0.45 + 0.75 * g) return;
+    const fa = edge3(x, z);
+    if (fa < 0.02) return;
+    const len = (Ly.len[0] + R(2) * (Ly.len[1] - Ly.len[0])) * (0.7 + 0.6 * g), dx = (2 * X) / per, dy = drop / per, dz = (4 * Math.cos(ph + 1.3) * TAU * (1 + R(5))) / per;
+    const l = Math.hypot(dx, dy, dz), ux = dx / l, uy = dy / l, uz = dz / l, dk = clamp((q.depth(x, y, z) + R3) / (2 * R3)), a = fa * (1 - 0.5 * dk);
+    q.line(x - ux * len, y - uy * len, z - uz * len, x - ux * len * 0.45, y - uy * len * 0.45, z - uz * len * 0.45, c0, (v) => a * (0.3 + 0.7 * v));
+    q.line(x - ux * len * 0.45, y - uy * len * 0.45, z - uz * len * 0.45, x - ux, y - uy, z - uz, c1, a);
+    q.dot(x, y, z, g > 0.6 && Ly.near ? WHITE : c2, a);
+    if (Ly.near) q.glow(x, y, z, 5, C[5], (0.12 + 0.12 * g) * fa);
+  });
+}
+
+// the floor's height: low dunes lying along the wind (long in x, narrow in z), swelling and settling with the gusts
+const snowH = (F, u, v, amp) => sample(F, u * 0.055 + 11, v * 0.42 + 5) * amp;
+
+// spindrift ribbons whipped off the dune crests, streaming down the wind and thinning
+function crests3(q, t, S, C) {
+  const F = field(S * 5 + 1, 256, 128), amp = 1;
+  for (let i = 0; i < 26; i++) {
+    const a = rand(S, i, 91) * TAU, d = (R3 - 30) * Math.sqrt(rand(S, i, 92)), u0 = Math.cos(a) * d - 8, v0 = Math.sin(a) * d;
+    let vc = v0, hb = -1;
+    for (let k = -4; k <= 4; k++) {
+      const h = snowH(F, u0, v0 + k * 1.5, amp);
+      if (h > hb) (hb = h), (vc = v0 + k * 1.5);
+    }
+    for (let n = 0; n < 2; n++) {
+      const f = (rand(S, i, n, 95) + (3 * t) / D + n * 0.5) % 1, px = u0 + f * 46, pz = vc + (rand(S, i, n, 98) - 0.5) * 2;
+      const py = -1.5 - f * (3 + rand(S, i, 97) * 6) * Math.sin(Math.PI * Math.min(1, f * 1.5)), fa = Math.sin(Math.PI * f) ** 0.6 * edge3(px, pz);
+      if (fa < 0.05) continue;
+      const len = 6 + rand(S, i, 99) * 8;
+      q.line(px - len, py + 0.5, pz, px, py, pz, C[5], (v) => fa * (0.2 + 0.8 * v));
+      q.dot(px, py, pz, C[7], fa);
+    }
+  }
+}
+
+// gust strength and sheet sway by x, a column at a time (the plane shaders below run a pixel at a time)
+const GT = new Float32Array(200), WT = new Float32Array(200);
+const gustCol = (t) => {
+  for (let i = 0; i < 200; i++) GT[i] = gustAt(i - 99.5, t);
+  return (u) => GT[u < -100 ? 0 : u >= 100 ? 199 : Math.floor(u + 100)];
+};
+
+// the snowfield: dark, quiet, wind-combed snow lit along the dune crests, dissolving into the dark ground at its edge
+function field3(q, t, S, C) {
+  const F = field(S * 5 + 1, 256, 128), G = field(S * 5 + 2, 256, 128, [4, 8, 16]), R2 = R3 * R3;
+  q.plane(0, 0, 0, null, R3 + 1, (u, v, o) => {
+    const d2 = u * u + v * v;
+    if (d2 > R2) return;
+    const d = Math.sqrt(d2) / R3, e = 0.9 + (sample(G, u * 0.45 + 30, v * 0.45 + 12) - 0.5) * 0.5, a = 1 - smooth(e - 0.16, e, d);
+    if (a < 0.04) return;
+    const h = snowH(F, u, v, 1), s = snowH(F, u - 1.4, v + 1.4, 1) - h, ss = snowH(F, u + 1.4, v - 1.4, 1) - h;
+    // faces the light (low towards it), faces away, or flat
+    o.c = s < -0.012 ? C[4] : s < -0.006 ? C[3] : ss < -0.008 ? C[1] : h > 0.5 ? C[3] : C[2];
+    o.a = a;
+    o.blend = a < 0.97;
+    if (s < -0.012) (o.l = C[4]), (o.k = 0.04 * a);
+  });
+}
+
+// grains skipping along the dunes in the wind, low over the floor
+function grains3(q, t, S, C) {
+  trips(t, D, 70, S * 23 + 3, 8, 10, (u, k, m, i) => {
+    const j = wrap(k, m), z = (rand(S, i, j, 3) * 2 - 1) * (R3 - 8), X = Math.sqrt(R3 * R3 - z * z), x = -X + 2 * X * u;
+    const y = -1 - rand(S, i, j, 1) * 6 * Math.abs(Math.sin(u * 9 + i)), a = edge3(x, z);
+    if (a < 0.02) return;
+    q.dot(x, y, z, rand(S, i, j, 2) < 0.5 ? WHITE : C[6], a);
+    q.dot(x - 1, y, z, C[5], a);
+  });
+}
+
+// gusts: slabs of blown snow sliding along the wind, thick where a gust is and thin between, all through the volume
+function sheets3(q, t, S, C) {
+  const gust = gustCol(t), R2 = R3 * R3;
+  [[-24, 0, C[5]], [-62, 1, C[6]]].forEach(([y, k, c]) => {
+    const F = field(S * 3 + 7 + k, 256, 128), shift = (256 * (2 + (k & 1)) * t) / D, th = 0.54 + 0.02 * k;
+    for (let i = 0; i < 200; i++) WT[i] = 5 * Math.sin((i - 99.5) * 0.021 - (TAU * t) / D + k * 2);
+    q.plane(0, y, 0, null, R3, (u, v, o) => {
+      const d2 = u * u + v * v;
+      if (d2 > R2) return;
+      const w = WT[u < -100 ? 0 : u >= 100 ? 199 : Math.floor(u + 100)], s0 = (sample(F, u * 0.16 - shift, (v + w) * 0.45 + 40 * k) - th) * 2.2 * (0.35 + gust(u));
+      if (s0 <= 0.02) return;
+      const s = s0 * (1 - smooth(0.78, 1, Math.sqrt(d2) / R3));
+      if (s <= 0.02) return;
+      o.c = c;
+      o.a = Math.min(0.45, s);
+      o.blend = true;
+      if (s > 0.05) (o.l = C[5]), (o.k = s * 0.08);
+    });
+  });
+}
+
+// the whiteout: big soft discs of haze rolling through, thicker and whiter the nearer they are to the viewer
+function haze3(q, t, S, C) {
+  const items = [];
+  for (let i = 0; i < 11; i++) {
+    const z = (rand(S, i, 71) * 2 - 1) * (R3 - 30), X = Math.sqrt(R3 * R3 - z * z), f = (rand(S, i, 72) + (2 * t) / D) % 1;
+    items.push({ x: X * (2 * f - 1), y: -(10 + rand(S, i, 73) * 70), z, r: 24 + rand(S, i, 74) * 14, a: Math.sin(Math.PI * f) });
+  }
+  for (const h of q.sort(items, (e) => [e.x, e.y, e.z])) {
+    const dk = clamp((q.depth(h.x, h.y, h.z) + R3) / (2 * R3)), g = gustAt(h.x, t), c = mix(C[4], C[6], 0.3 + 0.5 * (1 - dk));
+    q.disc(h.x, h.y, h.z, h.r, c, (d) => (1 - d) ** 1.2 * 0.36 * (0.5 + g) * (1.25 - 0.7 * dk) * h.a * edge3(h.x, h.z, 74));
+  }
+}
+
+export const three = {
+  meta: { size: [224, 168], origin: [112, 130], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const q = space(p, o), S = o.seed, C = fit(o.palette, 8);
+    field3(q, t, S, C);
+    crests3(q, t, S, C);
+    for (let L = 0; L < 3; L++) streaks3(q, t, S, C, L);
+    grains3(q, t, S, C);
+    sheets3(q, t, S, C);
+    haze3(q, t, S, C);
+  },
+};

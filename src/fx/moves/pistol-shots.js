@@ -1,4 +1,5 @@
-import { chain, READY } from "../../core/index.js";
+import { chain, in3d, READY } from "../../core/index.js";
+import { recenter } from "./_lib.js";
 import * as muzzle from "../projectiles/muzzle-pistol.js";
 import * as tracer from "../projectiles/bullet-tracer.js";
 import * as spark from "../impacts/hit-spark.js";
@@ -36,3 +37,16 @@ export const create = chain([
     { fx: spark, t: t + FLY, x: TX - 10, height: 28 },
   ]),
 ]);
+
+const MID = 90;
+export const three = {
+  meta: { actor: 0, size: [352, 155], origin: [176, 108], camera: { pitch: 0.3 } },
+  act: recenter(act, MID),
+  create: chain(
+    SHOTS.flatMap((t) => [
+      { fx: in3d(muzzle), t, x: MX - MID, height: -BY },
+      { fx: in3d(tracer), t, until: t + FLY, x: (u) => MX + 4 + (u - t) * ((TX - MX - 14) / FLY) - MID, y: BY },
+      { fx: in3d(spark), t: t + FLY, x: TX - 10 - MID, height: 28 },
+    ]),
+  ),
+};

@@ -1,4 +1,5 @@
-import { Lights, Rng, fit, clamp, ease, TAU, WHITE, mix, luma, red, green, blue, rgb, READY } from "../../core/index.js";
+import { Lights, Rng, fit, clamp, ease, space, TAU, WHITE, mix, luma, red, green, blue, rgb, READY } from "../../core/index.js";
+import { wedge3 } from "./_lib.js";
 
 export const meta = {
   name: "Hit flash",
@@ -101,3 +102,78 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the same recolour of the character through his own mask (he stays at depth 0), but the hit lines are wedges all
+// round him, above and beside and in front and behind, jabbing in at the chest, and the blow is a burst of rays.
+export const three = {
+  meta: { size: [88, 80], origin: [44, 64], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 7), R = new Rng(o.seed), A = o.actor, M = A.mask, PX = A.pixels, S = o.side;
+    const [cx, cy] = A.chest, hx = cx + S * 12, hy = cy - 5;
+    const lights = new Lights();
+    lights.add(hx, hy, 34, WHITE, 0.6, 0.1);
+    lights.add(cx, cy, 30, C[4], 0.5, 0.35);
+    const reds = new Uint32Array(PX.length), tints = new Uint32Array(PX.length);
+    for (let i = 0; i < PX.length; i++) {
+      if (!PX[i]) continue;
+      const l = luma(PX[i] | 0xff000000);
+      reds[i] = C[clamp(Math.round(2 + l * 5), 2, 6)];
+      tints[i] = mix(PX[i] | 0xff000000, C[4], 0.55);
+    }
+    // hit lines all round the top and sides, front and back, jabbing in at the body
+    const nl = o.lines + 3, lines = Array.from({ length: nl }, (_, i) => {
+      const el = -0.25 + (Math.PI / 2 + 0.25) * ((i + R.range(0.25, 0.75)) / nl), g = i * 2.39996 + R.range(-0.3, 0.3);
+      return { d: [Math.cos(el) * Math.cos(g), -Math.sin(el), Math.cos(el) * Math.sin(g)], dist: R.range(15, 19), len: R.range(6, 9), t0: R.range(0, 0.04) };
+    });
+    // the burst where the blow lands: rays every way
+    const rays = Array.from({ length: 10 }, (_, i) => {
+      const y = 1 - (2 * (i + 0.5)) / 10, r = Math.sqrt(1 - y * y), g = i * 2.39996 + 0.2;
+      return { d: [Math.cos(g) * r, y, Math.sin(g) * r], L: i % 2 ? 4 : 9 };
+    });
+    let t = 0;
+    const beat = () => {
+      for (const [end, b] of BEATS) if (t < end) return b;
+      return null;
+    };
+    const body = (p, color) => p.mask(M, A.x, A.y, (mx, my) => color(my * M.w + mx));
+    return {
+      update(dt) {
+        t += dt;
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), b = beat();
+        if (b === "white" || b === "white2") {
+          body(p, () => WHITE);
+          p.outline(M, A.x, A.y, b === "white" ? C[6] : C[5]);
+        } else if (b === "red") {
+          body(p, (i) => reds[i]);
+          p.outline(M, A.x, A.y, C[5]);
+        } else if (b === "rim") p.outline(M, A.x, A.y, WHITE);
+        else if (b === "cool") {
+          const k = 1 - (t - 0.158) / (0.36 - 0.158);
+          body(p, (i) => mix(PX[i] | 0xff000000, tints[i], k));
+          if (k > 0.5) p.outline(M, A.x, A.y, C[4], (k - 0.5) * 2);
+        }
+        // the blow: a small hot burst on the side it came from
+        if (t < 0.07) {
+          const big = t < 0.035 ? 1 : 1.3, k = t < 0.035 ? 0 : 1;
+          for (const r of rays) q.line(hx + r.d[0] * r.L * big * 0.45 * k, hy + r.d[1] * r.L * big * 0.45 * k, r.d[2] * r.L * big * 0.45 * k, hx + r.d[0] * r.L * big, hy + r.d[1] * r.L * big, r.d[2] * r.L * big, (u) => (u < 0.45 && !k ? WHITE : u < 0.75 ? C[6] : C[4]));
+          if (!k) q.ball(hx, hy, 0, 1.6, WHITE);
+          q.glow(hx, hy, 0, 14, C[6], 0.5 * (1 - t / 0.07));
+        }
+        // comic hit lines jab in toward the body, then are gone
+        for (const l of lines) {
+          const u = (t - l.t0) / 0.16;
+          if (u < 0 || u >= 1) continue;
+          const d0 = l.dist - 6 * ease.outCubic(u), L = l.len * (1 - u);
+          if (L < 1) continue;
+          wedge3(q, cx, cy, 0, l.d, d0, L, 2.8 - 1.6 * u, C[3], u < 0.5 ? WHITE : C[6], 3);
+        }
+        const k = Math.exp(-t / 0.08);
+        if (k > 0.02) q.glow(cx, cy, 0, 26, b === "white" || b === "white2" ? WHITE : C[5], 0.35 * k);
+        lights.draw(q);
+      },
+    };
+  },
+};

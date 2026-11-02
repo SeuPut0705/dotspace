@@ -407,3 +407,280 @@ export function coin3d(L, p, x, y, r, th, theta, C, { a = 1, white = false } = {
   L.outline(C[1]).draw(p, 0, 0, a);
   return flash;
 }
+
+// ---- 3D: a small ray tracer over the Space, for the pickups' `three` variants. A pickup that really turns (a
+// coin, a gem, a key, a flask, a chest) is a solid: an SDF or a convex solid of planes, found pixel by pixel along
+// the camera's rays, so it has a true depth for every pixel, sorts with a character, and shows its other side.
+
+const IDENT = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+/** 3x3 rotation matrices (row major, object to world; world y is down): about the vertical, x and z axes. */
+export const rotY = (a) => { const c = Math.cos(a), s = Math.sin(a); return [c, 0, s, 0, 1, 0, -s, 0, c]; };
+export const rotX = (a) => { const c = Math.cos(a), s = Math.sin(a); return [1, 0, 0, 0, c, -s, 0, s, c]; };
+export const rotZ = (a) => { const c = Math.cos(a), s = Math.sin(a); return [c, -s, 0, s, c, 0, 0, 0, 1]; };
+/** A then B applied: matMul(A, B) v = A (B v). */
+export const matMul = (A, B) => {
+  const M = new Array(9);
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) M[i * 3 + j] = A[i * 3] * B[j] + A[i * 3 + 1] * B[3 + j] + A[i * 3 + 2] * B[6 + j];
+  return M;
+};
+const mv = (M, x, y, z) => [M[0] * x + M[1] * y + M[2] * z, M[3] * x + M[4] * y + M[5] * z, M[6] * x + M[7] * y + M[8] * z];
+const mtv = (M, x, y, z) => [M[0] * x + M[3] * y + M[6] * z, M[1] * x + M[4] * y + M[7] * z, M[2] * x + M[5] * y + M[8] * z];
+
+// a view-space vector (right, down on screen, towards the camera) as a world vector
+const unview = (q, a, b, c) => {
+  const vz = b * q.sp + c * q.cp;
+  return [a * q.cy + vz * q.sy, b * q.cp - c * q.sp, -a * q.sy + vz * q.cy];
+};
+// the light, as it stands for every pickup: up and to the left of the camera, a little in front of it
+const LIGHT = [-0.55, -0.72, 0.42];
+const unit3 = ([x, y, z]) => { const l = Math.hypot(x, y, z) || 1; return [x / l, y / l, z / l]; };
+/** The world-space light L, the direction to the eye V and their half vector H for q's camera. */
+export function lights(q, light = LIGHT) {
+  const L = unview(q, ...light), V = unview(q, 0, 0, 1);
+  return { L, V, H: unit3([L[0] + V[0], L[1] + V[1], L[2] + V[2]]) };
+}
+
+const REC = new Map();
+const HIT = { t: 0, tmax: 0, x: 0, y: 0, z: 0, ox: 0, oy: 0, oz: 0, nx: 0, ny: 1, nz: 0, id: 0, kind: 0, i: -1, L: null, V: null, H: null };
+const key = (sx, sy) => (sy + 2048) * 4096 + sx + 2048;
+
+/**
+ * Ray-trace a solid centered at (cx, cy, cz) inside a sphere of radius R. hit(O, D, h) walks the ray (origin O,
+ * unit direction D, world coordinates relative to the center) and returns its distance t or -1, filling h's
+ * normal (nx, ny, nz), id and kind; shade(h) gets the hit (h.x, h.y, h.z relative to the center, the same in view space
+ * as h.vx (right), h.vy (down), h.vz (towards the camera), h.L, h.V, h.H)
+ * and returns a color, or 0 to leave the pixel. Every pixel gets the depth of the surface it sees.
+ *   ink      a 1 px outline round the silhouette
+ *   crease   with ink: a line on the far side of any jump in depth bigger than this (parts overlapping parts)
+ *   edge     (rec, right, down) => color: recolor a pixel by its neighbours (rec: { c, z, id, kind, i })
+ *   a        alpha
+ *   light    the light's direction on screen [right, down, towards the viewer] (the default is up left)
+ */
+export function trace(q, cx, cy, cz, R, hit, shade, { ink = 0, crease = 0, edge = null, a = 1, light = LIGHT } = {}) {
+  if (!q.project(cx, cy, cz)) return;
+  const p = q.p, X = q.x, Y = q.y, d0 = q.d, k = q.k, r = R * k, lt = lights(q, light), D = [-lt.V[0], -lt.V[1], -lt.V[2]], h = HIT, R2 = R * R;
+  h.L = lt.L; h.V = lt.V; h.H = lt.H; h.tmax = 2 * R;
+  const rec = REC;
+  rec.clear();
+  p.each(X - r - 1, Y - r - 1, X + r + 1, Y + r + 1, (lx, ly, sx, sy) => {
+    const vx = (lx - X) / k, vy = (ly - Y) / k;
+    if (vx * vx + vy * vy > R2) return;
+    const O = unview(q, vx, vy, R);
+    h.id = 0; h.kind = 0; h.i = -1;
+    const t = hit(O, D, h);
+    if (t < 0) return;
+    h.vx = vx; h.vy = vy; h.vz = R - t;
+    h.t = t; h.x = O[0] + D[0] * t; h.y = O[1] + D[1] * t; h.z = O[2] + D[2] * t;
+    const c = shade(h);
+    if (c) rec.set(key(sx, sy), { sx, sy, c, z: d0 - (R - t), id: h.id, kind: h.kind, i: h.i });
+  });
+  const z0 = p.z, around = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  if (edge) {
+    const out = [];
+    for (const e of rec.values()) {
+      const c = edge(e, rec.get(key(e.sx + 1, e.sy)), rec.get(key(e.sx, e.sy + 1)));
+      if (c) out.push([e, c]);
+    }
+    for (const [e, c] of out) e.c = c;
+  }
+  if (ink && crease) {
+    const out = [];
+    for (const e of rec.values()) for (const [dx, dy] of around) {
+      const n = rec.get(key(e.sx + dx, e.sy + dy));
+      if (n && n.z < e.z - crease) { out.push(e); break; }
+    }
+    for (const e of out) e.c = ink;
+  }
+  for (const e of rec.values()) (p.z = e.z), p.put(e.sx, e.sy, e.c, a);
+  if (ink) {
+    const edgeZ = new Map();
+    for (const e of rec.values())
+      for (const [dx, dy] of around) {
+        const kk = key(e.sx + dx, e.sy + dy);
+        if (rec.has(kk)) continue;
+        const o = edgeZ.get(kk);
+        if (!o || e.z < o.z) edgeZ.set(kk, { sx: e.sx + dx, sy: e.sy + dy, z: e.z });
+      }
+    for (const o of edgeZ.values()) (p.z = o.z), p.put(o.sx, o.sy, ink, a);
+  }
+  p.z = z0;
+}
+
+/** hit() for trace from a signed distance function f(x, y, z) (world coordinates relative to the center). */
+export function sdfHit(f, { steps = 56, eps = 0.04, grad = 0.35 } = {}) {
+  return (O, D, h) => {
+    let t = 0;
+    for (let i = 0; i < steps; i++) {
+      const x = O[0] + D[0] * t, y = O[1] + D[1] * t, z = O[2] + D[2] * t, d = f(x, y, z);
+      if (d < eps) {
+        const e = grad, nx = f(x + e, y, z) - f(x - e, y, z), ny = f(x, y + e, z) - f(x, y - e, z), nz = f(x, y, z + e) - f(x, y, z - e), l = Math.hypot(nx, ny, nz) || 1;
+        h.nx = nx / l; h.ny = ny / l; h.nz = nz / l;
+        return t;
+      }
+      t += Math.max(d * 0.85, 0.03);
+      if (t > h.tmax) return -1;
+    }
+    return -1;
+  };
+}
+
+/** hit() for trace from an implicit surface f(x, y, z) (negative inside, not a distance): fixed steps, then bisection. */
+export function implicitHit(f, { step = 0.6, bisect = 7, grad = 0.3 } = {}) {
+  return (O, D, h) => {
+    let t0 = 0, f0 = f(O[0], O[1], O[2]);
+    for (let t = step; t <= h.tmax + step; t += step) {
+      const f1 = f(O[0] + D[0] * t, O[1] + D[1] * t, O[2] + D[2] * t);
+      if (f1 < 0 && f0 >= 0) {
+        let a = t0, b = t;
+        for (let i = 0; i < bisect; i++) {
+          const m = (a + b) / 2;
+          if (f(O[0] + D[0] * m, O[1] + D[1] * m, O[2] + D[2] * m) < 0) b = m;
+          else a = m;
+        }
+        const x = O[0] + D[0] * b, y = O[1] + D[1] * b, z = O[2] + D[2] * b, e = grad;
+        const nx = f(x + e, y, z) - f(x - e, y, z), ny = f(x, y + e, z) - f(x, y - e, z), nz = f(x, y, z + e) - f(x, y, z - e), l = Math.hypot(nx, ny, nz) || 1;
+        h.nx = nx / l; h.ny = ny / l; h.nz = nz / l;
+        return b;
+      }
+      t0 = t;
+      f0 = f1;
+    }
+    return -1;
+  };
+}
+
+/**
+ * hit() for trace from convex solids of facet planes (brilliant(), prism(), ...: y up in the planes, flipped here to
+ * the world's y down), turned by M (object to world) and scaled by s. Several solids make their union (the nearest
+ * hit wins). Fills h.id (solid * 1000 + plane + 1), h.kind, and the hit point in the object's own frame h.ox..oz.
+ */
+export function convexHit(solids, M = IDENT, s = 1) {
+  const list = Array.isArray(solids) ? solids : [solids];
+  for (const g of list) g.flip ??= g.planes.map((q) => ({ n: [q.n[0], -q.n[1], q.n[2]], d: q.d, kind: q.kind }));
+  return (O, D, h) => {
+    const ro = mtv(M, O[0], O[1], O[2]).map((v) => v / s), rd = mtv(M, D[0], D[1], D[2]).map((v) => v / s);
+    let best = -1, bp = null, bi = 0;
+    for (let si = 0; si < list.length; si++) {
+      const P = list[si].flip;
+      let t0 = -1e9, t1 = 1e9, hp = -1;
+      for (let pi = 0; pi < P.length; pi++) {
+        const n = P[pi].n, nd = n[0] * rd[0] + n[1] * rd[1] + n[2] * rd[2], no = n[0] * ro[0] + n[1] * ro[1] + n[2] * ro[2];
+        if (Math.abs(nd) < 1e-7) {
+          if (no > P[pi].d) { t1 = -1e9; break; }
+          continue;
+        }
+        const tt = (P[pi].d - no) / nd;
+        if (nd < 0) { if (tt > t0) (t0 = tt), (hp = pi); }
+        else if (tt < t1) t1 = tt;
+        if (t0 > t1) break;
+      }
+      if (hp < 0 || t0 > t1 || t0 < 0) continue;
+      if (best < 0 || t0 < best) (best = t0), (bp = P[hp]), (bi = si * 1000 + hp + 1);
+    }
+    if (best < 0) return -1;
+    const n = mv(M, bp.n[0], bp.n[1], bp.n[2]);
+    h.nx = n[0]; h.ny = n[1]; h.nz = n[2]; h.id = bi; h.kind = bp.kind;
+    h.ox = ro[0] + rd[0] * best; h.oy = ro[1] + rd[1] * best; h.oz = ro[2] + rd[2] * best;
+    return best;
+  };
+}
+
+/** The point (x, y, z) in an object's own frame, for a hit on an SDF solid turned by M and scaled by s. */
+export const toObject = (M, h, s = 1) => mtv(M, h.x, h.y, h.z).map((v) => v / s);
+
+/** A cut gem's color for a hit on a brilliant() or prism() facet: the shading of drawGem, in world space. Returns [color, ramp index, spec]. */
+export function gemTone(h, C, gain = 1) {
+  const { kind } = h, n = [h.nx, h.ny, h.nz], pav = kind === 4 || kind === 5 || kind === 8;
+  const [Lx, Ly, Lz] = h.L, [Hx, Hy, Hz] = h.H;
+  const m = pav ? [n[0], -n[1] * 0.6, n[2]] : n, ml = Math.hypot(m[0], m[1], m[2]);
+  const lam = Math.max(0, (m[0] * Lx + m[1] * Ly + m[2] * Lz) / ml), spec = Math.pow(Math.max(0, (m[0] * Hx + m[1] * Hy + m[2] * Hz) / ml), 18);
+  let b = pav ? 0.02 + 0.72 * Math.pow(lam, 2.4) : kind === 3 ? 0.12 + 0.4 * lam : 0.04 + 0.66 * Math.pow(lam, 1.8);
+  // a crystal's upright faces are lit by the light's level direction; its cap catches it from above
+  if (kind === 6) b = 0.16 + 0.66 * Math.pow(Math.max(0, (n[0] * Lx + n[2] * Lz) / Math.hypot(Lx, Lz)), 1.3);
+  else if (kind === 7) b = 0.22 + 0.62 * Math.pow(lam, 1.2);
+  else if (kind === 9) b = 0.62 + 0.25 * lam;
+  else if (kind === 10) b = 0.3 + 0.5 * lam;
+  if (kind !== 9) b *= gain;
+  if (kind === 0) b -= 0.04;
+  const s = b + spec * 0.6;
+  h.i = Math.max(1, Math.min(6, Math.round(1 + s * 5.6)));
+  h.s = s;
+  if (spec > 0.8) return pav ? C[6] : WHITE;
+  return C[h.i];
+}
+
+/** The cut, for trace's edge: where two facets meet, a pavilion edge sinks a shade and a crown ridge catches a shade more light. */
+export const gemEdges = (C) => (e, r, d) => {
+  if (e.i < 1 || !((r && r.id !== e.id) || (d && d.id !== e.id))) return;
+  return e.kind === 4 || e.kind === 5 || e.kind === 8 ? C[Math.max(1, e.i - 1)] : C[Math.min(7, e.i + 1)];
+};
+
+// ---- floor and light helpers for the variants
+
+/** A soft shadow disc on the floor under a thing at (x, z): dithered darkness, fullest in the middle. k is its strength. */
+export function floorShadow(q, x, z, r, k = 1) {
+  if (r < 1 || k <= 0) return;
+  q.plane(x, 0, z, null, r + 1, (u, v, out) => {
+    const d = Math.hypot(u, v) / r;
+    if (d > 1) return;
+    out.c = INK;
+    out.a = k * (1 - d * d) * 1.1;
+  });
+}
+
+/** A shadow oval on the floor under (x, z): half-length rl along the direction (dx, dz), half-width rw. */
+export function floorShadowOval(q, x, z, dx, dz, rl, rw, k = 1) {
+  if (rl < 1 || k <= 0) return;
+  const l = Math.hypot(dx, dz) || 1;
+  dx /= l; dz /= l;
+  q.plane(x, 0, z, null, Math.max(rl, rw) + 1, (u, v, out) => {
+    const a = (u * dx + v * dz) / rl, b = (-u * dz + v * dx) / rw, d = a * a + b * b;
+    if (d > 1) return;
+    out.c = INK;
+    out.a = k * (1 - d * 0.55) * 1.2;
+  });
+}
+
+/** A pool of light on the floor round (x, z): k at the middle falling off to the rim. */
+export function floorPool(q, x, z, r, c, k) {
+  if (k <= 0.004 || r < 1) return;
+  q.plane(x, 0, z, null, r, (u, v, out) => {
+    const d = Math.hypot(u, v) / r;
+    if (d >= 1) return;
+    const f = 1 - d;
+    out.l = c;
+    out.k = f * f * k;
+  });
+}
+
+/** A ring of light on a plane (default the floor): a thin band of color c, alpha a, with light of colour lc round it (width lw, strength lk). */
+export function lightRing(q, cx, cy, cz, r, w, c, a, lc, lk, lw = 4, n) {
+  q.plane(cx, cy, cz, n, r + lw + 1, (u, v, out) => {
+    const e = Math.abs(Math.hypot(u, v) - r + w / 2);
+    if (e < w / 2 + 0.01) (out.c = c), (out.a = a);
+    if (lk > 0.004 && e < lw) (out.l = lc), (out.k = lk * (1 - e / lw) ** 2);
+  });
+}
+
+/** A star glint as an upright billboard at (x, y, z). */
+export function glint3(q, x, y, z, arm, c, k = 0.4, tip) {
+  q.at(x, y, z, (pp) => glint(pp, 0, 0, arm, c, k, tip));
+}
+
+// ---- signed distances (px), for the solids
+export const sdBox = (x, y, z, hx, hy, hz, r = 0) => {
+  const a = (x < 0 ? -x : x) - hx + r, b = (y < 0 ? -y : y) - hy + r, c = (z < 0 ? -z : z) - hz + r;
+  const ax = a > 0 ? a : 0, bx = b > 0 ? b : 0, cx = c > 0 ? c : 0, m = a > b ? (a > c ? a : c) : b > c ? b : c;
+  return Math.sqrt(ax * ax + bx * bx + cx * cx) + (m < 0 ? m : 0) - r;
+};
+/** A cylinder about the vertical axis: radius rad, half height hy. */
+export const sdCyl = (x, y, z, rad, hy, r = 0) => {
+  const a = Math.sqrt(x * x + z * z) - rad + r, b = (y < 0 ? -y : y) - hy + r, ax = a > 0 ? a : 0, bx = b > 0 ? b : 0;
+  return Math.min(a > b ? a : b, 0) + Math.sqrt(ax * ax + bx * bx) - r;
+};
+export const sdSeg = (x, y, z, ax, ay, az, bx, by, bz, r) => {
+  const dx = bx - ax, dy = by - ay, dz = bz - az, u = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy + (z - az) * dz) / (dx * dx + dy * dy + dz * dz || 1)));
+  return Math.hypot(x - ax - dx * u, y - ay - dy * u, z - az - dz * u) - r;
+};
+/** A torus in the x-y plane: ring radius R, tube radius r. */
+export const sdTorus = (x, y, z, R, r) => Math.hypot(Math.hypot(x, y) - R, z) - r;

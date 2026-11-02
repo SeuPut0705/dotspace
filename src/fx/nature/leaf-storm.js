@@ -1,8 +1,8 @@
 // The leaves' tumble (turning as they go, flipping over through edge-on, palettes of autumn and green) is adapted
 // from Sprite Fusion's open-source falling leaves (https://www.spritefusion.com/pixel-art-vfx/falling-leaves),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { cycle, fit, rng, smooth, clamp, lerp, TAU, WHITE, READY } from "../../core/index.js";
-import { drawLeaf } from "./_lib.js";
+import { cycle, fit, rng, smooth, clamp, lerp, space, TAU, WHITE, READY } from "../../core/index.js";
+import { drawLeaf, leaf3 } from "./_lib.js";
 
 export const meta = {
   name: "Leaf storm",
@@ -105,3 +105,51 @@ export function draw(p, t, o) {
   wind(p, C, t, o.seed * 5 + 2, false);
   leaves(p, L, t, o.seed * 7 + 3, false);
 }
+
+// ---- 3D: the leaves climb a true spiral in space round the character, really passing behind him and in front, each one
+// tumbling about its own axis; the wind is bands drawn along helices, the litter a ring of dust swept round his feet.
+export const three = {
+  meta: { size: [124, 116], origin: [62, 98], camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const q = space(p, o), C = fit(o.palette, 6), L = fit(o.leaves, 12), D = meta.duration, seed = o.seed;
+    q.glow(0, -30, 0, 46, C[4], 0.12);
+    q.glow(0, -2, 0, 26, L[2], 0.12);
+    // leaves riding the spiral: up from the floor, round two turns or so, flung out off the top
+    const glints = [];
+    cycle(t, D, 30, seed * 7 + 3, (g) => g.range(1.5, 2.3), (age, life, R) => {
+      const k = age / life, turns = R.range(1.4, 2.2), th = R.range(0, TAU) + turns * TAU * k;
+      const y = -lerp(1, TOP, Math.pow(k, 0.9)) - R.range(0, 6), fling = smooth(0.75, 1, k), rr = ringR(y) * R.range(0.85, 1.15) + fling * 22;
+      const a = Math.min(1, k * 7) * (1 - smooth(0.85, 1, k)), spin = R.range(-9, 9) * age + th, fl = age * R.range(5, 11), o4 = R.int(0, 2) * 4, len = R.range(6.5, 9), wid = R.range(2.4, 3.3);
+      const x = Math.cos(th) * rr, z = Math.sin(th) * rr, b = th + Math.PI / 2 + Math.sin(spin) * 0.7, e = Math.sin(spin * 0.7) * 0.9;
+      leaf3(q, x, y, z, [Math.cos(b) * Math.cos(e), Math.sin(e), Math.sin(b) * Math.cos(e)], len, wid, fl, [L[o4], L[o4 + 1], L[o4 + 2], L[o4 + 3]], a);
+      if (Math.abs(Math.cos(fl)) > 0.97) glints.push([x, y, z, L[o4 + 3], a]);
+    });
+    for (const [x, y, z, c, a] of glints) {
+      q.px(x, y, z, WHITE);
+      q.glow(x, y, z, 5, c, 0.35 * a);
+    }
+    // wind bands: 1 px streaks on helices round the character, bright at the head, fading behind
+    for (let j = 0; j < 18; j++) {
+      const R = rng(seed * 5 + 2, j), y0 = -R.range(4, TOP - 4), r = ringR(y0) * R.range(1.0, 1.25), K = R.int(2, 3), span = R.range(1.1, 2.4);
+      const head = R.range(0, TAU) + (TAU * K * t) / D, rise = R.range(-0.18, 0.18);
+      for (let s = 0; s <= span; s += 0.45 / r) {
+        const th = head - s, k = s / span, x = Math.cos(th) * r, y = y0 + (th - head) * rise * 4, z = Math.sin(th) * r;
+        const c = k < 0.06 ? WHITE : k < 0.15 ? C[5] : k < 0.4 ? C[4] : C[3];
+        if (k < 0.45) q.dot(x, y, z, c);
+        else q.blend(x, y, z, c, 1.6 * (1 - k));
+      }
+      q.glow(Math.cos(head) * r, y0, Math.sin(head) * r, 5, C[4], 0.25);
+    }
+    // at the feet: litter and dust swept round on the floor
+    const puffs = [];
+    cycle(t, D, 16, seed * 3 + 1, (g) => g.range(0.6, 1.1), (age, life, R) => {
+      const k = age / life, th = R.range(0, TAU) + R.range(6, 9) * age, rr = R.range(10, 22) + k * 8, s = R.range(2, 3.5) * (0.6 + k);
+      puffs.push([Math.cos(th) * rr, -1 - k * R.range(2, 8), Math.sin(th) * rr, s, (1 - k) * Math.min(1, k * 6) * 0.3]);
+    });
+    for (const [x, y, z, s, a] of q.sort(puffs, (v) => v)) q.disc(x, y, z, s, C[3], a);
+    for (let j = 0; j < 6; j++) {
+      const R = rng(seed * 3 + 10, j), rr = R.range(12, 24), th0 = R.range(0, TAU) + (TAU * 3 * t) / D, span = R.range(0.5, 1);
+      for (let s = 0; s < span; s += 0.6 / rr) q.dot(Math.cos(th0 - s) * rr, 0.5, Math.sin(th0 - s) * rr, s < span * 0.4 ? C[3] : C[2], 1 - s / span);
+    }
+  },
+};

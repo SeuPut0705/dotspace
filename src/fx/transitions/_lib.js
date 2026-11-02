@@ -201,3 +201,125 @@ export function glint(p, x, y, L, ang, c1, c2, a = 1) {
 
 /** Particle lives cut so nothing outlives the effect: the smaller of life and what's left before `end`. */
 export const lifeLeft = (life, t, end) => Math.min(life, end - t);
+
+// ---- the 3D variants ------------------------------------------------------------------------------------------
+// The Space has balls, beams, rings and planes but no filled polygon. The 3D transitions are made of slabs, slats,
+// shards and gems, so a convex face with a depth for every pixel lives here, with the little geometry it needs.
+
+const SX = new Float64Array(64), SY = new Float64Array(64), SD = new Float64Array(64);
+const WX = new Float64Array(64), WY = new Float64Array(64), WZ = new Float64Array(64);
+
+function fillTri(p, b, c2, col, fc, a, bias) {
+  const x0 = SX[0], y0 = SY[0], x1 = SX[b], y1 = SY[b], x2 = SX[c2], y2 = SY[c2];
+  const det = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2);
+  if (Math.abs(det) < 1e-6) return;
+  const k = 1 / det, d0 = SD[0], d1 = SD[b], d2 = SD[c2];
+  p.each(Math.min(x0, x1, x2), Math.min(y0, y1, y2), Math.max(x0, x1, x2), Math.max(y0, y1, y2), (lx, ly, sx, sy) => {
+    const l0 = ((y1 - y2) * (lx - x2) + (x2 - x1) * (ly - y2)) * k, l1 = ((y2 - y0) * (lx - x2) + (x0 - x2) * (ly - y2)) * k, l2 = 1 - l0 - l1;
+    if (l0 < -0.002 || l1 < -0.002 || l2 < -0.002) return;
+    p.z = l0 * d0 + l1 * d1 + l2 * d2 + bias;
+    let c = col;
+    if (fc) {
+      c = col(l0 * WX[0] + l1 * WX[b] + l2 * WX[c2], l0 * WY[0] + l1 * WY[b] + l2 * WY[c2], l0 * WZ[0] + l1 * WZ[b] + l2 * WZ[c2]);
+      if (!c) return;
+    }
+    p.put(sx, sy, c, a);
+  });
+}
+
+/**
+ * A convex polygon in world space, [[x, y, z], ...], with a depth for every pixel. c is a color or fn(x, y, z) of the
+ * point on the face (0 skips it); a is the alpha (dithered); bias pushes its depth back, so what is laid on it wins.
+ * A face seen all but edge-on shrinks to its outline, so a thin slab never drops out of a view.
+ */
+export function poly(q, pts, c, a = 1, bias = 0) {
+  const n = Math.min(pts.length, 63), fc = typeof c === "function";
+  if (n < 3) return;
+  let area = 0;
+  for (let i = 0; i < n; i++) {
+    const v = pts[i];
+    if (!q.project(v[0], v[1], v[2])) return;
+    SX[i] = q.x; SY[i] = q.y; SD[i] = q.d; WX[i] = v[0]; WY[i] = v[1]; WZ[i] = v[2];
+  }
+  for (let i = 0, j = n - 1; i < n; j = i++) area += SX[j] * SY[i] - SX[i] * SY[j];
+  if (Math.abs(area) < 2.5) {
+    const col = fc ? c(WX[0], WY[0], WZ[0]) : c;
+    if (col) outline(q, pts, col, a, 0.5 - bias);
+    return;
+  }
+  const p = q.p, z0 = p.z;
+  for (let i = 1; i < n - 1; i++) fillTri(p, i, i + 1, c, fc, a, bias);
+  p.z = z0;
+}
+
+/** A 1 px line from A to B with a depth along it, nearer by `front` so it sits on the faces it runs along. c, a may be fn(u). */
+export function edge(q, A, B, c, a = 1, front = 0.6) {
+  if (!q.project(A[0], A[1], A[2])) return;
+  const ax = q.x, ay = q.y, ad = q.d;
+  if (!q.project(B[0], B[1], B[2])) return;
+  const bx = q.x, by = q.y, bd = q.d, p = q.p, z0 = p.z, N = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) * 1.5));
+  const fc = typeof c === "function", fa = typeof a === "function";
+  for (let i = 0; i <= N; i++) {
+    const u = i / N;
+    p.z = ad + (bd - ad) * u - front;
+    p.dot(ax + (bx - ax) * u, ay + (by - ay) * u, fc ? c(u) : c, fa ? a(u) : a);
+  }
+  p.z = z0;
+}
+
+/** The outline of a polygon (closed unless told otherwise) as edges. */
+export function outline(q, pts, c, a = 1, front = 0.6, closed = true) {
+  for (let i = closed ? 0 : 1; i < pts.length; i++) edge(q, pts[closed ? (i + pts.length - 1) % pts.length : i - 1], pts[i], c, a, front);
+}
+
+/** The part of a 3D polygon on the side of the plane n . x = d that n points away from (n . x <= d). */
+export function clipPoly(pts, n, d) {
+  const out = [];
+  for (let i = 0; i < pts.length; i++) {
+    const A = pts[i], B = pts[(i + 1) % pts.length];
+    const sa = n[0] * A[0] + n[1] * A[1] + n[2] * A[2] - d, sb = n[0] * B[0] + n[1] * B[1] + n[2] * B[2] - d;
+    if (sa <= 0) out.push(A);
+    if (sa <= 0 !== sb <= 0) {
+      const k = sa / (sa - sb);
+      out.push([A[0] + (B[0] - A[0]) * k, A[1] + (B[1] - A[1]) * k, A[2] + (B[2] - A[2]) * k]);
+    }
+  }
+  return out;
+}
+
+/** The faces [{pts, n}] of the convex solid {x : n . x <= d for every [nx, ny, nz, d]} (unit normals). */
+export function solid(planes) {
+  const faces = [], BIG = 700;
+  planes.forEach(([nx, ny, nz, d], i) => {
+    // a big square lying on this plane, cut down by every other plane
+    const up = Math.abs(ny) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+    let e1 = [ny * up[2] - nz * up[1], nz * up[0] - nx * up[2], nx * up[1] - ny * up[0]];
+    const L = Math.hypot(...e1);
+    e1 = e1.map((v) => (v / L) * BIG);
+    const e2 = [ny * e1[2] - nz * e1[1], nz * e1[0] - nx * e1[2], nx * e1[1] - ny * e1[0]], c = [nx * d, ny * d, nz * d];
+    let pts = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([s, t]) => [c[0] + e1[0] * s + e2[0] * t, c[1] + e1[1] * s + e2[1] * t, c[2] + e1[2] * s + e2[2] * t]);
+    for (let j = 0; j < planes.length && pts.length; j++) if (j !== i) pts = clipPoly(pts, planes[j], planes[j][3]);
+    if (pts.length >= 3) faces.push({ pts, n: [nx, ny, nz], i });
+  });
+  return faces;
+}
+
+/** A rotation matrix (row major, 9 numbers) of ang about the axis (ax, ay, az). */
+export function rotAxis(ax, ay, az, ang) {
+  const L = Math.hypot(ax, ay, az) || 1, x = ax / L, y = ay / L, z = az / L, c = Math.cos(ang), s = Math.sin(ang), k = 1 - c;
+  return [c + x * x * k, x * y * k - z * s, x * z * k + y * s, y * x * k + z * s, c + y * y * k, y * z * k - x * s, z * x * k - y * s, z * y * k + x * s, c + z * z * k];
+}
+/** Point v turned by M about c, then moved by (dx, dy, dz). */
+export function turnPt(M, c, v, dx = 0, dy = 0, dz = 0) {
+  const x = v[0] - c[0], y = v[1] - c[1], z = v[2] - c[2];
+  return [c[0] + M[0] * x + M[1] * y + M[2] * z + dx, c[1] + M[3] * x + M[4] * y + M[5] * z + dy, c[2] + M[6] * x + M[7] * y + M[8] * z + dz];
+}
+
+/** glint() as a billboard at a point in space, brought a little forward so it is never cut by what it sits on. */
+export function glint3(q, x, y, z, L, ang, c1, c2, a = 1) {
+  if (L < 0.8 || a <= 0) return;
+  q.at(x, y, z, (pp, k) => {
+    pp.z -= 3 + L * 0.4;
+    glint(pp, 0, 0, L * k, ang, c1, c2, a);
+  });
+}

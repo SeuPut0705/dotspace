@@ -1,4 +1,4 @@
-import { chain, READY } from "../../core/index.js";
+import { chain, in3d, READY } from "../../core/index.js";
 import * as slam from "../impacts/ground-slam.js";
 
 const LAND = 0.62, TX = 80;
@@ -47,3 +47,8 @@ export const act = {
 };
 
 export const create = chain([{ fx: slam, t: LAND }]);
+
+export const three = {
+  meta: { size: [278, 205], origin: [139, 154], camera: { pitch: 0.3 } },
+  create: chain([{ fx: in3d(slam), t: LAND }]),
+};

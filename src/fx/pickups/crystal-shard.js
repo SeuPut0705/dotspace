@@ -1,8 +1,8 @@
 // The crystal shading (a lit ridge, bright faces turned to the light, a dark rim) and the orbiting motes
 // follow Sprite Fusion's open-source ice crystals and pickup (https://www.spritefusion.com/pixel-art-vfx/ice),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { fit, clamp, rand, TAU, WHITE } from "../../core/index.js";
-import { Layer, drawGem, glint, blobShadow, pool } from "./_lib.js";
+import { fit, clamp, rand, space, TAU, WHITE } from "../../core/index.js";
+import { Layer, drawGem, glint, blobShadow, pool, prism, trace, convexHit, gemTone, gemEdges, rotY, rotX, rotZ, matMul, glint3, floorShadow, floorPool } from "./_lib.js";
 
 export const meta = {
   name: "Crystal shard",
@@ -126,3 +126,89 @@ export function draw(p, t, o) {
     p.glow(x + 0.5, yy + 0.5, 3, C[5], 0.35 * k);
   }
 }
+
+// The same broken shard as a solid, turning slowly on its vertical axis: the fracture, the chips and the lopsided point
+// all come round, light climbs cracks that run over its whole surface, and the splinters are small tumbling crystals
+// on a true circle round it.
+const wrap = (a) => a - TAU * Math.round(a / TAU);
+// the point on the body's surface at azimuth az and height h (y up, the shard's own frame): where a ray out of the axis leaves it
+const surface = (az, h) => {
+  let lo = 0, hi = 14;
+  const c = Math.cos(az), s = Math.sin(az);
+  for (let i = 0; i < 16; i++) {
+    const r = (lo + hi) / 2;
+    if (SOLID.planes.every((q) => q.n[0] * c * r + q.n[1] * h + q.n[2] * s * r <= q.d + 1e-6)) lo = r;
+    else hi = r;
+  }
+  return lo;
+};
+// the cracks as paths over the surface, in (azimuth, height), on the side the 2D shard shows and again round its back
+const PATHS = (() => {
+  const one = CRACKS.map((cr) => cr.map((pt) => { const [x, y, z] = roll(pt); return [Math.atan2(z, x), y]; }));
+  return [...one, ...one.map((cr) => cr.map(([a, h]) => [a + 2.9, h * 0.9 - 0.6]))];
+})();
+const crackAt = (az, h) => {
+  let best = 9;
+  for (const cr of PATHS)
+    for (let i = 1; i < cr.length; i++) {
+      const [a0, h0] = cr[i - 1], [a1, h1] = cr[i], bx = wrap(a1 - a0) * 4.8, by = h1 - h0, px = wrap(az - a0) * 4.8, py = h - h0;
+      const u = clamp((px * bx + py * by) / (bx * bx + by * by || 1)), d = Math.hypot(px - bx * u, py - by * u);
+      if (d < best) best = d;
+    }
+  return best;
+};
+const SPLINTER = prism({ r: 1.1, half: 1.3, top: 2.8, bottom: 2.2, n: 4 });
+export const three = {
+  meta: { size: [72, 92], origin: [36, 74], camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const q = space(p, o), C = fit(o.palette, 8), ph = t / meta.duration, { y } = pose(ph), s0 = climb(ph), spin = 0.3 + ph * TAU, M = rotY(spin);
+    floorShadow(q, 0, 0, 6, 0.75);
+    floorPool(q, 0, 0, 20, C[4], 0.3);
+    q.glow(0, y, 0, 22, C[4], 0.22);
+    // the splinters circle on a ring tilted a little off flat
+    const TL = 0.28, ring = (i) => ph * TAU + (i * TAU) / 3, spl = (i) => { const a = ring(i); return [Math.cos(a) * RX, y + 1 + Math.sin(a) * RX * Math.sin(TL), Math.sin(a) * RX * Math.cos(TL)]; };
+    let hot = null, hotV = -9;
+    trace(q, 0, y, 0, 21, convexHit(SOLID, M), (h) => {
+      const yup = -h.oy, a = Math.atan2(h.oz, h.ox);
+      // a crack: light runs up it, brightest where the pulse is
+      if (crackAt(a, yup) < 0.62) {
+        const b = 0.3 + Math.exp(-((((yup + 9) / 22 - s0) / 0.14) ** 2));
+        return b > 0.9 ? WHITE : b > 0.55 ? C[6] : C[5];
+      }
+      // the sheared face, for the flare
+      if (h.kind === 9) {
+        const v = h.nx * h.L[0] + h.ny * h.L[1] + h.nz * h.L[2];
+        if (v > hotV) (hotV = v), (hot = [h.x, h.y, h.z]);
+      }
+      return gemTone(h, C, 0.6);
+    }, { ink: C[0], edge: gemEdges(C) });
+    // lit from within, brighter while the pulse is inside it
+    const inside = Math.exp(-(((s0 - 0.45) / 0.45) ** 2));
+    q.glow(0, y, 0, 10, C[5], 0.2 * inside);
+    for (let i = 0; i < 3; i++) {
+      const [x, yy, z] = spl(i), a = ring(i), near = (Math.sin(a) * Math.cos(TL) + 1) / 2;
+      const Ms = matMul(rotY(a * 2 + i * 1.7), rotZ(1.1 + i * 0.5));
+      trace(q, x, yy, z, 6, convexHit(SPLINTER, Ms, 1 + 0.5 * near), (h) => {
+        const l = h.nx * h.L[0] + h.ny * h.L[1] + h.nz * h.L[2];
+        return l > 0.9 ? WHITE : l > 0.45 ? C[6] : l > 0 ? C[5] : l > -0.4 ? C[4] : C[3];
+      }, { ink: C[0] });
+      q.glow(x, yy, z, 6 + 3 * near, C[5], 0.2 + 0.14 * near);
+      if (near > 0.96) glint3(q, x - 1, yy - 1, z + 2, (2.5 * (near - 0.96)) / 0.04, WHITE, 0.4);
+    }
+    // when the pulse reaches the break it flares out of the sheared face and throws up embers
+    const out = clamp(1 - Math.abs(s0 - 1.05) / 0.18);
+    const fp = hot ?? [0, 0, 0];
+    if (out > 0 && hot) glint3(q, fp[0], y + fp[1], fp[2], 3.5 * out, WHITE, 0.55 * out), q.glow(fp[0], y + fp[1], fp[2], 12, C[5], 0.4 * out);
+    // the flare point in the world: the sheared face's own spot, turned with the shard
+    const sp = [1.8, 8.4, 0.9], [rx, ry, rz] = roll(sp), fx = M[0] * rx + M[2] * rz, fy = -ry, fz = M[6] * rx + M[8] * rz;
+    const P2 = meta.duration / 2, burst = ((1.05 + 0.3) / 1.7) * P2;
+    for (let i = 0; i < 7; i++) {
+      const born = burst + rand(i, o.seed, 1) * 0.12, at = (((t - born) % P2) + P2) % P2, life = 0.6 + rand(i, o.seed, 2) * 0.45;
+      if (at > life) continue;
+      const k = 1 - at / life, an = rand(i, o.seed, 6) * TAU, wob = Math.sin(at * 5 + i) * 2 * (at / life);
+      const x = fx + (rand(i, o.seed, 3) - 0.5) * 4 + Math.cos(an) * wob, yy = y + fy - at * (14 + rand(i, o.seed, 4) * 14), z = fz + Math.sin(an) * wob;
+      q.px(x, yy, z, k > 0.6 ? WHITE : k > 0.3 ? C[6] : C[5]);
+      q.glow(x, yy, z, 3, C[5], 0.35 * k);
+    }
+  },
+};

@@ -2,7 +2,7 @@
 // beating wings and a lantern that throws a big soft light, grass blades swaying underneath) is adapted from
 // Sprite Fusion's open-source fireflies (https://www.spritefusion.com/pixel-art-vfx/fireflies), MIT License,
 // Copyright (c) 2026 Hugo Duprez.
-import { fit, clamp, rand, mix, TAU, WHITE, loopNoise } from "../../core/index.js";
+import { fit, clamp, smooth, rand, mix, space, TAU, WHITE, loopNoise } from "../../core/index.js";
 import { clip, rows } from "./_lib.js";
 
 export const meta = {
@@ -122,4 +122,127 @@ function grass(q, t, S, G, C, flies, front) {
       q.px(sx + 1, sy, G[4]);
     }
   }
+}
+
+// ---- the 3D variant: a meadow disc with real grass standing on it, fireflies wandering in a volume above it on
+// paths with a depth of their own (the same glow rhythms), and a pool of light on the ground under each lit one.
+const MR = 100, NF = 36;
+
+// a firefly's place in the volume at time tt: whole cycles a loop, wandering in x, y and z
+function pos3(f, i, tt) {
+  const R = f.R, k = [0.5, 0.8, 1][f.depth], a0 = R(1) * TAU, rr = 62 * Math.sqrt(R(2)), ay = (8 + R(4) * 14) * k;
+  const n1 = 1 + Math.floor(R(5) * 2), n2 = 1 + Math.floor(R(6) * 3), n3 = 1 + Math.floor(R(14) * 2), ax = (14 + R(3) * 26) * k, az = (14 + R(12) * 26) * k;
+  const cy = -(ay + 6 * k + 6 + R(13) * (f.depth === 2 ? 26 : 44));
+  return [
+    Math.cos(a0) * rr + ax * Math.sin(cyc(tt, n1, R(7) * TAU)) + 10 * k * loopNoise(tt / D, 1.5, i * 3),
+    cy + ay * Math.sin(cyc(tt, n2, R(8) * TAU)) + 6 * k * loopNoise(tt / D, 1.5, i * 3 + 1),
+    Math.sin(a0) * rr + az * Math.sin(cyc(tt, n3, R(15) * TAU)) + 10 * k * loopNoise(tt / D, 1.5, i * 3 + 2),
+  ];
+}
+
+export const three = {
+  meta: { size: [232, 150], origin: [116, 112], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+    const q = space(p, o), S = o.seed, C = fit(o.palette, 6), G = fit(o.grass, 6);
+    const flies = Array.from({ length: NF }, (_, i) => {
+      const f = fly(S, i, t), pos = pos3(f, i, t), edge = 1 - smooth(82, 102, Math.hypot(pos[0], pos[2]));
+      return { ...f, i, pos, g: f.glow * edge };
+    });
+    // the ground: a dark meadow floor that thins out at the rim, a pool of light under each lit fly
+    q.plane(0, 0, 0, null, MR, (u, v, out) => {
+      const d = Math.hypot(u, v);
+      out.c = (Math.floor(u) + Math.floor(v)) & 1 ? G[1] : G[0];
+      out.a = 0.78 * (1 - smooth(70, MR, d));
+      out.blend = true;
+    });
+    for (const f of flies) {
+      if (f.g < 0.05) continue;
+      const [x, y, z] = f.pos, rp = [16, 22, 32][f.depth], K = (0.95 * f.g) / (1 + -y / 30);
+      q.plane(x, 0, z, null, rp, (u, v, out) => {
+        const e = 1 - Math.hypot(u, v) / rp;
+        if (e <= 0) return;
+        out.l = C[2];
+        out.k = e * e * K;
+      });
+    }
+    grass3(q, t, S, G, C, flies);
+    // the flies, far to near (the glints and wings are solid, the light after them)
+    const sorted = q.sort(flies, (f) => f.pos);
+    for (const f of sorted) if (f.g >= 0.08) firefly3(q, t, f, C);
+    for (const f of sorted) if (f.g >= 0.08) light3(q, f, C);
+  },
+};
+
+// the grass: blades standing on the meadow, swaying as the breeze rolls across; tips near a lit fly catch its light
+function grass3(q, t, S, G, C, flies) {
+  const lit = flies.filter((f) => f.g > 0.25 && f.depth > 0), p = q.p;
+  for (let i = 0; i < 380; i++) {
+    const R = (n) => rand(S * 3, i, n), a = R(1) * TAU, rr = (MR - 4) * Math.sqrt(R(9)), x = Math.cos(a) * rr, z = Math.sin(a) * rr;
+    const h = 4 + R(2) * 10 + (R(3) < 0.1 ? 6 : 0), edge = 1 - smooth(76, MR - 4, rr), tone = 1 + Math.floor(R(7) * 3);
+    const sway = (1.2 + R(5)) * Math.sin(cyc(t, 2, -(x + z) * 0.03) + R(6)) + 0.6 * Math.sin(cyc(t, 5, (x - z) * 0.07));
+    let tip = 0;
+    for (const f of lit) {
+      const d = Math.hypot(f.pos[0] - (x + sway), f.pos[1] + h, f.pos[2] - z);
+      if (d < 30) tip = Math.max(tip, f.g * (1 - d / 30));
+    }
+    if (!q.project(x, 0, z)) continue;
+    const bx = q.x, by = q.y, z0 = p.z, n = Math.ceil(h * q.cp), kx = q.cy;
+    p.z = q.d - 0.5;
+    for (let r = 0; r < n; r++) {
+      const u = r / n, c = u > 0.8 && tip > 0.2 ? (tip > 0.55 && u > 0.9 ? C[3] : C[2]) : u > 0.7 ? G[Math.min(5, tone + 1)] : G[tone];
+      p.dot(bx + sway * u * u * kx, by - r, c, edge);
+    }
+    if (R(8) < 0.07 && edge > 0.5) {
+      const sx = bx + sway * kx, sy = by - n;
+      p.px(sx, sy - 1, tip > 0.2 ? C[3] : G[5]);
+      p.px(sx - 1, sy, G[4]);
+      p.px(sx + 1, sy, G[4]);
+    }
+    p.z = z0;
+  }
+}
+
+// one firefly's body: a point with a trail of where it just was; the close ones a dark body, wings and a lantern
+function firefly3(q, t, f, C) {
+  const [x, y, z] = f.pos, g = f.g;
+  if (f.depth === 0) {
+    q.at(x, y, z, (pp) => pp.dot(0, 0, g > 0.6 ? C[4] : C[3], Math.min(1, g * 1.6)));
+    return;
+  }
+  if (g > 0.3)
+    for (let j = 1; j <= 4; j++) {
+      const [tx, ty, tz] = pos3(f, f.i, t - j * 0.05);
+      q.dot(tx, ty, tz, C[2], (g - 0.3) * (1 - j / 5) * 1.3);
+    }
+  if (f.depth === 1) {
+    q.at(x, y, z, (pp) => {
+      pp.px(0, 0, g > 0.5 ? C[5] : g > 0.15 ? C[3] : C[1]);
+      if (g > 0.4) pp.px(0, 1, C[2]);
+    });
+    return;
+  }
+  const [nx, , nz] = pos3(f, f.i, t + 0.05), dir = (nx - x) * q.cy - (nz - z) * q.sy >= 0 ? 1 : -1, beat = Math.floor(t * 30) % 2;
+  q.at(x, y, z, (pp) => {
+    pp.px(dir, 0, C[0]);
+    pp.px(dir * 2, 0, C[0]);
+    pp.dot(0, -1 - beat, mix(C[1], WHITE, 0.4), 0.7);
+    pp.dot(dir, -1 - beat, mix(C[1], WHITE, 0.4), 0.7);
+    pp.px(0, 0, g > 0.3 ? C[5] : C[1]);
+    pp.px(-dir, 0, g > 0.5 ? C[4] : g > 0.15 ? C[3] : C[1]);
+    if (g > 0.6) pp.px(-dir, 1, C[3]);
+    if (g > 0.7) for (const [dx, dy] of [[0, -2], [0, 2], [-2, 0], [2, 0]]) pp.dot(-dir + dx, dy, C[3], (g - 0.7) * 3);
+  });
+}
+
+// the light a firefly throws, in layers, over the grass and the others near it
+function light3(q, f, C) {
+  const [x, y, z] = f.pos, g = f.g, k = f.depth;
+  if (k === 0) return q.glow(x, y, z, 6, C[2], 0.45 * g);
+  if (k === 1) {
+    q.glow(x, y, z, 9, C[2], 0.5 * g);
+    return q.glow(x, y, z, 3, C[4], 0.5 * g);
+  }
+  q.glow(x, y, z, 28, C[2], 0.45 * g);
+  q.glow(x, y, z, 10, C[4], 0.5 * g);
+  q.glow(x, y, z, 4, C[5], 0.5 * g);
 }

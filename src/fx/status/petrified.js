@@ -1,8 +1,8 @@
 // The creeping front, the branching cracks and the burst of the body into chunks, grit and dust are
 // adapted from Sprite Fusion's open-source ice freeze and shatter (https://www.spritefusion.com/pixel-art-vfx/ice),
 // MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Bits, Lights, P, B, Rng, fit, rand, clamp, luma, smooth, tileFbm, TAU, WHITE, READY } from "../../core/index.js";
-import { shape, colorAt } from "./_lib.js";
+import { Particles, Bits, Lights, P, B, Rng, fit, rand, clamp, luma, smooth, ease, space, tileFbm, TAU, WHITE, READY } from "../../core/index.js";
+import { shape, colorAt, onSprite } from "./_lib.js";
 
 export const meta = {
   name: "Petrified",
@@ -33,11 +33,9 @@ export const actorAlpha = (t) => (t < CREEP ? 1 : 0);
 // how far up the stone has crept (0 at the feet, past 1 over the head), stuttering as it climbs
 const level = (t) => (t >= CREEP ? 1.2 : 1.2 * smooth(0, CREEP, t) + 0.025 * Math.sin((t / CREEP) * TAU * 3));
 
-export function create(o) {
-  const C = fit(o.palette, 8), a = o.actor, S = shape(a), H = S.h, R = new Rng(o.seed), floor = () => 0;
-  const ps = new Particles({ rng: R, ground: floor, sparks: [C[7], C[6], C[5], C[4]] });
-  const bits = new Bits({ ground: floor }), lights = new Lights();
-  const front = (mx) => level(t) + 0.06 * tileFbm(mx * 0.4, 0.5, 0, 0, o.seed, 2);
+// the statue, worked out once from the stand-in's shape: each pixel's stone, and the cracks that will run through it
+function statue(o, R) {
+  const C = fit(o.palette, 8), a = o.actor, S = shape(a), H = S.h;
   // each pixel's stone: its own shading walked down a grey ramp, grained, lit on the top left
   const stone = S.body.map(([x, y]) => {
     const tone = clamp((luma(colorAt(a, x, y)) - 0.06) / 0.78), mottle = tileFbm(x * 0.32, y * 0.32, 0, 0, o.seed + 5, 2);
@@ -61,6 +59,50 @@ export function create(o) {
     cracks.push(pts);
   };
   for (let i = 0; i < 7; i++) walk(ox, oy, (i / 7) * TAU + R.range(-0.3, 0.3), 14);
+  return { C, a, S, H, stone, cracks, ox, oy, seed: o.seed };
+}
+
+// the creeping edge of the stone at column mx and time t
+const frontAt = (st, t, mx) => level(t) + 0.06 * tileFbm(mx * 0.4, 0.5, 0, 0, st.seed, 2);
+
+// the statue itself, painted on the sprite's plane: grey creeping up behind a crackling edge, then cracks and the shudder
+function paintStatue(p, st, t) {
+  const { C, a, S, H, stone, cracks, ox, oy } = st;
+  if (t >= SHATTER) return;
+  // the shudder before it breaks
+  const sh = t >= CRACK ? Math.round(Math.sin(t * 90) * Math.min(1, (t - CRACK) / (SHATTER - CRACK)) * 1.2) : 0;
+  const white = t > SHATTER - 0.035;
+  for (const q of stone) {
+    const f = frontAt(st, t, q.x), d = f - q.up;
+    if (d < 0) continue;
+    const x = a.x + q.x + sh, y = a.y + q.y;
+    // the crackling edge: bright, flickering
+    if (d < 0.035 && t < CREEP) p.px(x, y, rand(q.x, q.y, Math.floor(t * 24)) < 0.5 ? C[7] : C[6]);
+    else if (d < 0.07 && t < CREEP) p.px(x, y, C[5]);
+    else p.px(x, y, white ? WHITE : q.c);
+  }
+  if (t < CREEP) for (let mx = 0; mx < S.w; mx += 2) {
+    const my = Math.floor((1 - frontAt(st, t, mx)) * H);
+    if (S.on(mx, my)) p.glow(a.x + mx, a.y + my, 5, C[6], 0.18);
+  }
+  // the cracks running through it, fresh tips white
+  if (t >= CRACK) {
+    const k = clamp((t - CRACK) / 0.3);
+    for (const pts of cracks)
+      for (let i = 0, n = Math.floor(pts.length * k); i < n; i++) {
+        const [x, y] = pts[i], px = Math.floor(a.x + x) + sh, py = Math.floor(a.y + y), fresh = i > n - 3;
+        p.px(px, py, fresh ? WHITE : C[0]);
+        if (!fresh) p.px(px, py - 1, C[6]);
+      }
+    p.glow(a.x + ox, a.y + oy, 12, C[6], 0.25 * k);
+  }
+}
+
+export function create(o) {
+  const R = new Rng(o.seed), floor = () => 0, st = statue(o, R), { C, a, S, H, stone, cracks, ox, oy } = st;
+  const ps = new Particles({ rng: R, ground: floor, sparks: [C[7], C[6], C[5], C[4]] });
+  const bits = new Bits({ ground: floor }), lights = new Lights();
+  const front = (mx) => frontAt(st, t, mx);
   let t = 0, broke = false, settled = false;
 
   return {
@@ -135,38 +177,149 @@ export function create(o) {
       ps.draw(p, "back");
     },
     draw(p) {
-      if (t < SHATTER) {
-        // the shudder before it breaks
-        const sh = t >= CRACK ? Math.round(Math.sin(t * 90) * Math.min(1, (t - CRACK) / (SHATTER - CRACK)) * 1.2) : 0;
-        const white = t > SHATTER - 0.035;
-        for (const q of stone) {
-          const f = front(q.x), d = f - q.up;
-          if (d < 0) continue;
-          const x = a.x + q.x + sh, y = a.y + q.y;
-          // the crackling edge: bright, flickering
-          if (d < 0.035 && t < CREEP) p.px(x, y, rand(q.x, q.y, Math.floor(t * 24)) < 0.5 ? C[7] : C[6]);
-          else if (d < 0.07 && t < CREEP) p.px(x, y, C[5]);
-          else p.px(x, y, white ? WHITE : q.c);
-        }
-        if (t < CREEP) for (let mx = 0; mx < S.w; mx += 2) {
-          const my = Math.floor((1 - front(mx)) * H);
-          if (S.on(mx, my)) p.glow(a.x + mx, a.y + my, 5, C[6], 0.18);
-        }
-        // the cracks running through it, fresh tips white
-        if (t >= CRACK) {
-          const k = clamp((t - CRACK) / 0.3);
-          for (const pts of cracks)
-            for (let i = 0, n = Math.floor(pts.length * k); i < n; i++) {
-              const [x, y] = pts[i], px = Math.floor(a.x + x) + sh, py = Math.floor(a.y + y), fresh = i > n - 3;
-              p.px(px, py, fresh ? WHITE : C[0]);
-              if (!fresh) p.px(px, py - 1, C[6]);
-            }
-          p.glow(a.x + ox, a.y + oy, 12, C[6], 0.25 * k);
-        }
-      }
+      paintStatue(p, st, t);
       bits.draw(p);
       ps.draw(p, "front");
       lights.draw(p);
     },
   };
 }
+
+// 3D: the statue is painted on the sprite as in 2D; everything it throws off has a real position. The creeping edge
+// spits grit in every direction, a ring of dust rolls out over the floor when it bursts, chunks, shards and grit fly out
+// in a full circle and bounce on the floor, and cold light pools under it.
+function create3(o) {
+  const R = new Rng(o.seed), floor = () => 0, st = statue(o, R), { C, a, S, H, stone, cracks, ox, oy } = st;
+  const ps = new Particles({ rng: R, ground: floor, sparks: [C[7], C[6], C[5], C[4]] });
+  const bits = new Bits({ ground: floor }), lights = new Lights();
+  // a point on the sprite (screen offset sx, 2D height y) in the world, for the camera as it is now
+  const at = (sx, y, dz = 0) => {
+    const c = o.camera ?? {}, yaw = c.yaw ?? 0;
+    return onSprite({ cy: Math.cos(yaw), sy: Math.sin(yaw), cp: Math.cos(c.pitch ?? 0.3) }, sx, y, dz);
+  };
+  const front = (mx) => frontAt(st, t, mx);
+  let t = 0, broke = false, settled = false;
+
+  return {
+    update(dt) {
+      t += dt;
+      // the creeping edge spits grit and dust and the odd spark, every way round
+      if (t < CREEP) {
+        const rate = 60 * dt;
+        for (let n = 0; n < rate; n++) {
+          if (!R.chance(0.5)) continue;
+          const [mx, my] = S.body[R.int(0, S.body.length - 1)];
+          if (Math.abs(1 - (my + 0.5) / H - front(mx)) > 0.04) continue;
+          const [x, y, z] = at(a.x + mx + 0.5, a.y + my, R.range(-1.5, 1.5)), g = R.range(0, TAU), cg = Math.cos(g), sg = Math.sin(g);
+          let sp = R.range(15, 60);
+          ps.spawn3(P.GRIT, x, y, z, cg * sp, -R.range(30, 90), sg * sp, R.range(0.6, 1.1), R.pick([C[4], C[5], C[6]]), R.chance(0.3) ? 2 : 1);
+          if (R.chance(0.3)) {
+            sp = R.range(10, 30);
+            ps.spawn3(P.DUST, x + cg * 2, y, z + sg * 2, cg * sp, -R.range(4, 14), sg * sp, R.range(0.4, 0.7), C[4], R.range(1.5, 2.6));
+          }
+          if (R.chance(0.25)) {
+            sp = R.range(40, 90);
+            ps.spawn3(P.MOTE, x, y, z, cg * sp, -R.range(20, 70), sg * sp, R.range(0.15, 0.3), C[7], 0.5);
+          }
+        }
+      }
+      if (!settled && t >= CREEP) {
+        settled = true;
+        lights.add(0, at(0, a.y + H * 0.5)[1], 34, C[6], 0.35, 0.3);
+        // the dust of it settling rolls off along the floor in a ring
+        for (let i = 0; i < 12; i++) {
+          const g = (i / 12) * TAU + R.range(-0.2, 0.2), sp = R.range(60, 100);
+          ps.spawn3(P.DUST, Math.cos(g) * 6, -R.range(0, 2), Math.sin(g) * 6, Math.cos(g) * sp, -R.range(2, 10), Math.sin(g) * sp, R.range(0.6, 1), C[3], R.range(2, 3.5));
+        }
+      }
+      // while it holds a pebble or two drops off
+      if (t > CREEP + 0.2 && t < SHATTER && R.chance(1.6 * dt)) {
+        const [mx, my] = S.body[R.int(0, S.body.length - 1)];
+        if (!S.on(mx, my + 1)) {
+          const [x, y, z] = at(a.x + mx + 0.5, a.y + my + 1, R.range(-1, 1));
+          ps.spawn3(P.GRIT, x, y, z, R.range(-8, 8), 0, R.range(-8, 8), R.range(0.8, 1.2), C[3], 1);
+        }
+      }
+      // the cracks pop chips off as they run
+      if (t >= CRACK && t < SHATTER && R.chance(12 * dt)) {
+        const pts = R.pick(cracks), [cx, cy] = pts[Math.floor(R.next() * pts.length)], [x, y, z] = at(a.x + cx, a.y + cy, 1), g = R.range(0, TAU), sp = R.range(5, 40);
+        ps.spawn3(P.GRIT, x, y, z, Math.cos(g) * sp, -R.range(30, 80), Math.sin(g) * sp, R.range(0.5, 0.9), R.pick([C[5], C[6]]), 1);
+      }
+      if (!broke && t >= SHATTER) {
+        broke = true;
+        const [, by] = at(0, a.y + oy);
+        lights.add(0, by, 46, C[6], 0.7, 0.5);
+        lights.add(0, by, 30, WHITE, 0.7, 0.12);
+        // the statue bursts: chunks tumble out all round, grit sprays, dust rolls out along the floor
+        const cx = a.x + ox, cy = a.y + oy;
+        for (let i = 0; i < 20; i++) {
+          const q = stone[R.int(0, stone.length - 1)], x = a.x + q.x + 0.5, y = a.y + q.y + 0.5, dy = y - cy, d = Math.hypot(x - cx, dy) || 1, sp = R.range(35, 110);
+          const g = (i / 20) * TAU + R.range(-0.2, 0.2), [wx, wy, wz] = at(x, y, 1);
+          bits.add({ kind: B.CHUNK, x: wx, y: wy, z: wz, vx: Math.cos(g) * sp, vz: Math.sin(g) * sp, vy: (dy / d) * sp * 0.6 - R.range(60, 160), g: 1, drag: 0.4, bounce: 0.3, life: R.range(1.1, 1.5), a: R.range(0, TAU), va: R.range(-14, 14), s: R.range(1.3, 2.8), ramp: [C[0], C[2], C[3], C[5], C[6]] });
+        }
+        for (const q of stone) {
+          if (rand(q.x, q.y, 9) > 0.22) continue;
+          const x = a.x + q.x + 0.5, y = a.y + q.y + 0.5, dy = y - cy, d = Math.hypot(x - cx, dy) || 1, sp = R.range(40, 130), g = R.range(0, TAU), [wx, wy, wz] = at(x, y, R.range(-1, 1));
+          ps.spawn3(P.GRIT, wx, wy, wz, Math.cos(g) * sp, (dy / d) * sp * 0.6 - R.range(40, 140), Math.sin(g) * sp, R.range(0.9, 1.4), q.c, R.chance(0.35) ? 2 : 1);
+        }
+        // pale flakes of the skin of it, tumbling, and glints in the dust
+        for (let i = 0; i < 16; i++) {
+          const an = R.range(-1.4, 1.4), sp = R.range(50, 120), g = R.range(0, TAU), [wx, wy, wz] = at(cx + R.range(-5, 5), cy + R.range(-8, 8), R.range(-2, 2));
+          bits.add({ kind: B.SHARD, x: wx, y: wy, z: wz, vx: Math.cos(g) * Math.abs(Math.sin(an)) * sp, vz: Math.sin(g) * Math.abs(Math.sin(an)) * sp, vy: -Math.cos(an) * sp, g: 0.8, drag: 0.6, bounce: 0.3, life: R.range(0.9, 1.4), a: R.range(0, TAU), va: R.range(-18, 18), s: R.range(1.5, 3), c: R.pick([C[5], C[6], C[7]]) });
+        }
+        for (let i = 0; i < 6; i++) {
+          const [wx, wy, wz] = at(cx + R.range(-12, 12), cy + R.range(-10, 14), R.range(-6, 6));
+          ps.spawn3(P.STAR, wx, wy, wz, R.range(-10, 10), -R.range(5, 20), R.range(-10, 10), R.range(0.4, 0.9), C[6], R.range(1, 2.2), R.range(0.05, 0.4));
+        }
+        // the dust ring: puffs on a true circle rolling out over the floor, with smoke behind it
+        for (let i = 0; i < 24; i++) {
+          const g = (i / 24) * TAU + R.range(-0.12, 0.12), sp = R.range(110, 160);
+          ps.spawn3(P.DUST, Math.cos(g) * 7, -R.range(0.5, 2), Math.sin(g) * 7, Math.cos(g) * sp, -R.range(2, 8), Math.sin(g) * sp, R.range(0.7, 1.1), R.chance(0.5) ? C[3] : C[4], R.range(2.5, 4), R.range(0, 0.06));
+        }
+        for (let i = 0; i < 12; i++) {
+          const g = (i / 12) * TAU + R.range(-0.2, 0.2), sp = R.range(20, 60);
+          ps.spawn3(P.SMOKE, Math.cos(g) * R.range(0, 8), -R.range(1, 6), Math.sin(g) * R.range(0, 8), Math.cos(g) * sp, -R.range(4, 16), Math.sin(g) * sp, R.range(0.9, 1.4), C[4], R.range(2.4, 4), R.range(0, 0.08), 0);
+        }
+        for (let i = 0; i < 6; i++) {
+          const g = R.range(0, TAU), sp = R.range(5, 25), [wx, wy, wz] = at(R.range(-6, 6), a.y + H * R.range(0.3, 0.8), R.range(-3, 3));
+          ps.spawn3(P.SMOKE, wx, wy, wz, Math.cos(g) * sp, -R.range(10, 30), Math.sin(g) * sp, R.range(1, 1.5), C[3], R.range(3, 4.5), R.range(0, 0.1), 0);
+        }
+      }
+      bits.update(dt);
+      // chunks that hit hard kick up a little dust
+      for (const b of bits.list)
+        if (b.rest && !b.dusted) {
+          b.dusted = true;
+          ps.spawn3(P.DUST, b.x, -0.5, b.z, R.range(-20, 20), -R.range(2, 10), R.range(-20, 20), R.range(0.3, 0.6), C[3], R.range(1.2, 2.2));
+        }
+      ps.update(dt);
+      lights.update(dt);
+    },
+    draw(p) {
+      const q = space(p, o);
+      paintStatue(p, st, t);
+      // cold light pooling on the floor under the stone, flaring when it bursts
+      const pool = t >= SHATTER ? 0.5 * Math.exp(-(t - SHATTER) / 0.3) : (0.08 + 0.12 * smooth(0, CREEP, t)) * smooth(0, 0.25, t);
+      if (pool > 0.01)
+        q.plane(0, 0, 0, null, 42, (u, v, out) => {
+          const f = 1 - Math.hypot(u, v) / 42;
+          if (f <= 0) return;
+          out.l = C[5];
+          out.k = f * f * pool;
+        });
+      // the shock of the burst running out over the floor
+      if (t >= SHATTER && t < SHATTER + 0.6) {
+        const k = (t - SHATTER) / 0.6;
+        q.ring(0, 0, 0, 6 + 38 * ease.outCubic(k), 1 + 3 * (1 - k), k < 0.2 ? C[7] : C[5], (1 - k) * 0.6);
+      }
+      bits.draw(q);
+      ps.draw(q);
+      lights.draw(q);
+    },
+  };
+}
+
+export const three = {
+  meta: { size: [140, 104], origin: [70, 80], bg: "ground", camera: { pitch: 0.3 } },
+  create: create3,
+};

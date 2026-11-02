@@ -1,7 +1,7 @@
 // The motes drifting in the light and the glints follow Sprite Fusion's open-source holy-light and sparkle
 // (https://www.spritefusion.com/pixel-art-vfx/sparkle), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Lights, P, Rng, fit, hex, clamp, smooth, ease, TAU, WHITE } from "../../core/index.js";
-import { W, H, screenMeta, clipTo, glint, rect } from "./_lib.js";
+import { Particles, Lights, P, Rng, fit, hex, clamp, smooth, ease, space, TAU, WHITE } from "../../core/index.js";
+import { W, H, screenMeta, clipTo, glint, glint3, rect } from "./_lib.js";
 
 export const meta = screenMeta({
   name: "Iris",
@@ -119,3 +119,121 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the iris as a lamp house standing in the room. A floor plate and a canopy plate, both ink, close their round
+// holes together on a shaft of light where dust drifts; they snap shut on a glint (a ball of light between them),
+// then pop open from a flash that throws sparks every way, rims white-hot.
+export const three = {
+  meta: { size: [176, 152], origin: [88, 118], bg: "ground", camera: { pitch: 0.34 } },
+  create(o) {
+    const C = fit(o.palette, 8), ink = hex(o.color), R = new Rng(o.seed);
+    const R3 = 74, HI = 62, RS3 = 10, RW3 = 3.2, GLO3 = 8, RMAX = R3 + RW3 + 1, MID = -HI / 2;
+    const ps = new Particles({ rng: R, ground: () => 0, sparks: [WHITE, C[6], C[5], C[4]] }), lights = new Lights();
+    const radius = (t) =>
+      t < CLOSE ? RS3 + (RMAX - RS3) * (1 - ease.inOutCubic(t / CLOSE))
+        : t < SNAP ? RS3 + Math.sin((t - CLOSE) * 22) * 0.4 * (1 - (t - CLOSE) / (SNAP - CLOSE))
+          : t < SHUT ? RS3 * (1 - ease.inCubic((t - SNAP) / (SHUT - SNAP)))
+            : t < POP ? 0 : RMAX * ease.outQuart(clamp((t - POP) / (OPEN - POP)));
+    let t = 0, shut = false, popped = false, prevR = RMAX;
+    const end = D - 0.05;
+    return {
+      update(dt) {
+        t += dt;
+        const r = radius(t);
+        // dust drifts up through the shaft while it holds
+        if (t > CLOSE - 0.25 && t < SNAP && R.chance(0.3)) {
+          const a = R.range(0, TAU), d = Math.sqrt(R.next()) * r * 0.9;
+          ps.spawn3(P.EMBER, Math.cos(a) * d, -R.range(3, HI - 4), Math.sin(a) * d, R.range(-5, 5), -R.range(3, 10), R.range(-5, 5), R.range(0.4, 0.8), 0, 1);
+        }
+        // the rims twinkle as they hold
+        if (t > CLOSE - 0.1 && t < SNAP && R.chance(0.35)) {
+          const a = R.range(0, TAU);
+          ps.spawn3(P.STAR, Math.cos(a) * (r + 1), R.chance(0.5) ? -0.5 : -HI + 0.5, Math.sin(a) * (r + 1), 0, 0, 0, R.range(0.2, 0.4), R.chance(0.5) ? WHITE : C[6], R.range(1, 2.2));
+        }
+        if (!shut && t >= SHUT) {
+          shut = true;
+          lights.add(0, MID, 40, C[5], 0.7, 0.3, 0);
+        }
+        if (!popped && t >= POP) {
+          // pop: a white flash between the plates, sparks thrown out of the opening every way round
+          popped = true;
+          lights.add(0, MID, 90, C[5], 0.7, 0.45, 0);
+          lights.add(0, MID, 36, WHITE, 0.9, 0.12, 0);
+          for (let i = 0; i < 44; i++) {
+            const a = R.range(0, TAU), el = Math.asin(R.range(-0.8, 0.8)), v = R.range(70, 190);
+            ps.spawn3(P.SPARK, Math.cos(a) * 2, MID, Math.sin(a) * 2, Math.cos(a) * Math.cos(el) * v, Math.sin(el) * v * 0.8 - 20, Math.sin(a) * Math.cos(el) * v, R.range(0.2, 0.5));
+          }
+        }
+        // as the rims race out they shed glinting motes that fly on and fade
+        if (t > POP && t < OPEN - 0.1) {
+          const vr = (r - prevR) / dt;
+          for (let k = 0; k < 2; k++) {
+            if (!R.chance(0.6)) continue;
+            const a = R.range(0, TAU), y = R.chance(0.5) ? -1 : -HI + 1;
+            if (r > R3) continue;
+            ps.spawn3(P.MOTE, Math.cos(a) * r, y, Math.sin(a) * r, Math.cos(a) * vr * 0.35, 0, Math.sin(a) * vr * 0.35, Math.min(R.range(0.2, 0.45), end - t), R.chance(0.5) ? C[6] : C[5], 0.7);
+          }
+        }
+        prevR = r;
+        ps.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), r = radius(t);
+        // the rim's heat: warm while it closes, white-hot as it pops, cooling as it opens
+        const hot = t >= POP ? 1 - smooth(POP, OPEN, t) : t < SNAP ? 0.45 + 0.25 * smooth(CLOSE - 0.2, CLOSE, t) : 0.7;
+        const rw = RW3 + (t >= POP ? 2 * hot : 0);
+        if (t < OPEN + 0.05) {
+          // the two plates: ink, a bevelled rim lit from the top left round the hole, a pale edge round the outside
+          for (const y of [-3, -HI])
+            q.plane(0, y, 0, null, R3 + RW3 + 2, (u, v, out) => {
+              const d = Math.hypot(u, v), e = r > 0 ? d - r : rw + 1;
+              if (e < 0) {
+                if (y === -3 && e > -GLO3) (out.l = C[5]), (out.k = (0.18 + 0.3 * hot) * (1 + e / GLO3) ** 2);
+                return;
+              }
+              if (e >= rw) {
+                if (d > R3) return;
+                return d > R3 - 1 ? C[2] : ink;
+              }
+              const k = e / rw, lit = 0.5 - (0.5 * (u * 0.7 + v * 0.7)) / (d + 0.01), h = hot * (0.55 + 0.6 * lit);
+              if (k < 0.5) (out.l = C[5]), (out.k = 0.45 * h * (1 - k * 2));
+              return k < 0.2 ? (h > 0.5 ? WHITE : h > 0.3 ? C[6] : C[5]) : k < 0.4 ? (h > 0.38 ? C[6] : C[5]) : k < 0.65 ? (h > 0.3 ? C[5] : C[4]) : k < 0.85 ? C[3] : C[2];
+            });
+        }
+        // the plates' thickness: their outer wall, a step darker going down
+        if (t < OPEN + 0.05 && r < R3)
+          for (const y of [-3, -HI]) for (let j = 1; j <= 3; j++) q.ring(0, y + j, 0, R3, 1, j === 1 ? C[1] : C[0]);
+        // the shaft between the plates: its edge, faint lines of light, a pool on the floor, hottest at its heart
+        if (r > 0.5 && r < 60 && t < SHUT) {
+          const k = 1 - r / 60;
+          for (let i = 0; i < 12; i++) {
+            const a = (i / 12) * TAU + t * 0.6;
+            q.line(Math.cos(a) * r * 0.94, 0, Math.sin(a) * r * 0.94, Math.cos(a) * r * 0.94, -HI, Math.sin(a) * r * 0.94, C[5], 0.25 + 0.3 * k);
+          }
+          q.glowLine(0, -1, 0, 0, -HI + 1, 0, r * 0.9 + 4, C[5], 0.1 + 0.18 * k);
+          q.glow(0, -2, 0, r * 1.15 + 6, C[5], 0.18 + 0.32 * k);
+          q.glow(0, -2, 0, r * 0.6 + 3, C[6], 0.25 * k);
+        }
+        // light catches the rims as the iris turns: a glint runs once round each, on opposite sides
+        if (t > 0.08 && t < SNAP) {
+          const a = -2.4 + ((t - 0.08) / (SNAP - 0.08)) * TAU;
+          glint3(q, Math.cos(a) * (r + 1), -1, Math.sin(a) * (r + 1), 4 + 1.6 * Math.sin(t * 9), t * 3, C[6], C[5], 0.9);
+          glint3(q, -Math.cos(a) * (r + 1), -HI + 1, -Math.sin(a) * (r + 1), 4 + 1.6 * Math.sin(t * 9 + 2), t * 3 + 1, C[6], C[5], 0.9);
+        }
+        // snapping shut: the light collapses into a glint that lingers between the plates
+        const s = t - SHUT;
+        if (s > -0.06 && s < 0.22) glint3(q, 0, MID, 0, 7 * (1 - Math.abs(s + 0.01) / 0.23), s * 4, C[6], C[5]);
+        // popping open: a flash at the heart
+        const u = t - POP;
+        if (u >= 0 && u < 0.18) {
+          q.ball(0, MID, 0, 5 * (1 - u / 0.18), WHITE);
+          glint3(q, 0, MID, 0, 11 * (1 - u / 0.18), 0.4 - u * 3, C[6], C[5]);
+          q.glow(0, MID, 0, 40, WHITE, 0.6 * (1 - u / 0.18));
+        }
+        ps.draw(q);
+        lights.draw(q);
+      },
+    };
+  },
+};

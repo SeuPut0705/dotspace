@@ -1,4 +1,5 @@
-import { chain, READY } from "../../core/index.js";
+import { chain, in3d, READY } from "../../core/index.js";
+import { recenter } from "./_lib.js";
 import * as slash from "../melee/sword-slash.js";
 import * as crit from "../impacts/crit-hit.js";
 
@@ -51,3 +52,13 @@ export const create = chain([
   { fx: slash, t: CUT, x: AT },
   { fx: crit, t: HIT, x: TX - 10, height: 28 },
 ]);
+
+const MID = 88;
+export const three = {
+  meta: { actor: 0, size: [404, 168], origin: [202, 109], camera: { pitch: 0.3 } },
+  act: recenter(act, MID),
+  create: chain([
+    { fx: in3d(slash), t: CUT, x: AT - MID },
+    { fx: in3d(crit), t: HIT, x: TX - 10 - MID, height: 28 },
+  ]),
+};

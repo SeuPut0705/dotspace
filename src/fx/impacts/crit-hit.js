@@ -1,7 +1,7 @@
 // The star, its key frames and the spark spray are adapted from Sprite Fusion's open-source impact
 // (https://www.spritefusion.com/pixel-art-vfx/impact), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, Bits, Lights, P, B, Rng, fit, clamp, smooth, ease, TAU, WHITE } from "../../core/index.js";
-import { spikes, star, brokenRing } from "./_lib.js";
+import { Particles, Bits, Lights, P, B, Rng, fit, clamp, smooth, ease, space, TAU, WHITE } from "../../core/index.js";
+import { spikes, star, brokenRing, dir2, aimed, onSphere, spikes3, star3, brokenRing3 } from "./_lib.js";
 
 export const meta = {
   name: "Critical hit",
@@ -112,3 +112,82 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the starburst is a spiky ball, long along the blow; the ring is a shell of three rings (one flat, two
+// standing, one facing the blow) whose arcs break and fly out; sparks, shards and motes leave in every direction
+// round the blow; the flare is a lens streak that always faces us.
+export const three = {
+  meta: { size: [264, 152], origin: [132, 116], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const C = fit(o.palette, 8), R = new Rng(o.seed), Y = -o.height, A = o.aim, floor = () => 0;
+    const ps = new Particles({ rng: R, ground: floor, sparks: [C[7], C[6], C[5], C[3]] });
+    const bits = new Bits({ ground: floor }), lights = new Lights();
+    const sp = spikes3(R, 14, A, { len: [11, 15], w: [1.8, 2.5], fwd: 1.4, back: 0.6, jag: 0.5 });
+    [...sp].sort((a, b) => b.len - a.len).slice(0, 2).forEach((s) => (s.len *= 1.3));
+    const segs = Array.from({ length: 7 }, (_, i) => {
+      const a = A + (i / 7) * TAU;
+      return { a, gap: R.range(0.55, 0.85), dr: R.range(0.08, 0.4) + 0.15 * Math.max(0, Math.cos(a - A)), w: 0.7 + 0.5 * Math.max(0, Math.cos(a - A)) };
+    });
+    const shell = [null, dir2(A), [0, 0, 1]].map((n, j) => ({ n, segs: segs.map((s) => ({ ...s, a: s.a + j * 0.9 })) }));
+    lights.add(0, Y, 84, C[5], 0.6, 0.5);
+    lights.add(0, Y, 30, WHITE, 0.7, 0.1);
+    lights.add(0, -4, 44, C[4], 0.3, 0.45);
+    // sparks: most sprayed on along the blow, a few kicked back
+    for (let i = 0; i < 36; i++) {
+      const back = R.chance(0.22), d = aimed(R, back ? A + Math.PI : A, back ? 0.6 : 0.8), v = R.range(170, 430) * (back ? 0.6 : 1);
+      ps.spawn3(P.SPARK, 0, Y, 0, d[0] * v, d[1] * v - 50, d[2] * v, R.range(0.15, 0.5), WHITE, 1, R.chance(0.3) ? R.range(0, 0.04) : 0);
+    }
+    // shards: bright splinters that tumble down, bounce and settle
+    for (let i = 0; i < 10; i++) {
+      const d = aimed(R, A - 0.35, 1.1), v = R.range(110, 280);
+      bits.add({ kind: B.SHARD, x: 0, y: Y, z: 0, vx: d[0] * v, vy: d[1] * v - 40, vz: d[2] * v, g: 0.8, drag: 0.7, bounce: 0.35, life: R.range(0.55, 0.85), a: R.range(0, TAU), va: R.range(-25, 25), s: R.range(2, 4.5), c: R.pick([C[7], C[6], C[6], C[5]]) });
+    }
+    // embers of light drifting up and off, and glints that pop round the ring after the hit
+    for (let i = 0; i < 12; i++) {
+      const d = aimed(R, A - Math.PI / 2, 1.4), v = R.range(35, 110);
+      ps.spawn3(P.MOTE, d[0] * 4, Y + d[1] * 4, d[2] * 4, d[0] * v, d[1] * v - 15, d[2] * v, R.range(0.35, 0.7), R.pick([C[6], C[5], C[5]]), 0.6, R.range(0, 0.05));
+    }
+    for (let i = 0; i < 5; i++) {
+      const d = onSphere(R), r = R.range(14, 34);
+      ps.spawn3(P.STAR, d[0] * r, Y + d[1] * r * 0.8, d[2] * r, 0, -4, 0, R.range(0.22, 0.38), R.chance(0.5) ? C[6] : WHITE, R.range(1.6, 3), R.range(0.08, 0.32));
+    }
+    let t = 0;
+    return {
+      update(dt) {
+        t += dt;
+        ps.update(dt);
+        bits.update(dt);
+        lights.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), u = clamp((t - 0.03) / 0.37);
+        // the ring: it swells off the star, then breaks into arcs that fly on and cool
+        if (t >= 0.03 && u < 1) {
+          const r = 10 + 30 * ease.outCubic(u), brk = smooth(0.12, 0.6, u), th = Math.max(1, 3.6 * Math.pow(1 - u, 1.2));
+          const i = u < 0.12 ? 7 : u < 0.3 ? 6 : u < 0.5 ? 5 : u < 0.75 ? 4 : 3;
+          for (const s of shell) brokenRing3(q, 0, Y, 0, r, th, s.segs, brk, C[i], C[Math.max(2, i - 2)], u < 0.6 ? 1 : (1 - u) / 0.4, s.n, u < 0.6 ? 0.35 * Math.pow(1 - u / 0.6, 2) : 0, C[5]);
+        }
+        bits.draw(q);
+        ps.draw(q);
+        // the flare blooms as the star collapses
+        const f = (t - 0.04) / 0.28;
+        if (f > 0 && f < 1) {
+          q.at(0, Y, 0, (pp) => flare(pp, 0, 0, 64 * Math.pow(1 - f, 1.3), 1 - f, C));
+          q.glow(0, Y, 0, 56, C[5], 0.4 * (1 - f));
+        }
+        // the starburst slams in: a white frame, an overshoot, a settle, then it breaks up
+        for (let i = 0; i < KEYS.length - 1; i++)
+          if (t >= KEYS[i][0] && t < KEYS[i + 1][0]) {
+            const [, sc, th, a, cols] = KEYS[i];
+            star3(q, 0, Y, 0, sp, sc, th, cols.map((j) => C[j]), a, 2.6);
+          }
+        const pop = Math.exp(-t / 0.05);
+        if (pop > 0.02) {
+          q.glow(0, Y, 0, 44, C[5], 0.4 * pop);
+          q.glow(0, Y, 0, 12, WHITE, 0.6 * pop);
+        }
+        lights.draw(q);
+      },
+    };
+  },
+};

@@ -1,7 +1,7 @@
 // The flash lobes, spark, smoke and casing recipes are adapted from Sprite Fusion's open-source
 // muzzle-flash (https://www.spritefusion.com/pixel-art-vfx/muzzle-flash), MIT License, Copyright (c) 2026 Hugo Duprez.
-import { Particles, P, Rng, rng, fit, mix, WHITE } from "../../core/index.js";
-import { flashShape, flash, cloud, Smoke, casing, drawCasing } from "./_lib.js";
+import { Particles, P, Rng, rng, fit, mix, space, TAU, WHITE } from "../../core/index.js";
+import { flashShape, flash, cloud, Smoke, casing, drawCasing, flash3, Smoke3, cloud3, casing3, drawCasing3, cone3 } from "./_lib.js";
 
 export const meta = {
   name: "Pistol shot",
@@ -73,3 +73,57 @@ export function create(o) {
     },
   };
 }
+
+// 3D: the muzzle points down +x. The flash is a star of rays bursting in every direction round the bore, sparks spit out in
+// a cone, the smoke curl hooks up and back as a real cloud that thins sideways too, and the casing is flung out of the
+// port on the gun's near side and bounces across the floor.
+export const three = {
+  meta: { size: [96, 84], origin: [48, 67], bg: "ground", camera: { pitch: 0.3 } },
+  create(o) {
+    const F = fit(o.palette, 9), B = fit(o.brass, 4), SM = fit(o.smoke, 7), H = o.height, MY = -H, R = new Rng(o.seed);
+    const ps = new Particles({ rng: R, ground: () => 0, sparks: [F[7], F[6], F[4], F[3]] }), smoke = new Smoke3(R);
+    const shapeSeed = R.int(0, 1e6), tilt = R.range(-0.05, 0.05);
+    // sparks spat forward, a few grains of unburnt powder that drop
+    for (let i = 0; i < 6; i++) {
+      const [vx, vy, vz] = cone3(R.range(0, 0.3), R.range(0, TAU), R.range(180, 400));
+      ps.spawn3(P.SPARK, 3, MY, 0, vx, vy, vz, R.range(0.06, 0.16));
+    }
+    for (let i = 0; i < 5; i++) {
+      const [vx, vy, vz] = cone3(R.range(0, 0.35), R.range(0, TAU), R.range(60, 160));
+      ps.spawn3(P.EMBER, 3, MY, 0, vx, vy, vz, R.range(0.25, 0.5), F[5]);
+    }
+    // a puff of gas forward, then a chain of wisps that push out, slow and curl up and back over the muzzle
+    for (let i = 0; i < 3; i++) smoke.add({ x: 3, y: MY, z: R.range(-1, 1), vx: R.range(70, 120), vy: R.range(-12, 6), vz: R.range(-14, 14), r0: 1.6, r1: R.range(4.5, 6), life: R.range(0.8, 1.05), a: 0.55, drag: 3.5, rise: 10, warm: 0.9, delay: i * 0.012 });
+    for (let i = 0; i < 14; i++) {
+      const k = i / 13;
+      smoke.add({ x: 2, y: MY, z: R.range(-1, 1), vx: 115 - 75 * k + R.range(-12, 12), vy: -6 - 10 * k + R.range(-5, 5), vz: R.range(-9, 9) * (0.4 + k), r0: 1.4, r1: (3.6 + k * 2.6) * R.range(0.75, 1.25), life: 1.15 + k * 0.3, a: 0.62, b: R.range(0.85, 1), drag: 2.2, rise: 6, curl: -4.4 + k * 1.8 + R.range(-0.5, 0.5), grow: 1.6, warm: 0.7, delay: 0.02 + i * 0.022 });
+    }
+    smoke.add({ x: -7, y: MY - 2, z: 3, vx: -6, vy: -18, vz: 12, r0: 1.2, r1: 4, life: 1.05, a: 0.4, rise: 8, delay: 0.03 });
+    const shell = { vx: -R.range(10, 28), vy: -R.range(95, 130), vz: R.range(32, 52), va: R.sign() * R.range(22, 32), a0: R.range(0, 6.28) };
+    let t = 0;
+    return {
+      update(dt) {
+        t += dt;
+        ps.update(dt);
+        smoke.update(dt);
+      },
+      draw(p) {
+        const q = space(p, o), pop = Math.exp(-(t + 0.008) / 0.035), list = smoke.puffs();
+        for (const s of list) s.w *= 0.4 + pop;
+        // the casing: out of the port to the near side, up and back, tumbling, a bounce or two, then it lies there and fades
+        if (t < meta.duration) drawCasing3(q, casing3(-7, MY - 1, 3, shell.vx, shell.vy, shell.vz, shell.va, t, 850, -0.5, 0.42, shell.a0), B, Math.min(1, (meta.duration - 0.05 - t) / 0.3));
+        // the flash: the hero frame with a white core, then one cooler, smaller frame
+        if (t < 2 * F1) {
+          const f = t < F1 ? 1 : 2, L = flashShape(rng(shapeSeed), f, { size: 1.15, spike: [15, 22], diag: [7, 12], cross: [4.5, 8], back: [3, 5.5] });
+          flash3(q, 0, MY, 0, tilt, L, f === 1 ? [WHITE, F[7], F[6], F[3]] : [F[7], F[6], F[4], F[2]], f + o.seed, f === 1 ? 4.2 : 3.2);
+        }
+        ps.draw(q);
+        cloud3(q, list, SM, [SM[0], mix(F[1], SM[1], 0.5), mix(F[2], SM[2], 0.4), F[3], F[4], F[5], F[7]], { dens: 1.5, max: 0.8, lit: 1.4 });
+        // light: the pop, its warm pool, a touch on the floor below
+        q.glow(4, MY, 0, 30, F[4], 0.85 * pop);
+        q.glow(2, MY, 0, 8, WHITE, 0.5 * pop);
+        q.glow(4, 0, 0, 16, F[4], 0.2 * pop);
+      },
+    };
+  },
+};
