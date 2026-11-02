@@ -1,7 +1,18 @@
 # Catalog
 
-244 effects in 21 categories. Every one is a file in
+248 effects in 22 categories. Every one is a file in
 `src/fx/<category>/<name>.js`; render any of them with `node tools/render.mjs <id> --gif`.
+
+## 3d
+
+effects that live in 3D: any camera angle, depth sorted, rings that are real circles.
+
+| effect | id | | size | what it does |
+|---|---|---|---|---|
+| Meteor | `3d/meteor` | one-shot 3.8s | 208×176 | Seen in perspective: a burning rock falls out of the distance trailing fire, bursts on the floor, flings blazing chunks that light small fires where they land. |
+| Orbit orbs | `3d/orbit-orbs` | loop 2.4s | 96×80 | Three shaded orbs circle the character on a tilted orbit, passing behind him and in front, trailing light and motes. |
+| Shockwave | `3d/shockwave` | one-shot 1.9s | 184×124 | A ground slam in 3D: a white flash, a shock ring racing out across the floor as a true circle, stone chunks thrown every way, a ring of dust rolling out. |
+| Whirlwind | `3d/whirlwind` | one-shot 0.8s | 180×108 | A blade whirls once round the waist in true 3D: the smear runs behind the body and back across the front, closes into a ring that flares and comes apart in sparks. |
 
 ## moves
 
