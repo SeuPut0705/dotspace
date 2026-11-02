@@ -14,7 +14,7 @@ export const meta = {
   fps: 30,
   bg: "ground",
   actor: 2,
-  options: { palette: ["#1c1a24", "#2f2a3a", "#4a4258", "#6b6280", "#9088a4", "#bdb6cc", "#e6e1ee"], stone: "#4a3f69", seed: 14 },
+  options: { palette: ["#1c1a24", "#2f2a3a", "#4a4258", "#6b6280", "#9088a4", "#bdb6cc", "#e6e1ee"], stone: "#4a3f69", seed: 14, edge: true },
 };
 
 const FALL = { turn: 0.8, y: -46, crouch: -1, lean: -1, fx: -9, fy: -42, bx: 10, by: -42, ffx: 6, ffy: -8, fbx: -3, fby: -3, toeB: true, ghost: 1 };
@@ -175,9 +175,9 @@ export const three = {
           else if (d < 10.5) out.c = d > 10 ? st.light : st.lip;
         });
         drawCracks3(q, cracks, (c) => c.len * ease.outCubic(clamp((t - c.t0) / 0.08)), () => 0, [WHITE, WHITE, WHITE, WHITE], SOOT, fade, 0, st.light);
-        // the leading edge of the fast ring: a crisp lit band on the floor
+        // the leading edge of the fast ring: a crisp lit band on the floor (edge: false leaves just the soft dust)
         const g1 = (t - 0.01) / 0.45;
-        if (g1 > 0 && g1 < 0.75) q.ring(0, 0, 0, 6 + 58 * ease.outCubic(g1) + 2, Math.max(2, 3.5 * (1 - g1)), (v) => (v > 0.8 ? WHITE : v > 0.55 ? LIT : v > 0.25 ? st.light : st.body), Math.min(1, 1.1 - g1 / 0.75));
+        if (o.edge !== false && g1 > 0 && g1 < 0.75) q.ring(0, 0, 0, 6 + 58 * ease.outCubic(g1) + 2, Math.max(2, 3.5 * (1 - g1)), (v) => (v > 0.8 ? WHITE : v > 0.55 ? LIT : v > 0.25 ? st.light : st.body), Math.min(1, 1.1 - g1 / 0.75));
         for (const b of bits.list) rock3(q, b, st);
         // the two dust rings themselves: soft bands on the floor, the second slower, lumpier and later
         for (const [t0, dur, r1, w, k0] of [[0.01, 0.45, 58, 4.5, 0.75], [0.12, 0.85, 42, 6, 0.8]]) {

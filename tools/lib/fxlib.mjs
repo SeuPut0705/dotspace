@@ -355,7 +355,7 @@ export function spriteSheet(fx, r, name, { views, maps } = {}) {
   }
   runs.forEach((v, row) => tags.push({ name: v.name ? `${name}@${v.name}` : name, from: row * n, to: row * n + n - 1, direction: "forward" }));
   const m = fx.meta, out = {};
-  const info = { id: fx.id, name: m.name, fps, loop: m.loop, frames: n, frameSize: [w, h], pivot: m.origin, columns: cols, ...(fx.mod.act ? { act: actTiming(fx.mod) } : {}) };
+  const info = { id: fx.id, name: m.name, fps, loop: m.loop, frames: n, frameSize: [w, h], pivot: m.origin.map((v) => v + (runs[0].r.margin ?? 0)), columns: cols, ...(fx.mod.act ? { act: actTiming(fx.mod) } : {}) };
   if (views) info.views = views.map((v, row) => ({ name: v.name, yaw: +v.yaw.toFixed(4), pitch: +v.pitch.toFixed(4), row }));
   if (m.camera) {
     const { dist, ...camera } = { ...CAMERA, ...m.camera, ...runs[0].r.camera };

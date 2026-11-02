@@ -20,6 +20,10 @@ export const meta = {
     birds: ["#1a1422", "#6a7fae", "#b8c8e8", "#f4f8ff"],
     beak: "#ffae35",
     seed: 2,
+    // false leaves the stars alone on the ring (no little birds)
+    flock: true,
+    // false draws no faint path of light under the circling stars
+    path: true,
   },
 };
 
@@ -73,6 +77,7 @@ function draw1(p, t, o, layer) {
         if (k < 6) p.light(x, y, C[4], 0.3 * (1 - k / 6));
       }
     if (it.bird) {
+      if (!o.flock) continue;
       const up = Math.floor(t * 8 + it.i * 0.5) % 2 === 0, bob = Math.sin((t / D) * TAU * 4 + it.i) * 0.7, flip = it.near;
       const f = BIRD[up ? 0 : 1], ins = flip ? (dx, dy) => f(-dx, dy) : f;
       icon(p, it.x, it.y - 3 + bob, 7, ins, [Bd[0], dim(Bd[1]), dim(Bd[2]), dim(Bd[3])], 1, { e: Bd[0], b: dim(hex(o.beak)), w: dim(Bd[1]) });
@@ -117,7 +122,7 @@ export const three = {
     const at = (th, r = R, y = cy) => [Math.cos(th) * r, y, Math.sin(th) * r];
     const items = Array.from({ length: N }, (_, i) => ({ i, th: TAU * ((TURNS * t) / D + i / N), bird: i % 2 === 1 }));
     // the path itself, a hair of light so the circle reads from above
-    q.ring(0, cy - 1, 0, R, 1, C[4], 0.16);
+    if (o.path) q.ring(0, cy - 1, 0, R, 1, C[4], 0.16);
     // glitter along the circle behind each star
     for (const it of items) {
       if (it.bird) continue;
@@ -132,6 +137,7 @@ export const three = {
       const [x, y, z] = at(it.th), far = q.depth(x, y, z) > 0, dim = (c) => (far ? mix(c, Bd[0], 0.3) : c);
       const front = clamp(-q.depth(x, y, z) / R);
       if (it.bird) {
+        if (!o.flock) continue;
         const up = Math.floor(t * 8 + it.i * 0.5) % 2 === 0, bob = Math.sin((t / D) * TAU * 4 + it.i) * 0.7;
         // it flies along the circle: turn it to face whichever way that runs across the screen
         const flip = q.view(-Math.sin(it.th), 0, Math.cos(it.th))[0] < 0, f = BIRD[up ? 0 : 1], ins = flip ? (dx, dy) => f(-dx, dy) : f;

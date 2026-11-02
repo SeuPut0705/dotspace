@@ -12,7 +12,8 @@
 //
 // Options: --gif --mp4 --sheet (transparent PNG + JSON) --maps (with --sheet) --all --max N (frames in the
 // contact sheet) --zoom N (contact sheet scale) --scale N (GIF/MP4) --bg dark|ground|sky|light|black|none --seed N
-// --fps N --opts JSON --out DIR --no-actor --loops N (repeat a loop in the GIF/MP4)
+// --fps N --opts JSON --out DIR --no-actor --loops N (repeat a loop in the GIF/MP4) --margin N (px of empty canvas
+// round the effect: a camera that looks from above or from the side sees parts the effect's own canvas would clip)
 // 3D effects (meta.camera): --yaw DEG --pitch DEG --dist PX (perspective) --views N. They always get views.png too:
 // the effect from 8 directions, the same moments in each row.
 //
@@ -44,6 +45,7 @@ for (const id of resolveIds(ids)) {
       fps: flags.fps ? +flags.fps : undefined,
       seed: flags.seed ? +flags.seed : undefined,
       bg: flags.bg,
+      margin: flags.margin ? +flags.margin : undefined,
       actor: flags["no-actor"] ? false : undefined,
       camera,
       options: flags.opts ? JSON.parse(flags.opts) : undefined,
