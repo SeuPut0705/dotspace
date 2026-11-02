@@ -471,13 +471,17 @@ export function shortfall(pose) {
   const S = solve(pose), q = S.q, near = len(sub(S.armN.end, [q.fx, -q.fy, S.armN.end[2]])), far = q.two ? 0 : len(sub(S.armF.end, [q.bx, -q.by, S.armF.end[2]]));
   return Math.max(near, far);
 }
-/** The pixels of a pose: { n, xs, ys, color, src, ink, x0, y0, x1, y1 }, in local space with the feet at (0, 0). */
-export function posed(pose) {
+/**
+ * The pixels of a pose: { n, xs, ys, color, src, ink, x0, y0, x1, y1 }, in local space with the feet at (0, 0).
+ * Nearby poses (within a pixel) share whichever was drawn first in `cache`, so give each performance a cache of its
+ * own (acts do): with one shared cache, what one effect drew first would change how another's body looks.
+ */
+export function posed(pose, cache = CACHE) {
   const key = keyOf(pose);
-  let r = CACHE.get(key);
+  let r = cache.get(key);
   if (!r) {
-    if (CACHE.size > 6000) CACHE.clear();
-    CACHE.set(key, (r = render(pose)));
+    if (cache.size > 6000) cache.clear();
+    cache.set(key, (r = render(pose)));
   }
   return r;
 }

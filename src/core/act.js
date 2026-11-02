@@ -200,6 +200,15 @@ export function actSpan(mod) {
   return { from: Math.min(0, k?.[0]?.[0] ?? 0), to: mod.meta?.loop ? Infinity : Math.max(D, k?.[k.length - 1]?.[0] ?? 0) };
 }
 
+// each act draws its body from a pose cache of its own, so what other effects drew first can't change it
+const caches = new WeakMap();
+const posesOf = (mod) => {
+  const owner = mod.act ?? mod;
+  let c = caches.get(owner);
+  if (!c) caches.set(owner, (c = new Map()));
+  return c;
+};
+
 /**
  * An effect performed: { fx, t, update(dt), draw(frame, { body, target }), shake, done() }. t runs from the first pose
  * (before the effect's own t = 0) to the last. update() holds everything still during a freeze; draw() paints the effect, the
@@ -207,6 +216,7 @@ export function actSpan(mod) {
  */
 export function createAct(mod, o = {}) {
   const a = mod.act ?? {}, meta = mod.meta ?? {}, D = meta.duration ?? 1, flip = !!o.flip, seed = o.seed ?? meta.options?.seed ?? 1;
+  const poses = posesOf(mod), bodyOf = (q) => posed(q, poses);
   const fx = createFx(mod, o), track = a.poses ?? [[0, { ...STAND }]], span = actSpan(mod);
   const X = o.x ?? 0, Y = o.y ?? 0;
   const targets = (a.targets ?? (a.target ? [a.target] : [])).map((g, i) => new Target(g.x ?? 66, seed + 4 + i));
@@ -229,7 +239,7 @@ export function createAct(mod, o = {}) {
   };
   let scratch = null, snap = null;
   const scratchFor = (f) => {
-    if (!scratch || scratch.a.w !== f.w || scratch.a.h !== f.h) scratch = { a: createFrame(f.w, f.h, f.ox, f.oy), b: createFrame(f.w, f.h, f.ox, f.oy) };
+    if (!scratch || scratch.a.w !== f.w || scratch.a.h !== f.h) scratch = { a: createFrame(f.w, f.h, f.ox, f.oy, !!meta.camera), b: createFrame(f.w, f.h, f.ox, f.oy, !!meta.camera) };
     return scratch;
   };
   const out = {
@@ -338,7 +348,7 @@ export function createAct(mod, o = {}) {
         return;
       }
       const rx = Math.round(q.x ?? 0), ry = Math.round(q.y ?? 0), BX = FX + (flip ? -rx : rx), BY = FY + ry;
-      const r = posed(q), mirror = flip;
+      const r = bodyOf(q), mirror = flip;
       const paint = (i, color) => {
         const px = mirror ? BX - r.xs[i] - 1 : BX + r.xs[i], py = BY + r.ys[i];
         if (px < 0 || py < 0 || px >= W || py >= H) return;
@@ -349,7 +359,7 @@ export function createAct(mod, o = {}) {
       const drawGhosts = () => {
         for (const g of ghosts) {
           // after-images are light, not paint: they brighten what's behind them and leave nothing muddy
-          const gr = posed(g.q), gx = FX + (flip ? -Math.round(g.q.x ?? 0) : Math.round(g.q.x ?? 0)), gy = FY + Math.round(g.q.y ?? 0), k = 0.5 * (1 - g.age / GHOST_LIFE);
+          const gr = bodyOf(g.q), gx = FX + (flip ? -Math.round(g.q.x ?? 0) : Math.round(g.q.x ?? 0)), gy = FY + Math.round(g.q.y ?? 0), k = 0.5 * (1 - g.age / GHOST_LIFE);
           const gm = flip, r0 = (gc & 255) * k, g0 = ((gc >>> 8) & 255) * k, b0 = ((gc >>> 16) & 255) * k;
           for (let i = 0; i < gr.n; i++) {
             const px = gm ? gx - gr.xs[i] - 1 : gx + gr.xs[i], py = gy + gr.ys[i];
@@ -400,9 +410,11 @@ export function createAct(mod, o = {}) {
       if (active) fx.draw(A, "back");
       B.color.set(A.color);
       B.light.set(A.light);
+      if (A.depth) B.depth.set(A.depth);
       const tt = meta.loop ? (t < 0 ? 0 : t % D) : clamp(t, 0, D), alpha = active ? actorAlphaOf(mod, tt, fx.options) : 1;
+      // in 3D the standing body is at depth 0, so what the effect puts behind it stays behind it
       drawActor(painterFor(B).place(FX, FY, flip), fx.options.actor ?? stockActor(2), alpha);
-      if (active) fx.draw(B, "front");
+      if (active) fx.draw(B, meta.camera ? undefined : "front");
       const follow = a.follow ?? 1, lean = (q.lean ?? 0) * follow, cr = (q.crouch ?? 0) * follow;
       // what's up on the body goes with it; what's on the floor stays on the floor
       const shiftOf = (ly) => {
@@ -497,8 +509,8 @@ export function actBounds(mod) {
   const a = mod.act, [w, h] = mod.meta.size, [ox, oy] = mod.meta.origin;
   let x0 = -ox, y0 = -oy, x1 = w - ox, y1 = h - oy;
   const see = (p) => {
-    const r = posed(p), X = Math.round(p.x ?? 0), Y = Math.round(p.y ?? 0), a = r.x0, b = r.x1;
-    x0 = Math.min(x0, a + X - 1); x1 = Math.max(x1, b + X + 1); y0 = Math.min(y0, r.y0 + Y - 1); y1 = Math.max(y1, r.y1 + Y + 1);
+    const r = posed(p, posesOf(mod)), X = Math.round(p.x ?? 0), Y = Math.round(p.y ?? 0), a0 = r.x0, b = r.x1;
+    x0 = Math.min(x0, a0 + X - 1); x1 = Math.max(x1, b + X + 1); y0 = Math.min(y0, r.y0 + Y - 1); y1 = Math.max(y1, r.y1 + Y + 1);
   };
   const k = a?.poses;
   if (k) {

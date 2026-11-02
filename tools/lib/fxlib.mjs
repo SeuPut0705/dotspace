@@ -1,47 +1,60 @@
 // Shared by the tools: find effects, render their frames, lay frames out, write PNG, GIF and MP4.
 
-import { readdirSync, existsSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { readdirSync, existsSync, statSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join, dirname, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
-import { createFrame, clearFrame, createFx, createAct, actBounds, actTiming, composite, painterFor, drawActor, stockActor, backdrop, floorGrid, space, actorAlphaOf, CAMERA } from "../../src/core/index.js";
+import { createFrame, clearFrame, createFx, createAct, actBounds, actTiming, composite, painterFor, drawActor, stockActor, backdrop, floorGrid, space, actorAlphaOf, CAMERA, in3d } from "../../src/core/index.js";
 import { rasterText, textWidth } from "../../src/core/font.js";
 import { encodePNG } from "./png.mjs";
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const FX_DIR = join(ROOT, "src", "fx");
 
-/** Every effect id ("fire/torch"), sorted. Files starting with _ are helpers, not effects. */
-export function allIds(dir = FX_DIR) {
+/**
+ * Every effect id ("fire/torch"), sorted. Files starting with _ are helpers, not effects. With variants, an effect
+ * that also exports a 3D variant (`export const three`) is listed twice: "fire/torch" and "fire/torch@3d".
+ */
+export function allIds(dir = FX_DIR, { variants = true } = {}) {
   const out = [];
   if (!existsSync(dir)) return out;
   for (const cat of readdirSync(dir).sort()) {
     const d = join(dir, cat);
     if (cat.startsWith("_") || !statSync(d).isDirectory()) continue;
-    for (const f of readdirSync(d).sort()) if (f.endsWith(".js") && !f.startsWith("_")) out.push(`${cat}/${f.slice(0, -3)}`);
+    for (const f of readdirSync(d).sort()) {
+      if (!f.endsWith(".js") || f.startsWith("_")) continue;
+      const id = `${cat}/${f.slice(0, -3)}`;
+      out.push(id);
+      if (variants && /^export const three\b/m.test(readFileSync(join(d, f), "utf8"))) out.push(id + VARIANT);
+    }
   }
   return out;
 }
+/** The suffix of an effect's 3D variant id. */
+export const VARIANT = "@3d";
 
-/** Ids matching patterns: "fire/torch", "fire" (a category), "fire/*", "*torch*", or a file path. */
+/** Ids matching patterns: "fire/torch", "fire" (a category), "fire/*", "*torch*", "fire/torch@3d", or a file path. */
 export function resolveIds(patterns, dir = FX_DIR) {
   const all = allIds(dir), out = new Set();
   for (let p of patterns) {
     if (p.endsWith(".js")) p = relative(dir, p.startsWith("/") ? p : join(process.cwd(), p)).split(sep).join("/").replace(/\.js$/, "");
     const re = new RegExp("^" + p.split("*").map((s) => s.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$");
-    const hits = all.filter((id) => id === p || id.startsWith(p + "/") || re.test(id));
+    const hits = all.filter((id) => id === p || id.startsWith(p + "/") || id === p + VARIANT || re.test(id));
     if (!hits.length) console.error(`no effect matches ${p}`);
     hits.forEach((h) => out.add(h));
   }
   return [...out];
 }
 
-/** Import an effect module fresh. */
+/** Import an effect module fresh. "fire/torch@3d" loads fire/torch's 3D variant as an effect of its own. */
 export async function loadEffect(id, dir = FX_DIR) {
-  const file = join(dir, id + ".js");
-  const mod = await import(pathToFileURL(file).href + `?v=${statSync(file).mtimeMs}`);
+  const v3 = id.endsWith(VARIANT), base = v3 ? id.slice(0, -VARIANT.length) : id;
+  const file = join(dir, base + ".js");
+  const src = await import(pathToFileURL(file).href + `?v=${statSync(file).mtimeMs}`);
+  if (!src.meta) throw new Error(`${id}: no meta export`);
+  if (v3 && !src.three) throw new Error(`${id}: ${base} exports no 3D variant (export const three)`);
+  const mod = v3 ? in3d(src) : src;
   const meta = { fps: 30, bg: "dark", loop: false, duration: 1, tags: [], options: {}, ...mod.meta };
-  if (!mod.meta) throw new Error(`${id}: no meta export`);
   if (!mod.draw && !mod.create) throw new Error(`${id}: exports neither draw nor create`);
   return { id, file, mod: { ...mod, meta }, meta };
 }
@@ -210,6 +223,7 @@ export { textWidth };
 /** Which frames a contact sheet shows: all of them up to max, else evenly spaced. */
 export function pickFrames(n, max = 16) {
   if (n <= max) return [...Array(n).keys()];
+  if (max <= 1) return [Math.floor((n - 1) / 2)];
   return Array.from({ length: max }, (_, i) => Math.round((i * (n - 1)) / (max - 1)));
 }
 

@@ -8,7 +8,7 @@ export { Particles, Bits, Lights, Blazes, P, PF, B, GRAVITY, FIRE_RAMP, SMOKE_RA
 export { Space, space, lit, cameraToward, CAMERA, UP } from "./space.js";
 export { Painter } from "./painter.js";
 export { FONTS, textWidth } from "./font.js";
-export { createFrame, clearFrame, createFx, composite, painterFor, resolveOptions } from "./fx.js";
+export { createFrame, clearFrame, createFx, composite, painterFor, resolveOptions, in3d } from "./fx.js";
 export { stockActor, drawActor, actorAlphaOf, HERO, HERO2, HERO_PAL, DUMMY_PAL } from "./actor.js";
 export { backdrop, floorGrid, BACKDROPS } from "./scene.js";
 export { createAct, actBounds, actSpan, actTiming, poseAt, lerpPose, Target, STAND, SKINS, posed } from "./act.js";

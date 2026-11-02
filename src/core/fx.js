@@ -50,6 +50,21 @@ export function resolveOptions(meta, o = {}) {
 }
 
 /**
+ * An effect's 3D variant as an effect of its own, or null if it has none. A 2D effect file may also export
+ * `three = { meta, draw | create, drawBack?, act?, actorAlpha? }`: its meta is laid over the 2D one's (options
+ * merged, `camera` required), and it keeps the 2D act and actorAlpha unless it brings its own.
+ */
+export function in3d(mod) {
+  const t = mod.three;
+  if (!t) return null;
+  const meta = { ...mod.meta, ...t.meta, options: { ...mod.meta?.options, ...t.meta?.options }, camera: { ...t.meta?.camera } };
+  const out = { meta, act: t.act ?? mod.act, actorAlpha: t.actorAlpha ?? mod.actorAlpha };
+  if (t.create) out.create = t.create;
+  else (out.draw = t.draw), (out.drawBack = t.drawBack);
+  return out;
+}
+
+/**
  * A live instance of an effect module: { update(dt), draw(frame, layer), stop(), done() }.
  * o: { x, y, flip, angle, seed, palette, light (glow strength), actor, ...the effect's own options }.
  * draw(frame, "back") draws what goes behind a character, "front" what goes in front, nothing both.

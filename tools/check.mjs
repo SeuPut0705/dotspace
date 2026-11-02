@@ -96,6 +96,7 @@ for (const id of ids) {
       if (Math.abs(meta.camera.pitch ?? 0) > Math.PI / 2) errs.push("meta.camera.pitch must be within ±π/2");
     }
     if (/Math\.random/.test(src)) errs.push("uses Math.random: use rng/rand/burst/cycle so frames repeat");
+    if (!meta.camera && !/^export const three\b/m.test(src)) errs.push("no 3D variant: export const three (docs/3D.md, \"Give a 2D effect its 3D variant\")");
     if (mod.act) checkAct(fx, errs, notes);
     if (errs.length) throw new Error(errs.join("; "));
 

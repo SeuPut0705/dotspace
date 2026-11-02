@@ -54,28 +54,39 @@ const body3d = loop
     const a = r.range(0, TAU), e = r.range(-0.7, 0.4), sp = r.range(40, 80), life = r.range(0.3, 0.6);
     if (t > life) return;
     const d = sp * t;
-    q.px(Math.cos(a) * Math.cos(e) * d, -10 + Math.sin(e) * d + 90 * t * t, Math.sin(a) * Math.cos(e) * d, at(C.slice(2), 1 - t / life));
+    q.px(Math.cos(a) * Math.cos(e) * d, Math.min(0, -10 + Math.sin(e) * d + 90 * t * t), Math.sin(a) * Math.cos(e) * d, at(C.slice(2), 1 - t / life));
   });
   q.glow(0, -10, 0, 24, C[4], 0.5 * (1 - seg(t, 0, 0.4)));`;
-const names = d3 ? (loop ? "space, lit" : "space, burst, seg, WHITE") : loop ? "cycle" : "burst, fly, seg, WHITE";
+// a 2D effect starts with its 3D variant beside it (tools/check.mjs wants one), drawn from the same idea in space
+const names2 = loop ? "cycle" : "burst, fly, seg, WHITE", names3 = loop ? "space, lit" : "space, burst, seg, WHITE";
+const names = [...new Set((d3 ? names3 : `${names2}, ${names3}`).split(", "))].join(", ");
+const three = `
+
+// 3D: the same effect standing in space (docs/3D.md, "Give a 2D effect its 3D variant")
+export const three = {
+  meta: { size: [88, 80], origin: [44, 54], bg: "ground", camera: { pitch: 0.3 } },
+  draw(p, t, o) {
+${body3d.replace(/^/gm, "  ")}
+  },
+};`;
 const src = `import { PAL, ramp, at, ${names}, TAU } from "../../core/index.js";
 
 export const meta = {
   name: "${name}",
   desc: "One line: what it is, how it moves.",
   tags: ["${id.split("/")[0]}"${d3 ? ', "3d"' : ""}],
-  size: [${d3 ? "76, 68" : "48, 48"}],
-  origin: [${d3 ? "38, 46" : "24, 32"}],
+  size: [${d3 ? "88, 80" : "56, 74"}],
+  origin: [${d3 ? "44, 54" : "28, 34"}],
   duration: ${loop ? 1.2 : 0.7},
   loop: ${loop},
   fps: 30,
-  bg: "${d3 ? "ground" : "dark"}",${d3 ? "\n  camera: { pitch: 0.3 },   // makes it 3D: any yaw, pitch or perspective (dist) at render time" : ""}
+  bg: "${d3 ? "ground" : "dark"}",${d3 ? "\n  camera: { pitch: 0.3 },   // makes it 3D only: any yaw, pitch or perspective (dist) at render time" : ""}
   options: { palette: PAL.arcane, seed: 1 },
 };
 
 export function draw(p, t, o) {
 ${d3 ? body3d : body2d}
-}
+}${d3 ? "" : three}
 `;
 mkdirSync(dirname(file), { recursive: true });
 writeFileSync(file, src);

@@ -6,6 +6,7 @@
 
 import { clamp } from "./math.js";
 import { hex } from "./color.js";
+import { Painter } from "./painter.js";
 
 /** The default camera: front on, a little above (a floor circle reads as an ellipse 0.3 tall), orthographic. */
 export const CAMERA = { yaw: 0, pitch: 0.3, dist: Infinity, zoom: 1 };
@@ -262,8 +263,7 @@ export class Space {
    * backdrop that things lying on it must never sink into.
    */
   plane(cx, cy, cz, n, R, fn, bias = 0) {
-    const N = norm(n ?? UP), e1 = Math.abs(N[1]) > 0.9 ? norm(cross(cross(N, [1, 0, 0]), N)) : norm(cross(N, [0, -1, 0]));
-    const e2 = cross(N, e1), V0 = this.view(cx + this.ax, cy + this.ay, cz + this.az), V1 = this.view(...e1), V2 = this.view(...e2);
+    const [e1, e2] = basis(n), V0 = this.view(cx + this.ax, cy + this.ay, cz + this.az), V1 = this.view(...e1), V2 = this.view(...e2);
     const D = this.dist, z = this.zoom, w = (v) => (D === Infinity ? 0 : -v[2] / D);
     // homography from (u, v, 1) to the painter's local px, homogeneous
     const H = [z * V1[0], z * V2[0], z * V0[0], z * V1[1], z * V2[1], z * V0[1], w(V1), w(V2), 1 + w(V0)];
@@ -302,6 +302,49 @@ export class Space {
     });
     p.z = zp;
   }
+  /**
+   * Any 2D drawing laid flat on a plane (default the floor): draw(p) paints with the 2D painter around (0, 0)
+   * inside radius R, as if looking straight at the plane (on the floor: x right, y towards the viewer at yaw 0;
+   * facing the viewer, n = [0, 0, 1]: as on screen), and it lands on the plane in perspective, depth and all.
+   * A scorch mark, a rune circle, cracks, a puddle, a slash drawn with p.arc: draw it in 2D, lay it down. Thin
+   * lines survive the squash: each screen pixel keeps the strongest of the drawing's pixels it covers.
+   */
+  decal(cx, cy, cz, n, R, draw, bias = 0) {
+    const S = Math.ceil(R) * 2 + 2, h = S >> 1, off = scratch(S);
+    off.f.color.fill(0);
+    off.f.light.fill(0);
+    off.p.reset().place(h, h);
+    draw(off.p);
+    // how far a screen pixel reaches across the drawing: the inverse of the plane's scale on screen at its center
+    const [e1, e2] = basis(n), V1 = this.view(...e1), V2 = this.view(...e2);
+    const k = this.project(cx, cy, cz) ? this.k : this.zoom;
+    const ja = V1[0] * k, jb = V2[0] * k, jc = V1[1] * k, jd = V2[1] * k, det = ja * jd - jb * jc;
+    if (Math.abs(det) < 1e-6) return;
+    const ax = jd / det, ay = -jc / det, bx = -jb / det, by = ja / det;
+    const C = off.f.color, L = off.f.light, SS = [-1 / 3, 0, 1 / 3];
+    const at = (u, v) => {
+      const x = Math.floor(u + h), y = Math.floor(v + h);
+      return x < 0 || y < 0 || x >= S || y >= S ? -1 : y * S + x;
+    };
+    this.plane(cx, cy, cz, n, R + 1, (u, v, out) => {
+      let best = -1, ba = 0, lr = 0, lg = 0, lb = 0;
+      for (const s of SS)
+        for (const t of SS) {
+          const i = at(u + s * ax + t * bx, v + s * ay + t * by);
+          if (i < 0) continue;
+          const a = C[i] >>> 24, l = L[i];
+          if (a > ba) (ba = a), (best = i);
+          if (l) (lr = Math.max(lr, l & 255)), (lg = Math.max(lg, (l >>> 8) & 255)), (lb = Math.max(lb, (l >>> 16) & 255));
+        }
+      if (best >= 0) {
+        const c = C[best];
+        out.c = ba === 255 ? c : (c & 0xffffff) | 0xff000000;
+        out.a = ba / 255;
+        out.blend = ba < 255;
+      }
+      if (lr || lg || lb) (out.l = 0xff000000 | (lb << 16) | (lg << 8) | lr), (out.k = 1);
+    }, bias);
+  }
   /** A ring from radius r - w to r in a plane (default the floor). c and a may be functions of (v: 0 inner to 1 outer, angle). */
   ring(cx, cy, cz, r, w, c, a = 1, n = UP) {
     const r0 = Math.max(0, r - w);
@@ -331,6 +374,22 @@ export class Space {
       o.a = call(a, u, v);
     });
   }
+}
+
+// the plane's own axes (u, v) for a normal: on the floor u is x and v is z, facing the viewer u is x and v is y
+function basis(n) {
+  const N = norm(n ?? UP), e1 = Math.abs(N[1]) > 0.9 ? norm(cross(cross(N, [1, 0, 0]), N)) : norm(cross(N, [0, -1, 0]));
+  return [e1, cross(N, e1)];
+}
+// one offscreen 2D frame per size, reused, for decals
+const scratches = new Map();
+function scratch(S) {
+  let s = scratches.get(S);
+  if (!s) {
+    const f = { w: S, h: S, ox: 0, oy: 0, color: new Uint32Array(S * S), light: new Uint32Array(S * S) };
+    scratches.set(S, (s = { f, p: new Painter(f) }));
+  }
+  return s;
 }
 
 /** The Space for a painter, with the effect's camera (o.camera over meta.camera over CAMERA). */
